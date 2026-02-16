@@ -84,14 +84,16 @@
     session.connections.clear();
 
     // Close ONLY this session's tabs
-    for (const tab of session.agentTabs) {
+    // Copy to array first — removeTab triggers TabClose which modifies agentTabs during iteration
+    const tabsToRemove = [...session.agentTabs];
+    session.agentTabs.clear();
+    for (const tab of tabsToRemove) {
       try {
         if (tab.parentNode) gBrowser.removeTab(tab);
       } catch (e) {
         log('Error removing tab during session destroy: ' + e);
       }
     }
-    session.agentTabs.clear();
 
     if (session.staleTimer) {
       clearTimeout(session.staleTimer);
@@ -194,6 +196,30 @@
       clearInterval(staleSweepInterval);
       staleSweepInterval = null;
     }
+    // Remove Services.obs observers (process-global — outlive window otherwise)
+    if (networkObserverRegistered) {
+      try { Services.obs.removeObserver(networkObserver, 'http-on-modify-request'); } catch (e) {}
+      try { Services.obs.removeObserver(networkObserver, 'http-on-examine-response'); } catch (e) {}
+      networkObserverRegistered = false;
+    }
+    try { Services.obs.removeObserver(dialogObserver, 'common-dialog-loaded'); } catch (e) {}
+    // Remove progress listener
+    try { gBrowser.removeTabsProgressListener(navProgressListener); } catch (e) {}
+    // Remove tab event listeners
+    if (_tabOpenListener) {
+      try { gBrowser.tabContainer.removeEventListener('TabOpen', _tabOpenListener); } catch (e) {}
+      _tabOpenListener = null;
+    }
+    if (_tabCloseListener) {
+      try { gBrowser.tabContainer.removeEventListener('TabClose', _tabCloseListener); } catch (e) {}
+      _tabCloseListener = null;
+    }
+    // Clear global state that outlives sessions
+    interceptRules.length = 0;
+    networkLog.length = 0;
+    networkMonitorActive = false;
+    pendingDialogs.length = 0;
+    dialogWindowRefs.clear();
     globalThis[GLOBAL_KEY] = false;
   }
 
@@ -241,12 +267,12 @@
     onStopRequest(request, status) {
       log('Connection ' + this.connectionId + ' closed (status: ' + status + ')');
       this.#closed = true;
-      // Unregister from session
+      // Unregister from session — always clean connectionToSession even if session is gone
       if (this.sessionId) {
+        connectionToSession.delete(this.connectionId);
         const session = sessions.get(this.sessionId);
         if (session) {
           session.connections.delete(this.connectionId);
-          connectionToSession.delete(this.connectionId);
           log('Connection ' + this.connectionId + ' removed from session ' + this.sessionId +
             ' (' + session.connections.size + ' remaining)');
           // Start grace timer if no connections left
@@ -255,6 +281,9 @@
           }
         }
       }
+      // Help GC by clearing references
+      this.currentAgentTab = null;
+      this.#frameBuffer = new Uint8Array(0);
     }
 
     onDataAvailable(request, stream, offset, count) {
@@ -283,6 +312,12 @@
 
     #handleHandshake(data) {
       this.#handshakeBuffer += data;
+      // Guard against unbounded buffer from clients that never complete handshake
+      if (this.#handshakeBuffer.length > 65536) {
+        log('Handshake buffer too large (' + this.#handshakeBuffer.length + ' bytes) — closing');
+        this.close();
+        return;
+      }
       const endOfHeaders = this.#handshakeBuffer.indexOf('\r\n\r\n');
       if (endOfHeaders === -1) return; // incomplete headers
 
@@ -373,6 +408,14 @@
       combined.set(this.#frameBuffer);
       combined.set(newBytes, this.#frameBuffer.length);
       this.#frameBuffer = combined;
+
+      // Guard against unbounded buffer growth (e.g., malformed frame claiming huge payload)
+      const MAX_FRAME_BUFFER = 50 * 1024 * 1024; // 50MB
+      if (this.#frameBuffer.length > MAX_FRAME_BUFFER) {
+        log('Frame buffer exceeded 50MB (' + this.#frameBuffer.length + ' bytes) — closing connection');
+        this.close();
+        return;
+      }
 
       // Parse all complete frames
       while (this.#frameBuffer.length >= 2) {
@@ -523,9 +566,14 @@
     close() {
       if (this.#closed) return;
       this.#closed = true;
+      try { this.#bos.close(); } catch (e) {}
       try { this.#inputStream.close(); } catch (e) {}
       try { this.#outputStream.close(); } catch (e) {}
       try { this.#transport.close(0); } catch (e) {}
+      // Release memory immediately
+      this.#frameBuffer = new Uint8Array(0);
+      this.#handshakeBuffer = '';
+      this.currentAgentTab = null;
     }
 
     // --- Message Handling ---
@@ -583,21 +631,33 @@
       try {
         log('Handling: ' + msg.method + ' [' + this.connectionId + ']');
         // Timeout protection — 120s to accommodate downloads and large file uploads
+        // Clear the timer when handler completes to prevent accumulation
+        let timeoutId;
         const result = await Promise.race([
-          handler(msg.params || {}, ctx),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Command timed out after 120s')), 120000)
-          )
+          handler(msg.params || {}, ctx).finally(() => clearTimeout(timeoutId)),
+          new Promise((_, reject) => {
+            timeoutId = setTimeout(() => reject(new Error('Command timed out after 120s')), 120000);
+          })
         ]);
         log('Completed: ' + msg.method);
 
         // Record action if recording is active (per-session)
         if (session.recordingActive && !RECORDING_EXCLUDE.has(msg.method)) {
+          const MAX_RECORDED_ACTIONS = 5000;
+          const params = { ...(msg.params || {}) };
+          // Strip large binary data from recording to prevent memory bloat
+          if (params.base64) params.base64 = '[base64 data omitted]';
+          if (params.expression && params.expression.length > 1000) {
+            params.expression = params.expression.substring(0, 1000) + '...[truncated]';
+          }
           session.recordedActions.push({
             method: msg.method,
-            params: msg.params || {},
+            params,
             timestamp: new Date().toISOString(),
           });
+          if (session.recordedActions.length > MAX_RECORDED_ACTIONS) {
+            session.recordedActions.shift();
+          }
         }
 
         return { id: msg.id, result };
@@ -735,9 +795,13 @@
   // TAB EVENT TRACKING
   // ============================================
 
+  // Store listeners so they can be removed in stopServer()
+  let _tabOpenListener = null;
+  let _tabCloseListener = null;
+
   function setupTabEventTracking() {
     try {
-      gBrowser.tabContainer.addEventListener('TabOpen', (event) => {
+      _tabOpenListener = (event) => {
         const tab = event.target;
         // Check if opener is an agent tab — find its session
         const openerBC = tab.linkedBrowser?.browsingContext?.opener;
@@ -771,9 +835,9 @@
         if (ownerSession) {
           ownerSession.pushTabEvent(eventData);
         }
-      });
+      };
 
-      gBrowser.tabContainer.addEventListener('TabClose', (event) => {
+      _tabCloseListener = (event) => {
         const tab = event.target;
         const sessionId = tab.getAttribute('data-agent-session-id');
         const session = sessionId ? sessions.get(sessionId) : null;
@@ -785,7 +849,10 @@
             timestamp: new Date().toISOString(),
           });
         }
-      });
+      };
+
+      gBrowser.tabContainer.addEventListener('TabOpen', _tabOpenListener);
+      gBrowser.tabContainer.addEventListener('TabClose', _tabCloseListener);
 
       log('Tab event tracking active');
     } catch (e) {
@@ -1932,6 +1999,9 @@
         return { result: formatChromeResult(result) };
       } catch (e) {
         return { error: e.message, stack: e.stack || '' };
+      } finally {
+        // Immediately destroy sandbox compartment to prevent memory accumulation
+        Cu.nukeSandbox(sandbox);
       }
     },
 
@@ -1964,6 +2034,13 @@
       if (!file_path) throw new Error('file_path is required');
       const exists = await IOUtils.exists(file_path);
       if (!exists) throw new Error('File not found: ' + file_path);
+
+      // Guard against OOM from huge files (peak memory ~3.3x file size)
+      const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+      const stat = await IOUtils.stat(file_path);
+      if (stat.size > MAX_UPLOAD_SIZE) {
+        throw new Error('File too large: ' + stat.size + ' bytes (max 50MB)');
+      }
 
       const bytes = await IOUtils.read(file_path);
       const CHUNK = 8192;
