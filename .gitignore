@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# uv
+mcp/.venv/
+bench/.venv/
+mcp/uv.lock
+bench/uv.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmark results (local)
+bench/results/benchmarks.db
+bench/results/artifacts/
+
+# Test artifacts
+*.png
+*.jpg
+*.jpeg
+!docs/**/*.png
+
+# Env
+.env
+.env.local
