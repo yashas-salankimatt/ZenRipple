@@ -51,6 +51,7 @@ ALLOWED_TOOLS = [
     "mcp__zenleap-browser__browser_scroll",
     "mcp__zenleap-browser__browser_hover",
     "mcp__zenleap-browser__browser_console_setup",
+    "mcp__zenleap-browser__browser_console_teardown",
     "mcp__zenleap-browser__browser_console_logs",
     "mcp__zenleap-browser__browser_console_errors",
     "mcp__zenleap-browser__browser_console_eval",

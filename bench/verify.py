@@ -103,13 +103,13 @@ class BrowserVerifier:
         except Exception:
             return
         for tab in tabs:
-            if tab.get("url") != "about:blank":
-                try:
-                    await self._send_command(
-                        "close_tab", {"tab_id": tab["tab_id"]}
-                    )
-                except Exception:
-                    pass
+            tab_id = tab.get("tab_id")
+            if not tab_id:
+                continue
+            try:
+                await self._send_command("close_tab", {"tab_id": tab_id})
+            except Exception:
+                pass
 
     async def close(self):
         """Close the WebSocket connection."""

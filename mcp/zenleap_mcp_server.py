@@ -29,6 +29,7 @@ mcp = FastMCP(
 
 _ws_connection = None
 _ws_lock = asyncio.Lock()
+_ws_command_lock = asyncio.Lock()
 _session_id: str | None = None  # Populated from X-ZenLeap-Session after connect
 
 
@@ -48,7 +49,12 @@ async def get_ws():
                 await _ws_connection.ping()
                 return _ws_connection
             except Exception:
+                old_ws = _ws_connection
                 _ws_connection = None
+                try:
+                    await old_ws.close()
+                except Exception:
+                    pass
                 # Keep _session_id for reconnection — don't clear it
 
         # Route: env var > saved session from previous connection > new
@@ -99,23 +105,30 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
     Browser-level errors (e.g. "Tab not found") are never retried.
     """
     global _ws_connection
-    for attempt in range(2):
-        try:
-            ws = await get_ws()
-            msg_id = str(uuid4())
-            msg = {"id": msg_id, "method": method, "params": params or {}}
-            await ws.send(json.dumps(msg))
-            raw = await asyncio.wait_for(ws.recv(), timeout=120)
-        except Exception:
-            # Connection-level error (send/recv failed, timeout, etc.)
-            if attempt == 0:
-                _ws_connection = None
-                continue  # retry with reconnection
-            raise
-        resp = json.loads(raw)
-        if "error" in resp:
-            raise Exception(resp["error"].get("message", "Unknown browser error"))
-        return resp.get("result", {})
+    async with _ws_command_lock:
+        for attempt in range(2):
+            try:
+                ws = await get_ws()
+                msg_id = str(uuid4())
+                msg = {"id": msg_id, "method": method, "params": params or {}}
+                await ws.send(json.dumps(msg))
+                raw = await asyncio.wait_for(ws.recv(), timeout=120)
+            except Exception:
+                # Connection-level error (send/recv failed, timeout, etc.)
+                if attempt == 0:
+                    old_ws = _ws_connection
+                    _ws_connection = None
+                    if old_ws is not None:
+                        try:
+                            await old_ws.close()
+                        except Exception:
+                            pass
+                    continue  # retry with reconnection
+                raise
+            resp = json.loads(raw)
+            if "error" in resp:
+                raise Exception(resp["error"].get("message", "Unknown browser error"))
+            return resp.get("result", {})
     raise RuntimeError("browser_command: unreachable")
 
 
@@ -541,6 +554,15 @@ async def browser_console_setup(tab_id: str = "", frame_id: int = 0) -> str:
     if frame_id:
         params["frame_id"] = frame_id
     return text_result(await browser_command("console_setup", params))
+
+
+@mcp.tool()
+async def browser_console_teardown(tab_id: str = "", frame_id: int = 0) -> str:
+    """Stop console capture and remove installed listeners/wrappers for a tab/frame."""
+    params = {"tab_id": tab_id or None}
+    if frame_id:
+        params["frame_id"] = frame_id
+    return text_result(await browser_command("console_teardown", params))
 
 
 @mcp.tool()

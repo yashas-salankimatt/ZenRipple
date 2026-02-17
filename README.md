@@ -56,6 +56,46 @@ Then add to your Claude Code project's `.mcp.json`:
 
 Restart Zen Browser and start a new Claude Code session.
 
+## MCPorter CLI Usage
+
+Use [MCPorter](https://github.com/steipete/mcporter) as a CLI layer on top of the MCP server:
+
+```bash
+# List tools exposed by this MCP server
+npx -y mcporter list --stdio "uv run --project ./mcp python ./mcp/zenleap_mcp_server.py"
+
+# Call a tool from CLI
+npx -y mcporter call --stdio "uv run --project ./mcp python ./mcp/zenleap_mcp_server.py" \
+  "browser_create_tab(url='https://example.com')"
+```
+
+### Parallel Agent Isolation (Important)
+
+MCPorter itself does not assign ZenLeap sessions for you. To keep each top-level agent isolated, give each agent process its own `ZENLEAP_SESSION_ID`.
+
+```bash
+# In each top-level Claude/Codex terminal, once per agent run:
+export ZENLEAP_SESSION_ID="$(uv run --project ./mcp python ./mcp/zenleap_session.py new)"
+```
+
+Then use normal MCPorter commands. Every call from that process (and its child sub-agents) will be scoped to the same ZenLeap session:
+
+```bash
+npx -y mcporter call zenleap.browser_create_tab url=https://www.wikipedia.org --output json
+npx -y mcporter call zenleap.browser_list_tabs --output json
+```
+
+Notes:
+- Different top-level agent instances should use different `ZENLEAP_SESSION_ID` values.
+- Parent + sub-agents should share the same `ZENLEAP_SESSION_ID` to collaborate in one tab/session scope.
+- `browser_session_close` destroys that session; after closing, mint a new ID before more calls.
+
+Optional helper test for isolation:
+
+```bash
+./scripts/test_mcporter_parallel_sessions.sh
+```
+
 ## Install Script Options
 
 ```bash

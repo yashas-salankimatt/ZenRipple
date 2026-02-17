@@ -34,7 +34,11 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
   #consoleLogs = [];
   #consoleErrors = [];
   #captureSetup = false;
+  #consoleOriginals = null;
+  #consoleErrorListener = null;
+  #consoleRejectionListener = null;
   #cursorOverlay = null;
+  #cursorTimeoutId = null;
   #tip = null; // nsITextInputProcessor instance (cached)
 
   receiveMessage(message) {
@@ -66,6 +70,8 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         return this.#clickCoordinates(data.x, data.y);
       case 'ZenLeapAgent:SetupConsoleCapture':
         return this.#setupConsoleCapture();
+      case 'ZenLeapAgent:TeardownConsoleCapture':
+        return this.#teardownConsoleCapture();
       case 'ZenLeapAgent:GetConsoleLogs':
         return { logs: [...this.#consoleLogs] };
       case 'ZenLeapAgent:GetConsoleErrors':
@@ -95,6 +101,18 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
       default:
         return { error: 'Unknown message: ' + message.name };
     }
+  }
+
+  didDestroy() {
+    try { this.#teardownConsoleCapture(); } catch (e) {}
+    try { this.#removeCursor(); } catch (e) {}
+    if (this.#tip) {
+      try { this.#tip.endInputTransaction(); } catch (e) {}
+      this.#tip = null;
+    }
+    this.#elementMap.clear();
+    this.#elementMeta.clear();
+    this.#previousDOM = null;
   }
 
   // --- DOM Extraction ---
@@ -903,10 +921,18 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     // Xray wrappers prevent chrome-scope assignments from being visible to content
     // code, so we must use wrappedJSObject + Cu.exportFunction.
     const unwrapped = win.console.wrappedJSObject;
-    const origLog = unwrapped.log.bind(unwrapped);
-    const origWarn = unwrapped.warn.bind(unwrapped);
-    const origError = unwrapped.error.bind(unwrapped);
-    const origInfo = unwrapped.info.bind(unwrapped);
+    const origLog = unwrapped.log;
+    const origWarn = unwrapped.warn;
+    const origError = unwrapped.error;
+    const origInfo = unwrapped.info;
+    this.#consoleOriginals = {
+      win,
+      unwrapped,
+      log: origLog,
+      warn: origWarn,
+      error: origError,
+      info: origInfo,
+    };
 
     const makeWrapper = (level, origFn, isError) => {
       return Cu.exportFunction(function(...args) {
@@ -917,7 +943,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
           self.#consoleErrors.push({ type: 'console.error', message, timestamp: new Date().toISOString() });
           if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
         }
-        origFn(...args);
+        origFn.apply(unwrapped, args);
       }, win);
     };
 
@@ -927,7 +953,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     unwrapped.info = makeWrapper('info', origInfo, false);
 
     // Capture uncaught errors
-    win.addEventListener('error', (event) => {
+    this.#consoleErrorListener = (event) => {
       self.#consoleErrors.push({
         type: 'uncaught_error',
         message: event.message || '',
@@ -938,10 +964,11 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         timestamp: new Date().toISOString(),
       });
       if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
-    });
+    };
+    win.addEventListener('error', this.#consoleErrorListener);
 
     // Capture unhandled promise rejections
-    win.addEventListener('unhandledrejection', (event) => {
+    this.#consoleRejectionListener = (event) => {
       const reason = event.reason;
       self.#consoleErrors.push({
         type: 'unhandled_rejection',
@@ -950,9 +977,35 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
         timestamp: new Date().toISOString(),
       });
       if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
-    });
+    };
+    win.addEventListener('unhandledrejection', this.#consoleRejectionListener);
 
     this.#captureSetup = true;
+    return { success: true };
+  }
+
+  #teardownConsoleCapture() {
+    if (!this.#captureSetup) return { success: true, note: 'not setup' };
+    const originals = this.#consoleOriginals;
+    const win = this.contentWindow || originals?.win;
+    if (originals?.unwrapped) {
+      try { originals.unwrapped.log = originals.log; } catch (e) {}
+      try { originals.unwrapped.warn = originals.warn; } catch (e) {}
+      try { originals.unwrapped.error = originals.error; } catch (e) {}
+      try { originals.unwrapped.info = originals.info; } catch (e) {}
+    }
+    if (win) {
+      if (this.#consoleErrorListener) {
+        try { win.removeEventListener('error', this.#consoleErrorListener); } catch (e) {}
+      }
+      if (this.#consoleRejectionListener) {
+        try { win.removeEventListener('unhandledrejection', this.#consoleRejectionListener); } catch (e) {}
+      }
+    }
+    this.#consoleErrorListener = null;
+    this.#consoleRejectionListener = null;
+    this.#consoleOriginals = null;
+    this.#captureSetup = false;
     return { success: true };
   }
 
@@ -992,10 +1045,25 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     doc.documentElement.appendChild(cursor);
     this.#cursorOverlay = cursor;
     // Auto-remove after 60 seconds (or when cursor moves)
-    this.contentWindow.setTimeout(() => this.#removeCursor(), 60000);
+    const win = this.contentWindow;
+    if (win && this.#cursorTimeoutId) {
+      try { win.clearTimeout(this.#cursorTimeoutId); } catch (e) {}
+      this.#cursorTimeoutId = null;
+    }
+    if (win) {
+      this.#cursorTimeoutId = win.setTimeout(() => {
+        this.#cursorTimeoutId = null;
+        this.#removeCursor();
+      }, 60000);
+    }
   }
 
   #removeCursor() {
+    const win = this.contentWindow;
+    if (win && this.#cursorTimeoutId) {
+      try { win.clearTimeout(this.#cursorTimeoutId); } catch (e) {}
+      this.#cursorTimeoutId = null;
+    }
     if (this.#cursorOverlay && this.#cursorOverlay.parentNode) {
       this.#cursorOverlay.parentNode.removeChild(this.#cursorOverlay);
     }

@@ -16,6 +16,11 @@
 
   const logBuffer = [];
   const MAX_LOG_LINES = 200;
+  const MAX_SESSION_TABS = 40;
+  const MAX_INTERCEPT_RULES = 100;
+  const MAX_CLIENT_FRAME_BUFFER = 20 * 1024 * 1024; // Incoming command payloads from MCP client
+  const MAX_UPLOAD_SIZE = 8 * 1024 * 1024; // 8MB file input cap
+  const MAX_UPLOAD_BASE64_LENGTH = 12 * 1024 * 1024; // ~1.5x file size with headroom
 
   function log(msg) {
     const line = new Date().toISOString() + ' ' + msg;
@@ -216,6 +221,7 @@
     }
     // Clear global state that outlives sessions
     interceptRules.length = 0;
+    interceptNextId = 1;
     networkLog.length = 0;
     networkMonitorActive = false;
     pendingDialogs.length = 0;
@@ -297,8 +303,8 @@
         log('onDataAvailable: ' + byteArray.length + ' bytes');
 
         if (!this.#handshakeComplete) {
-          // Handshake is ASCII, safe to convert to string
-          const data = String.fromCharCode.apply(null, byteArray);
+          // Handshake is ASCII/UTF-8; decode without Function.apply stack pressure.
+          const data = new TextDecoder().decode(new Uint8Array(byteArray));
           this.#handleHandshake(data);
         } else {
           this.#handleWebSocketData(new Uint8Array(byteArray));
@@ -410,9 +416,8 @@
       this.#frameBuffer = combined;
 
       // Guard against unbounded buffer growth (e.g., malformed frame claiming huge payload)
-      const MAX_FRAME_BUFFER = 50 * 1024 * 1024; // 50MB
-      if (this.#frameBuffer.length > MAX_FRAME_BUFFER) {
-        log('Frame buffer exceeded 50MB (' + this.#frameBuffer.length + ' bytes) — closing connection');
+      if (this.#frameBuffer.length > MAX_CLIENT_FRAME_BUFFER) {
+        log('Frame buffer exceeded limit (' + this.#frameBuffer.length + ' bytes) — closing connection');
         this.close();
         return;
       }
@@ -759,6 +764,21 @@
     );
   }
 
+  function getSessionTabCount(sessionId) {
+    return getSessionTabs(sessionId).length;
+  }
+
+  function ensureSessionCanOpenTabs(session, requested = 1) {
+    const current = getSessionTabCount(session.id);
+    const extra = Math.max(0, requested | 0);
+    if (current + extra > MAX_SESSION_TABS) {
+      throw new Error(
+        'Session tab limit exceeded: ' + current + '/' + MAX_SESSION_TABS +
+        ' open, requested ' + extra + ' more'
+      );
+    }
+  }
+
   function resolveTabScoped(tabId, session, conn) {
     if (!tabId) {
       // Prefer connection's tracked current tab
@@ -810,6 +830,23 @@
         const ownerSession = openerSessionId ? sessions.get(openerSessionId) : null;
 
         if (ownerSession) {
+          if (getSessionTabCount(ownerSession.id) >= MAX_SESSION_TABS) {
+            ownerSession.pushTabEvent({
+              type: 'tab_open_blocked',
+              reason: 'session_tab_limit',
+              limit: MAX_SESSION_TABS,
+              timestamp: new Date().toISOString(),
+            });
+            log('Session ' + ownerSession.id + ' reached tab limit (' + MAX_SESSION_TABS + ') — closing popup');
+            setTimeout(() => {
+              try {
+                if (tab.parentNode) gBrowser.removeTab(tab);
+              } catch (e) {
+                log('Failed to close over-limit popup tab: ' + e);
+              }
+            }, 0);
+            return;
+          }
           // Child tab inherits parent's session
           const popupId = tab.linkedPanel || ('agent-tab-' + Date.now());
           tab.setAttribute('data-agent-tab-id', popupId);
@@ -1232,6 +1269,7 @@
 
     // --- Tab Management ---
     create_tab: async ({ url }, ctx) => {
+      ensureSessionCanOpenTabs(ctx.session, 1);
       const wsId = await ensureAgentWorkspace();
       const tab = gBrowser.addTab(url || 'about:blank', {
         triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
@@ -1505,6 +1543,11 @@
       return await actorInteraction(tab, 'ZenLeapAgent:SetupConsoleCapture', {}, null, frame_id);
     },
 
+    console_teardown: async ({ tab_id, frame_id }, ctx) => {
+      const tab = ctx.resolveTab(tab_id);
+      return await actorInteraction(tab, 'ZenLeapAgent:TeardownConsoleCapture', {}, null, frame_id);
+    },
+
     console_get_logs: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
@@ -1763,12 +1806,25 @@
         throw new Error('action must be "block" or "modify_headers"');
       }
       ensureNetworkObserver();
+      const compiled = new RegExp(pattern, 'i');
+      const normalizedHeaders = headers || {};
+      const existing = interceptRules.find(r =>
+        r.pattern.source === compiled.source &&
+        r.action === action &&
+        JSON.stringify(r.headers || {}) === JSON.stringify(normalizedHeaders)
+      );
+      if (existing) {
+        return { success: true, rule_id: existing.id, duplicate: true };
+      }
+      if (interceptRules.length >= MAX_INTERCEPT_RULES) {
+        throw new Error('Too many interception rules: max ' + MAX_INTERCEPT_RULES);
+      }
       const id = interceptNextId++;
       interceptRules.push({
         id,
-        pattern: new RegExp(pattern, 'i'),
+        pattern: compiled,
         action,
-        headers: headers || {},
+        headers: normalizedHeaders,
       });
       return { success: true, rule_id: id };
     },
@@ -1860,9 +1916,16 @@
       // Restore tabs into current session
       const wsId = await ensureAgentWorkspace();
       let tabsRestored = 0;
+      let tabsSkipped = 0;
+      const existingTabs = getSessionTabCount(ctx.session.id);
+      const remainingCapacity = Math.max(0, MAX_SESSION_TABS - existingTabs);
       if (sessionData.tabs) {
         for (const td of sessionData.tabs) {
           if (!td.url || td.url === 'about:blank') continue;
+          if (tabsRestored >= remainingCapacity) {
+            tabsSkipped++;
+            continue;
+          }
           const tab = gBrowser.addTab(td.url, {
             triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal()
           });
@@ -1876,7 +1939,13 @@
           tabsRestored++;
         }
       }
-      return { success: true, tabs_restored: tabsRestored, cookies_restored: cookiesRestored };
+      return {
+        success: true,
+        tabs_restored: tabsRestored,
+        tabs_skipped: tabsSkipped,
+        tab_limit: MAX_SESSION_TABS,
+        cookies_restored: cookiesRestored
+      };
     },
 
     // --- Multi-Tab Coordination (Phase 9) ---
@@ -1910,6 +1979,7 @@
       if (!urls || !Array.isArray(urls) || urls.length === 0) {
         throw new Error('urls must be a non-empty array');
       }
+      ensureSessionCanOpenTabs(ctx.session, urls.length);
       const wsId = await ensureAgentWorkspace();
       const opened = [];
       for (const url of urls) {
@@ -2035,20 +2105,25 @@
       const exists = await IOUtils.exists(file_path);
       if (!exists) throw new Error('File not found: ' + file_path);
 
-      // Guard against OOM from huge files (peak memory ~3.3x file size)
-      const MAX_UPLOAD_SIZE = 50 * 1024 * 1024; // 50MB
+      // Guard against OOM from huge files (base64 + JSON transport overhead is substantial)
       const stat = await IOUtils.stat(file_path);
       if (stat.size > MAX_UPLOAD_SIZE) {
-        throw new Error('File too large: ' + stat.size + ' bytes (max 50MB)');
+        throw new Error('File too large: ' + stat.size + ' bytes (max ' + MAX_UPLOAD_SIZE + ')');
       }
 
-      const bytes = await IOUtils.read(file_path);
+      let bytes = await IOUtils.read(file_path);
       const CHUNK = 8192;
-      let binaryStr = '';
+      const chunks = [];
       for (let i = 0; i < bytes.length; i += CHUNK) {
-        binaryStr += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+        chunks.push(String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK)));
       }
-      const base64 = btoa(binaryStr);
+      let binaryStr = chunks.join('');
+      chunks.length = 0;
+      let base64 = btoa(binaryStr);
+      binaryStr = '';
+      if (base64.length > MAX_UPLOAD_BASE64_LENGTH) {
+        throw new Error('Encoded file payload too large: ' + base64.length + ' bytes');
+      }
 
       const filename = PathUtils.filename(file_path);
       const ext = filename.split('.').pop().toLowerCase();
@@ -2064,10 +2139,16 @@
       const mimeType = mimeMap[ext] || 'application/octet-stream';
 
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(
-        tab, 'ZenLeapAgent:FileUpload',
-        { index, base64, filename, mimeType }, null, frame_id
-      );
+      try {
+        return await actorInteraction(
+          tab, 'ZenLeapAgent:FileUpload',
+          { index, base64, filename, mimeType }, null, frame_id
+        );
+      } finally {
+        // Drop large temporary allocations as soon as possible.
+        base64 = '';
+        bytes = null;
+      }
     },
 
     // --- Wait for Download (Phase 11, global) ---
