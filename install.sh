@@ -141,9 +141,15 @@ select_profiles() {
                 local pname
                 pname=$(basename "$p")
                 local status=""
-                if [ -f "$p/chrome/JS/zenleap_agent.uc.js" ]; then
+                local af=""
+                if [ -f "$p/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js" ]; then
+                    af="$p/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js"
+                elif [ -f "$p/chrome/JS/zenleap_agent.uc.js" ]; then
+                    af="$p/chrome/JS/zenleap_agent.uc.js"
+                fi
+                if [ -n "$af" ]; then
                     local v
-                    v=$(get_version "$p/chrome/JS/zenleap_agent.uc.js")
+                    v=$(get_version "$af")
                     status=" ${GREEN}(agent v$v installed)${NC}"
                 fi
                 echo -e "    - $pname$status"
@@ -158,13 +164,21 @@ select_profiles() {
             local pname
             pname=$(basename "${PROFILES[$i]}")
             local status=""
-            if [ -f "${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js" ]; then
+            local af=""
+            if [ -f "${PROFILES[$i]}/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js" ]; then
+                af="${PROFILES[$i]}/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js"
+            elif [ -f "${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js" ]; then
+                af="${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js"
+            fi
+            if [ -n "$af" ]; then
                 local v
-                v=$(get_version "${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js")
+                v=$(get_version "$af")
                 status=" ${GREEN}(agent v$v installed)${NC}"
             fi
-            # Check if fx-autoconfig is present
-            if [ -f "${PROFILES[$i]}/chrome/utils/boot.sys.mjs" ]; then
+            # Check which loader is present
+            if [ -f "${PROFILES[$i]}/chrome/sine-mods/mods.json" ]; then
+                status="$status ${DIM}[Sine]${NC}"
+            elif [ -f "${PROFILES[$i]}/chrome/utils/boot.sys.mjs" ]; then
                 status="$status ${DIM}[fx-autoconfig]${NC}"
             fi
             echo -e "  $((i+1)). $pname$status"
@@ -237,21 +251,83 @@ clear_cache() {
     fi
 }
 
-install_to_profile() {
-    # Install agent files to a single profile (PROFILE_DIR must be set)
-    set_profile_paths "$1"
-    local pname
-    pname=$(basename "$1")
+has_sine() {
+    # Check if Sine mod loader is present in the profile
+    [ -f "$CHROME_DIR/sine-mods/mods.json" ]
+}
 
-    echo ""
-    echo -e "${BLUE}--- $pname ---${NC}"
+install_sine_mod() {
+    # Install zen-ai-agent as a Sine mod
+    local mod_dir="$CHROME_DIR/sine-mods/zen-ai-agent"
+    local mod_js_dir="$mod_dir/JS"
+    local mods_json="$CHROME_DIR/sine-mods/mods.json"
+    local new_v
+    new_v=$(get_version "$SCRIPT_DIR/browser/zenleap_agent.uc.js")
 
-    if ! check_fxautoconfig; then
-        echo -e "  ${YELLOW}!${NC} Skipping this profile (fx-autoconfig required)"
+    mkdir -p "$mod_js_dir"
+
+    # Copy main script into the Sine mod directory
+    cp "$SCRIPT_DIR/browser/zenleap_agent.uc.js" "$mod_js_dir/zenleap_agent.uc.js"
+    echo -e "  ${GREEN}+${NC} Installed zenleap_agent.uc.js (Sine mod)"
+
+    # Actor files must stay in chrome/JS/actors/ (loaded via resource:// URI from UChrm)
+    mkdir -p "$ACTORS_DIR"
+    cp "$SCRIPT_DIR/browser/actors/ZenLeapAgentChild.sys.mjs" "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
+    cp "$SCRIPT_DIR/browser/actors/ZenLeapAgentParent.sys.mjs" "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
+    echo -e "  ${GREEN}+${NC} Installed JSWindowActor modules"
+
+    # Register/update the mod entry in mods.json
+    python3 -c "
+import json, sys
+
+mods_path = sys.argv[1]
+version = sys.argv[2]
+
+with open(mods_path, 'r') as f:
+    mods = json.load(f)
+
+mods['zen-ai-agent'] = {
+    'id': 'zen-ai-agent',
+    'name': 'Zen AI Agent',
+    'description': 'Browser automation server for Claude Code and AI agents',
+    'homepage': 'https://github.com/yashas-salankimatt/zen-ai-agent',
+    'author': 'Zen AI Agent',
+    'version': version or '3.0.0',
+    'tags': ['ai', 'agent', 'automation'],
+    'fork': ['zen'],
+    'scripts': {
+        'JS/zenleap_agent.uc.js': {
+            'include': ['chrome://browser/content/browser.xhtml'],
+            'exclude': [],
+            'loadOrder': 10,
+        }
+    },
+    'style': {'chrome': '', 'content': ''},
+    'preferences': '',
+    'no-updates': True,
+    'enabled': True,
+}
+
+with open(mods_path, 'w') as f:
+    json.dump(mods, f, indent=4)
+" "$mods_json" "$new_v"
+    echo -e "  ${GREEN}+${NC} Registered in Sine mods.json"
+
+    # Verify copies
+    local ok=true
+    diff -q "$SCRIPT_DIR/browser/zenleap_agent.uc.js" "$mod_js_dir/zenleap_agent.uc.js" > /dev/null 2>&1 || ok=false
+    diff -q "$SCRIPT_DIR/browser/actors/ZenLeapAgentChild.sys.mjs" "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" > /dev/null 2>&1 || ok=false
+    diff -q "$SCRIPT_DIR/browser/actors/ZenLeapAgentParent.sys.mjs" "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs" > /dev/null 2>&1 || ok=false
+
+    if [ "$ok" = false ]; then
+        echo -e "  ${RED}Error: File verification failed! Copies may be corrupted.${NC}"
         return 1
     fi
+    echo -e "  ${GREEN}+${NC} File integrity verified"
+}
 
-    # Create directories
+install_fxautoconfig() {
+    # Install via fx-autoconfig (legacy path: chrome/JS/)
     mkdir -p "$JS_DIR"
     mkdir -p "$ACTORS_DIR"
 
@@ -260,30 +336,9 @@ install_to_profile() {
         echo -e "  ${DIM}config.mjs detected (Sine or custom loader) — preserving${NC}"
     fi
 
-    # Check for existing installation
-    if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
-        local existing_v
-        existing_v=$(get_version "$JS_DIR/zenleap_agent.uc.js")
-        local new_v
-        new_v=$(get_version "$SCRIPT_DIR/browser/zenleap_agent.uc.js")
-        echo -e "  ${YELLOW}!${NC} Existing installation found (v$existing_v)"
-        if [ "$AUTO_YES" != true ]; then
-            echo -n "  Overwrite with v$new_v? (y/n): "
-            read -r response <&3
-            if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
-                echo "  Skipped."
-                return 0
-            fi
-        else
-            echo "  Overwriting with v$new_v"
-        fi
-    fi
-
-    # Copy agent script
     cp "$SCRIPT_DIR/browser/zenleap_agent.uc.js" "$JS_DIR/zenleap_agent.uc.js"
-    echo -e "  ${GREEN}+${NC} Installed zenleap_agent.uc.js"
+    echo -e "  ${GREEN}+${NC} Installed zenleap_agent.uc.js (fx-autoconfig)"
 
-    # Copy actor files
     cp "$SCRIPT_DIR/browser/actors/ZenLeapAgentChild.sys.mjs" "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
     cp "$SCRIPT_DIR/browser/actors/ZenLeapAgentParent.sys.mjs" "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
     echo -e "  ${GREEN}+${NC} Installed JSWindowActor modules"
@@ -299,6 +354,64 @@ install_to_profile() {
         return 1
     fi
     echo -e "  ${GREEN}+${NC} File integrity verified"
+}
+
+install_to_profile() {
+    # Install agent files to a single profile
+    set_profile_paths "$1"
+    local pname
+    pname=$(basename "$1")
+
+    echo ""
+    echo -e "${BLUE}--- $pname ---${NC}"
+
+    # Determine install method
+    local use_sine=false
+    if has_sine; then
+        use_sine=true
+        echo -e "  ${GREEN}+${NC} Sine mod loader detected"
+    elif ! check_fxautoconfig; then
+        echo -e "  ${YELLOW}!${NC} Skipping this profile (no Sine or fx-autoconfig found)"
+        return 1
+    fi
+
+    # Check for existing installation (both locations)
+    local existing_file=""
+    if [ -f "$CHROME_DIR/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js" ]; then
+        existing_file="$CHROME_DIR/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js"
+    elif [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
+        existing_file="$JS_DIR/zenleap_agent.uc.js"
+    fi
+
+    if [ -n "$existing_file" ]; then
+        local existing_v
+        existing_v=$(get_version "$existing_file")
+        local new_v
+        new_v=$(get_version "$SCRIPT_DIR/browser/zenleap_agent.uc.js")
+        echo -e "  ${YELLOW}!${NC} Existing installation found (v$existing_v)"
+        if [ "$AUTO_YES" != true ]; then
+            echo -n "  Overwrite with v$new_v? (y/n): "
+            read -r response <&3
+            if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
+                echo "  Skipped."
+                return 0
+            fi
+        else
+            echo "  Overwriting with v$new_v"
+        fi
+    fi
+
+    # If switching to Sine, remove old fx-autoconfig copy to avoid double-loading
+    if [ "$use_sine" = true ] && [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
+        rm -f "$JS_DIR/zenleap_agent.uc.js"
+        echo -e "  ${DIM}Removed old fx-autoconfig copy (migrating to Sine)${NC}"
+    fi
+
+    if [ "$use_sine" = true ]; then
+        install_sine_mod
+    else
+        install_fxautoconfig
+    fi
 }
 
 do_install() {
@@ -390,12 +503,37 @@ do_uninstall() {
 
         local found=false
 
+        # Remove Sine mod if present
+        local sine_mod_dir="$CHROME_DIR/sine-mods/zen-ai-agent"
+        local mods_json="$CHROME_DIR/sine-mods/mods.json"
+        if [ -d "$sine_mod_dir" ]; then
+            rm -rf "$sine_mod_dir"
+            echo -e "  ${GREEN}+${NC} Removed Sine mod directory"
+            found=true
+        fi
+        if [ -f "$mods_json" ]; then
+            # Remove the zen-ai-agent entry from mods.json
+            python3 -c "
+import json, sys
+mods_path = sys.argv[1]
+with open(mods_path, 'r') as f:
+    mods = json.load(f)
+if 'zen-ai-agent' in mods:
+    del mods['zen-ai-agent']
+    with open(mods_path, 'w') as f:
+        json.dump(mods, f, indent=4)
+    print('  removed from mods.json')
+" "$mods_json" 2>/dev/null && found=true
+        fi
+
+        # Remove fx-autoconfig copy if present
         if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
             rm -f "$JS_DIR/zenleap_agent.uc.js"
             echo -e "  ${GREEN}+${NC} Removed zenleap_agent.uc.js"
             found=true
         fi
 
+        # Remove actor files
         if [ -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" ]; then
             rm -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
             echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentChild.sys.mjs"
@@ -435,11 +573,20 @@ do_list() {
     for i in "${!PROFILES[@]}"; do
         local pname
         pname=$(basename "${PROFILES[$i]}")
-        local agent_file="${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js"
-        if [ -f "$agent_file" ]; then
+        local agent_file=""
+        local method=""
+        # Check Sine mod location first, then fx-autoconfig
+        if [ -f "${PROFILES[$i]}/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js" ]; then
+            agent_file="${PROFILES[$i]}/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js"
+            method="Sine"
+        elif [ -f "${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js" ]; then
+            agent_file="${PROFILES[$i]}/chrome/JS/zenleap_agent.uc.js"
+            method="fx-autoconfig"
+        fi
+        if [ -n "$agent_file" ]; then
             local v
             v=$(get_version "$agent_file")
-            echo -e "  ${GREEN}+${NC} $pname — ${CYAN}v$v${NC} installed"
+            echo -e "  ${GREEN}+${NC} $pname — ${CYAN}v$v${NC} installed ${DIM}[$method]${NC}"
         else
             echo -e "  ${DIM}-${NC} $pname — not installed"
         fi
