@@ -485,83 +485,150 @@ do_install() {
     fi
 }
 
+uninstall_from_profile() {
+    # Uninstall agent files from a single profile.
+    # SAFETY: This function ONLY removes files we installed:
+    #   - sine-mods/zen-ai-agent/          (our Sine mod directory)
+    #   - 'zen-ai-agent' key in mods.json  (our registry entry)
+    #   - JS/zenleap_agent.uc.js           (our fx-autoconfig script)
+    #   - JS/actors/ZenLeapAgent*.sys.mjs  (our actor modules)
+    # It NEVER touches:
+    #   - config.mjs, config.js            (Sine / fx-autoconfig loaders)
+    #   - sine-mods/mods.json              (only edits our entry, backs up first)
+    #   - sine-mods/chrome.css, content.css (Sine aggregated styles)
+    #   - chrome/utils/                    (fx-autoconfig core)
+    #   - chrome/JS/engine/                (Sine engine)
+    #   - Any other mod's directory under sine-mods/
+    set_profile_paths "$1"
+    local pname
+    pname=$(basename "$1")
+    echo ""
+    echo -e "${BLUE}--- $pname ---${NC}"
+
+    local found=false
+
+    # ── Sine mod removal ────────────────────────────────────────
+    local sine_mod_dir="$CHROME_DIR/sine-mods/zen-ai-agent"
+    local mods_json="$CHROME_DIR/sine-mods/mods.json"
+
+    if [ -d "$sine_mod_dir" ]; then
+        # Only remove our mod directory — never the sine-mods root
+        rm -rf "$sine_mod_dir"
+        echo -e "  ${GREEN}+${NC} Removed sine-mods/zen-ai-agent/"
+        found=true
+    fi
+
+    if [ -f "$mods_json" ]; then
+        # Check if our entry exists before touching the file
+        if python3 -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    mods = json.load(f)
+sys.exit(0 if 'zen-ai-agent' in mods else 1)
+" "$mods_json" 2>/dev/null; then
+            # Back up mods.json before editing
+            cp "$mods_json" "${mods_json}.bak"
+
+            # Remove our entry, validate result
+            if python3 -c "
+import json, sys
+
+mods_path = sys.argv[1]
+with open(mods_path, 'r') as f:
+    mods = json.load(f)
+
+del mods['zen-ai-agent']
+
+# Write to temp file first, then rename (atomic-ish)
+tmp_path = mods_path + '.tmp'
+with open(tmp_path, 'w') as f:
+    json.dump(mods, f, indent=4)
+
+# Validate the new file is valid JSON
+with open(tmp_path, 'r') as f:
+    json.load(f)
+
+import os
+os.replace(tmp_path, mods_path)
+" "$mods_json" 2>/dev/null; then
+                echo -e "  ${GREEN}+${NC} Removed zen-ai-agent from mods.json"
+                rm -f "${mods_json}.bak"
+                found=true
+            else
+                # Edit failed — restore backup
+                echo -e "  ${RED}!${NC} Failed to edit mods.json — restoring backup"
+                mv "${mods_json}.bak" "$mods_json"
+            fi
+        fi
+    fi
+
+    # ── fx-autoconfig removal ───────────────────────────────────
+    if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
+        rm -f "$JS_DIR/zenleap_agent.uc.js"
+        echo -e "  ${GREEN}+${NC} Removed JS/zenleap_agent.uc.js"
+        found=true
+    fi
+
+    # ── Actor modules ───────────────────────────────────────────
+    if [ -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" ]; then
+        rm -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
+        echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentChild.sys.mjs"
+        found=true
+    fi
+    if [ -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs" ]; then
+        rm -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
+        echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentParent.sys.mjs"
+        found=true
+    fi
+
+    # Clean up actors directory only if empty (other mods may use it)
+    if [ -d "$ACTORS_DIR" ] && [ -z "$(ls -A "$ACTORS_DIR" 2>/dev/null)" ]; then
+        rmdir "$ACTORS_DIR" 2>/dev/null || true
+    fi
+
+    # ── Per-profile startup cache ───────────────────────────────
+    if [ -d "$PROFILE_DIR/startupCache" ]; then
+        rm -rf "$PROFILE_DIR/startupCache" 2>/dev/null || true
+        echo -e "  ${GREEN}+${NC} Cleared profile startup cache"
+    fi
+
+    if [ "$found" = true ]; then
+        echo -e "  ${GREEN}+${NC} Agent removed from this profile"
+    else
+        echo -e "  ${DIM}Zen AI Agent was not installed in this profile.${NC}"
+    fi
+}
+
 do_uninstall() {
     detect_os
     find_profiles
     select_profiles
+
+    # Track if Zen was running before we close it
+    ZEN_WAS_RUNNING=false
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1 || pgrep -x "Twilight" > /dev/null 2>&1; then
+        ZEN_WAS_RUNNING=true
+    fi
+
     check_zen_running
 
     echo ""
     echo -e "${BLUE}Uninstalling Zen AI Agent...${NC}"
 
     for profile in "${SELECTED_PROFILES[@]}"; do
-        set_profile_paths "$profile"
-        local pname
-        pname=$(basename "$profile")
-        echo ""
-        echo -e "${BLUE}--- $pname ---${NC}"
-
-        local found=false
-
-        # Remove Sine mod if present
-        local sine_mod_dir="$CHROME_DIR/sine-mods/zen-ai-agent"
-        local mods_json="$CHROME_DIR/sine-mods/mods.json"
-        if [ -d "$sine_mod_dir" ]; then
-            rm -rf "$sine_mod_dir"
-            echo -e "  ${GREEN}+${NC} Removed Sine mod directory"
-            found=true
-        fi
-        if [ -f "$mods_json" ]; then
-            # Remove the zen-ai-agent entry from mods.json
-            python3 -c "
-import json, sys
-mods_path = sys.argv[1]
-with open(mods_path, 'r') as f:
-    mods = json.load(f)
-if 'zen-ai-agent' in mods:
-    del mods['zen-ai-agent']
-    with open(mods_path, 'w') as f:
-        json.dump(mods, f, indent=4)
-    print('  removed from mods.json')
-" "$mods_json" 2>/dev/null && found=true
-        fi
-
-        # Remove fx-autoconfig copy if present
-        if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
-            rm -f "$JS_DIR/zenleap_agent.uc.js"
-            echo -e "  ${GREEN}+${NC} Removed zenleap_agent.uc.js"
-            found=true
-        fi
-
-        # Remove actor files
-        if [ -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" ]; then
-            rm -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
-            echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentChild.sys.mjs"
-            found=true
-        fi
-
-        if [ -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs" ]; then
-            rm -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
-            echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentParent.sys.mjs"
-            found=true
-        fi
-
-        # Clean up empty actors directory
-        if [ -d "$ACTORS_DIR" ] && [ -z "$(ls -A "$ACTORS_DIR")" ]; then
-            rmdir "$ACTORS_DIR"
-        fi
-
-        if [ "$found" = true ]; then
-            echo -e "  ${GREEN}+${NC} Agent removed"
-        else
-            echo -e "  ${DIM}Zen AI Agent was not installed in this profile.${NC}"
-        fi
+        uninstall_from_profile "$profile"
     done
 
     clear_cache
+
     echo ""
     echo -e "${GREEN}Uninstallation complete.${NC}"
-    echo -e "${YELLOW}Restart Zen Browser for changes to take effect.${NC}"
+
+    if [ "$ZEN_WAS_RUNNING" = true ]; then
+        echo -e "${YELLOW}Restart Zen Browser for changes to take effect.${NC}"
+    else
+        echo -e "${YELLOW}Restart Zen Browser if it's running for changes to take effect.${NC}"
+    fi
 }
 
 do_list() {
