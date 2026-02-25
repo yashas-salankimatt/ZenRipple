@@ -2242,7 +2242,7 @@ class TestSessionManagement:
     async def test_session_info(self):
         resp = {
             "session_id": "abc-1234",
-            "workspace_name": "ZenLeap AI",
+            "workspace_name": "Zen AI Agent",
             "workspace_id": "ws-uuid",
             "connection_id": "conn-1",
             "connection_count": 2,
@@ -2254,7 +2254,7 @@ class TestSessionManagement:
             result = await server.browser_session_info()
         data = json.loads(result)
         assert data["session_id"] == "abc-1234"
-        assert data["workspace_name"] == "ZenLeap AI"
+        assert data["workspace_name"] == "Zen AI Agent"
         assert data["connection_count"] == 2
         assert data["tab_count"] == 3
         msg = json.loads(fake_ws.sent[0])
@@ -2277,14 +2277,14 @@ class TestSessionManagement:
         resp = [
             {
                 "session_id": "abc-1234",
-                "workspace_name": "ZenLeap AI",
+                "workspace_name": "Zen AI Agent",
                 "connection_count": 1,
                 "tab_count": 2,
                 "created_at": 1700000000000,
             },
             {
                 "session_id": "def-5678",
-                "workspace_name": "ZenLeap AI",
+                "workspace_name": "Zen AI Agent",
                 "connection_count": 3,
                 "tab_count": 5,
                 "created_at": 1700001000000,
@@ -2325,3 +2325,353 @@ class TestSessionManagement:
         with patch.object(server, "get_ws", return_value=fake_ws):
             with pytest.raises(Exception, match="Session not found"):
                 await server.browser_session_close()
+
+
+# ── Tab Claiming (Phase 13) ──────────────────────────────────────
+
+
+class TestListWorkspaceTabs:
+    """Tests for browser_list_workspace_tabs tool."""
+
+    @pytest.mark.asyncio
+    async def test_lists_all_workspace_tabs(self):
+        """Should return all tabs in the workspace including unclaimed ones."""
+        resp = [
+            {
+                "tab_id": "panel1",
+                "title": "Agent Tab",
+                "url": "https://agent.example.com",
+                "ownership": "owned",
+                "is_mine": True,
+            },
+            {
+                "tab_id": "panel2",
+                "title": "User Tab",
+                "url": "https://user.example.com",
+                "ownership": "unclaimed",
+                "is_mine": False,
+            },
+            {
+                "tab_id": "panel3",
+                "title": "Stale Tab",
+                "url": "https://stale.example.com",
+                "ownership": "stale",
+                "is_mine": False,
+                "owner_session_id": "old-session-id",
+            },
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        assert len(data) == 3
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "list_workspace_tabs"
+
+    @pytest.mark.asyncio
+    async def test_ownership_field_values(self):
+        """Each tab should have a valid ownership field."""
+        resp = [
+            {"tab_id": "p1", "title": "T1", "url": "u1", "ownership": "owned", "is_mine": True},
+            {"tab_id": "p2", "title": "T2", "url": "u2", "ownership": "unclaimed", "is_mine": False},
+            {"tab_id": "p3", "title": "T3", "url": "u3", "ownership": "stale", "is_mine": False,
+             "owner_session_id": "stale-sess"},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        statuses = {t["ownership"] for t in data}
+        assert statuses == {"owned", "unclaimed", "stale"}
+
+    @pytest.mark.asyncio
+    async def test_is_mine_field(self):
+        """The is_mine field should indicate ownership by calling session."""
+        resp = [
+            {"tab_id": "p1", "title": "My Tab", "url": "u1", "ownership": "owned", "is_mine": True},
+            {"tab_id": "p2", "title": "Not Mine", "url": "u2", "ownership": "owned", "is_mine": False,
+             "owner_session_id": "other-session"},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        assert data[0]["is_mine"] is True
+        assert data[1]["is_mine"] is False
+
+    @pytest.mark.asyncio
+    async def test_empty_workspace(self):
+        """Should return empty list when workspace has no tabs."""
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": []}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        assert data == []
+
+    @pytest.mark.asyncio
+    async def test_owner_session_id_only_for_foreign_tabs(self):
+        """owner_session_id should only appear for tabs NOT owned by the caller."""
+        resp = [
+            {"tab_id": "p1", "title": "Mine", "url": "u1", "ownership": "owned", "is_mine": True},
+            {"tab_id": "p2", "title": "Foreign", "url": "u2", "ownership": "stale", "is_mine": False,
+             "owner_session_id": "foreign-sess"},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        assert "owner_session_id" not in data[0]
+        assert data[1]["owner_session_id"] == "foreign-sess"
+
+    @pytest.mark.asyncio
+    async def test_error_propagation(self):
+        """Should propagate browser errors."""
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "Workspace not found"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="Workspace not found"):
+                await server.browser_list_workspace_tabs()
+
+
+class TestClaimTab:
+    """Tests for browser_claim_tab tool."""
+
+    @pytest.mark.asyncio
+    async def test_claim_unclaimed_tab(self):
+        """Should successfully claim an unclaimed (user-opened) tab."""
+        resp = {
+            "success": True,
+            "tab_id": "panel2",
+            "url": "https://user.example.com",
+            "title": "User Tab",
+            "previous_owner": None,
+            "was_stale": False,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_claim_tab("panel2")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["tab_id"] == "panel2"
+        assert data["previous_owner"] is None
+        assert data["was_stale"] is False
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "claim_tab"
+        assert msg["params"]["tab_id"] == "panel2"
+
+    @pytest.mark.asyncio
+    async def test_claim_stale_tab(self):
+        """Should successfully claim a tab from a stale session."""
+        resp = {
+            "success": True,
+            "tab_id": "panel3",
+            "url": "https://stale.example.com",
+            "title": "Stale Tab",
+            "previous_owner": "old-session-123",
+            "was_stale": True,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_claim_tab("panel3")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["was_stale"] is True
+        assert data["previous_owner"] == "old-session-123"
+
+    @pytest.mark.asyncio
+    async def test_claim_already_owned_tab(self):
+        """Claiming a tab already owned by calling session should return already_owned."""
+        resp = {
+            "success": True,
+            "tab_id": "panel1",
+            "already_owned": True,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_claim_tab("panel1")
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["already_owned"] is True
+
+    @pytest.mark.asyncio
+    async def test_claim_actively_owned_tab_fails(self):
+        """Claiming a tab actively owned by another session should fail."""
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "Tab is actively owned by session abc. Cannot claim tabs from active sessions."}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="actively owned"):
+                await server.browser_claim_tab("panel1")
+
+    @pytest.mark.asyncio
+    async def test_claim_nonexistent_tab_fails(self):
+        """Claiming a tab that doesn't exist should fail."""
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "Tab not found in workspace: bad-id"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="Tab not found"):
+                await server.browser_claim_tab("bad-id")
+
+    @pytest.mark.asyncio
+    async def test_claim_by_url(self):
+        """Should support claiming tabs by URL."""
+        resp = {
+            "success": True,
+            "tab_id": "panel-auto",
+            "url": "https://example.com/page",
+            "title": "Example",
+            "previous_owner": None,
+            "was_stale": False,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_claim_tab("https://example.com/page")
+        data = json.loads(result)
+        assert data["success"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "https://example.com/page"
+
+    @pytest.mark.asyncio
+    async def test_claim_respects_session_tab_limit(self):
+        """Should fail if session tab limit would be exceeded."""
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "Session tab limit exceeded: 40/40 open, requested 1 more"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="tab limit exceeded"):
+                await server.browser_claim_tab("panel5")
+
+    @pytest.mark.asyncio
+    async def test_claim_returns_tab_metadata(self):
+        """Claimed tab response should include url and title."""
+        resp = {
+            "success": True,
+            "tab_id": "panel-x",
+            "url": "https://docs.example.com",
+            "title": "Documentation",
+            "previous_owner": None,
+            "was_stale": False,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_claim_tab("panel-x")
+        data = json.loads(result)
+        assert data["url"] == "https://docs.example.com"
+        assert data["title"] == "Documentation"
+
+
+class TestTabClaimingWorkflow:
+    """Integration-style tests verifying the list -> claim -> use workflow."""
+
+    @pytest.mark.asyncio
+    async def test_list_then_claim_workflow(self):
+        """Simulate: list workspace tabs, find unclaimed, claim it."""
+        list_resp = [
+            {"tab_id": "agent-tab", "title": "Agent", "url": "https://a.com",
+             "ownership": "owned", "is_mine": True},
+            {"tab_id": "user-tab", "title": "User Page", "url": "https://b.com",
+             "ownership": "unclaimed", "is_mine": False},
+        ]
+        claim_resp = {
+            "success": True,
+            "tab_id": "user-tab",
+            "url": "https://b.com",
+            "title": "User Page",
+            "previous_owner": None,
+            "was_stale": False,
+        }
+        # Step 1: list workspace tabs
+        fake_ws1 = FakeWebSocket(responses=[{"id": "x", "result": list_resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws1):
+            list_result = await server.browser_list_workspace_tabs()
+        tabs = json.loads(list_result)
+        unclaimed = [t for t in tabs if t["ownership"] == "unclaimed"]
+        assert len(unclaimed) == 1
+        assert unclaimed[0]["tab_id"] == "user-tab"
+
+        # Step 2: claim the unclaimed tab
+        fake_ws2 = FakeWebSocket(responses=[{"id": "x", "result": claim_resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws2):
+            claim_result = await server.browser_claim_tab(unclaimed[0]["tab_id"])
+        claimed = json.loads(claim_result)
+        assert claimed["success"] is True
+        assert claimed["tab_id"] == "user-tab"
+
+    @pytest.mark.asyncio
+    async def test_claim_stale_from_another_agent(self):
+        """Simulate: agent B claims a stale tab from agent A."""
+        list_resp = [
+            {"tab_id": "stale-tab", "title": "Stale Research", "url": "https://research.com",
+             "ownership": "stale", "is_mine": False, "owner_session_id": "agent-a-session"},
+        ]
+        claim_resp = {
+            "success": True,
+            "tab_id": "stale-tab",
+            "url": "https://research.com",
+            "title": "Stale Research",
+            "previous_owner": "agent-a-session",
+            "was_stale": True,
+        }
+        # List and verify stale
+        fake_ws1 = FakeWebSocket(responses=[{"id": "x", "result": list_resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws1):
+            list_result = await server.browser_list_workspace_tabs()
+        tabs = json.loads(list_result)
+        stale_tabs = [t for t in tabs if t["ownership"] == "stale"]
+        assert len(stale_tabs) == 1
+
+        # Claim the stale tab
+        fake_ws2 = FakeWebSocket(responses=[{"id": "x", "result": claim_resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws2):
+            claim_result = await server.browser_claim_tab("stale-tab")
+        claimed = json.loads(claim_result)
+        assert claimed["previous_owner"] == "agent-a-session"
+        assert claimed["was_stale"] is True
+
+    @pytest.mark.asyncio
+    async def test_only_claimable_tabs_are_claimable(self):
+        """Only unclaimed and stale tabs should be claimable; owned tabs should fail."""
+        list_resp = [
+            {"tab_id": "active-tab", "title": "Active", "url": "https://active.com",
+             "ownership": "owned", "is_mine": False, "owner_session_id": "other-active"},
+        ]
+        fake_ws1 = FakeWebSocket(responses=[{"id": "x", "result": list_resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws1):
+            list_result = await server.browser_list_workspace_tabs()
+        tabs = json.loads(list_result)
+        assert tabs[0]["ownership"] == "owned"
+
+        # Attempt to claim should fail
+        fake_ws2 = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "Tab is actively owned by session other-active. Cannot claim tabs from active sessions."}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws2):
+            with pytest.raises(Exception, match="actively owned"):
+                await server.browser_claim_tab("active-tab")
+
+    @pytest.mark.asyncio
+    async def test_mixed_workspace_tabs_filtering(self):
+        """Workspace should contain a mix of owned, unclaimed, and stale tabs."""
+        resp = [
+            {"tab_id": "t1", "title": "My Tab 1", "url": "u1", "ownership": "owned", "is_mine": True},
+            {"tab_id": "t2", "title": "My Tab 2", "url": "u2", "ownership": "owned", "is_mine": True},
+            {"tab_id": "t3", "title": "User Tab", "url": "u3", "ownership": "unclaimed", "is_mine": False},
+            {"tab_id": "t4", "title": "Other Agent", "url": "u4", "ownership": "owned", "is_mine": False,
+             "owner_session_id": "sess-b"},
+            {"tab_id": "t5", "title": "Dead Agent", "url": "u5", "ownership": "stale", "is_mine": False,
+             "owner_session_id": "sess-c"},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+
+        mine = [t for t in data if t["is_mine"]]
+        claimable = [t for t in data if t["ownership"] in ("unclaimed", "stale")]
+        not_claimable = [t for t in data if t["ownership"] == "owned" and not t["is_mine"]]
+
+        assert len(mine) == 2
+        assert len(claimable) == 2  # t3 (unclaimed) + t5 (stale)
+        assert len(not_claimable) == 1  # t4 (active other agent)

@@ -126,6 +126,12 @@
   // Stale sweep: check for sessions inactive for > 30 minutes
   const STALE_THRESHOLD_MS = 30 * 60 * 1000;
   const STALE_SWEEP_MS = 10 * 60 * 1000;
+  // 2 minutes: tabs from sessions with no connections and inactive this long can be claimed.
+  // Intentionally shorter than GRACE_PERIOD_MS (5 min) so other agents can pick up
+  // orphaned tabs promptly. If the original session reconnects, its agentTabs Set
+  // will already have the tab removed (via tab_claimed_away event), and it can
+  // see what happened via get_tab_events.
+  const CLAIM_STALE_MS = 2 * 60 * 1000;
 
   function staleSweep() {
     const now = Date.now();
@@ -779,6 +785,41 @@
     }
   }
 
+  // Get ALL tabs in the agent workspace, regardless of session ownership.
+  // Returns tabs that are in the agent workspace, including unclaimed user tabs.
+  // Returns an empty array if the workspace has not been created yet — this
+  // prevents accidentally exposing personal tabs from other workspaces.
+  function getWorkspaceTabs() {
+    if (!agentWorkspaceId || !gZenWorkspaces) return [];
+    return getAllTabs().filter(tab => {
+      try {
+        // Check if tab belongs to the agent workspace
+        const wsId = tab.getAttribute('zen-workspace-id');
+        return wsId === agentWorkspaceId;
+      } catch (e) {
+        return false;
+      }
+    });
+  }
+
+  // Determine the ownership status of a tab in the workspace.
+  // Returns: 'unclaimed' | 'owned' | 'stale'
+  function getTabOwnership(tab) {
+    const sessionId = tab.getAttribute('data-agent-session-id');
+    if (!sessionId) return 'unclaimed';
+
+    const ownerSession = sessions.get(sessionId);
+    if (!ownerSession) return 'unclaimed'; // session was destroyed, tab is orphaned
+
+    // Check if the owning session is stale (no connections + inactive for CLAIM_STALE_MS)
+    if (ownerSession.connections.size === 0 &&
+        Date.now() - ownerSession.lastActivity > CLAIM_STALE_MS) {
+      return 'stale';
+    }
+
+    return 'owned';
+  }
+
   function resolveTabScoped(tabId, session, conn) {
     if (!tabId) {
       // Prefer connection's tracked current tab
@@ -1022,7 +1063,7 @@
   const RECORDING_EXCLUDE = new Set([
     'ping', 'get_agent_logs', 'record_start', 'record_stop',
     'record_save', 'record_replay', 'get_tab_events', 'get_dialogs',
-    'list_tabs', 'get_page_info', 'get_navigation_status',
+    'list_tabs', 'list_workspace_tabs', 'claim_tab', 'get_page_info', 'get_navigation_status',
     'network_get_log', 'intercept_list_rules', 'eval_chrome',
     'session_info', 'session_close', 'list_sessions',
   ]);
@@ -2254,6 +2295,133 @@
         });
       }
       return result;
+    },
+
+    // --- Tab Claiming (workspace-wide visibility) ---
+    list_workspace_tabs: async (params, ctx) => {
+      await ensureAgentWorkspace();
+      const wsTabs = getWorkspaceTabs();
+      return wsTabs.map(tab => {
+        const sessionId = tab.getAttribute('data-agent-session-id') || null;
+        const tabId = tab.getAttribute('data-agent-tab-id') || tab.linkedPanel || '';
+        const ownership = getTabOwnership(tab);
+        const isMine = sessionId === ctx.session.id;
+
+        const entry = {
+          tab_id: tabId,
+          title: tab.label || '',
+          url: tab.linkedBrowser?.currentURI?.spec || '',
+          ownership,         // 'unclaimed', 'owned', or 'stale'
+          is_mine: isMine,   // true if owned by the calling session
+        };
+
+        // Include owner session ID for owned/stale tabs (for transparency)
+        if (sessionId && !isMine) {
+          entry.owner_session_id = sessionId;
+        }
+
+        return entry;
+      }).filter(t => t.tab_id || t.url);
+    },
+
+    claim_tab: async ({ tab_id }, ctx) => {
+      if (!tab_id) throw new Error('tab_id is required');
+
+      // Ensure workspace exists before searching (prevents fallback to all tabs)
+      await ensureAgentWorkspace();
+      // Search ALL workspace tabs (not just session-scoped)
+      const wsTabs = getWorkspaceTabs();
+      let targetTab = null;
+      for (const tab of wsTabs) {
+        const id = tab.getAttribute('data-agent-tab-id') || tab.linkedPanel || '';
+        if (id === tab_id) {
+          targetTab = tab;
+          break;
+        }
+      }
+      // Fallback: match by URL
+      if (!targetTab) {
+        for (const tab of wsTabs) {
+          if (tab.linkedBrowser?.currentURI?.spec === tab_id) {
+            targetTab = tab;
+            break;
+          }
+        }
+      }
+      if (!targetTab) throw new Error('Tab not found in workspace: ' + tab_id);
+      if (!targetTab.linkedBrowser) throw new Error('Tab has no linked browser');
+
+      const ownership = getTabOwnership(targetTab);
+      const existingSessionId = targetTab.getAttribute('data-agent-session-id') || null;
+
+      // Already owned by this session
+      if (existingSessionId === ctx.session.id) {
+        return {
+          success: true,
+          tab_id: targetTab.getAttribute('data-agent-tab-id') || targetTab.linkedPanel,
+          url: targetTab.linkedBrowser?.currentURI?.spec || '',
+          title: targetTab.label || '',
+          already_owned: true,
+        };
+      }
+
+      // Reject claiming actively-owned tabs from other sessions
+      if (ownership === 'owned') {
+        throw new Error(
+          'Tab is actively owned by session ' + existingSessionId +
+          '. Cannot claim tabs from active sessions.'
+        );
+      }
+
+      // ownership is 'unclaimed' or 'stale' — proceed with claiming
+      ensureSessionCanOpenTabs(ctx.session, 1);
+
+      // Remove from previous session's tracking if it was stale
+      if (existingSessionId) {
+        const prevSession = sessions.get(existingSessionId);
+        if (prevSession) {
+          prevSession.agentTabs.delete(targetTab);
+          prevSession.pushTabEvent({
+            type: 'tab_claimed_away',
+            tab_id: targetTab.getAttribute('data-agent-tab-id') || targetTab.linkedPanel,
+            claimed_by_session: ctx.session.id,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Stamp with new session ownership
+      const stableId = targetTab.getAttribute('data-agent-tab-id') || targetTab.linkedPanel || ('agent-tab-' + Date.now());
+      targetTab.setAttribute('data-agent-tab-id', stableId);
+      targetTab.setAttribute('data-agent-session-id', ctx.session.id);
+      ctx.session.agentTabs.add(targetTab);
+
+      // Ensure tab is in the agent workspace (agentWorkspaceId already set by
+      // the ensureAgentWorkspace() call at the top of this handler)
+      if (agentWorkspaceId && gZenWorkspaces) {
+        gZenWorkspaces.moveTabToWorkspace(targetTab, agentWorkspaceId);
+      }
+
+      ctx.connection.currentAgentTab = targetTab;
+
+      ctx.session.pushTabEvent({
+        type: 'tab_claimed',
+        tab_id: stableId,
+        previous_owner: existingSessionId,
+        was_stale: ownership === 'stale',
+        timestamp: new Date().toISOString(),
+      });
+
+      log('Tab claimed: ' + stableId + ' [' + ownership + '] -> session:' + ctx.session.id.substring(0, 8));
+
+      return {
+        success: true,
+        tab_id: stableId,
+        url: targetTab.linkedBrowser?.currentURI?.spec || '',
+        title: targetTab.label || '',
+        previous_owner: existingSessionId,
+        was_stale: ownership === 'stale',
+      };
     },
   };
 

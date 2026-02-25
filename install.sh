@@ -118,17 +118,40 @@ find_profiles() {
     fi
 }
 
-select_profile() {
+select_profiles() {
+    # Build the list of profiles to operate on
+    SELECTED_PROFILES=()
+
     if [ -n "$PROFILE_INDEX" ]; then
+        # --profile flag: use specified profile index only
         if ! [[ "$PROFILE_INDEX" =~ ^[0-9]+$ ]] || [ "$PROFILE_INDEX" -lt 1 ] || [ "$PROFILE_INDEX" -gt ${#PROFILES[@]} ]; then
             echo -e "${RED}Error: Invalid profile index $PROFILE_INDEX (valid: 1-${#PROFILES[@]})${NC}"
             exit 1
         fi
-        PROFILE_DIR="${PROFILES[$((PROFILE_INDEX-1))]}"
-        echo -e "${GREEN}+${NC} Selected profile: $(basename "$PROFILE_DIR")"
+        SELECTED_PROFILES+=("${PROFILES[$((PROFILE_INDEX-1))]}")
+        echo -e "${GREEN}+${NC} Selected profile: $(basename "${SELECTED_PROFILES[0]}")"
+    elif [ "$AUTO_YES" = true ]; then
+        # --yes without --profile: install to ALL profiles (matches ZenLeap reference installer)
+        SELECTED_PROFILES=("${PROFILES[@]}")
+        if [ ${#SELECTED_PROFILES[@]} -eq 1 ]; then
+            echo -e "${GREEN}+${NC} Found profile: $(basename "${SELECTED_PROFILES[0]}")"
+        else
+            echo -e "${GREEN}+${NC} Found ${#SELECTED_PROFILES[@]} profiles (installing to all):"
+            for p in "${SELECTED_PROFILES[@]}"; do
+                local pname
+                pname=$(basename "$p")
+                local status=""
+                if [ -f "$p/chrome/JS/zenleap_agent.uc.js" ]; then
+                    local v
+                    v=$(get_version "$p/chrome/JS/zenleap_agent.uc.js")
+                    status=" ${GREEN}(agent v$v installed)${NC}"
+                fi
+                echo -e "    - $pname$status"
+            done
+        fi
     elif [ ${#PROFILES[@]} -eq 1 ]; then
-        PROFILE_DIR="${PROFILES[0]}"
-        echo -e "${GREEN}+${NC} Found profile: $(basename "$PROFILE_DIR")"
+        SELECTED_PROFILES=("${PROFILES[0]}")
+        echo -e "${GREEN}+${NC} Found profile: $(basename "${SELECTED_PROFILES[0]}")"
     else
         echo -e "${YELLOW}Multiple profiles found:${NC}"
         for i in "${!PROFILES[@]}"; do
@@ -153,10 +176,14 @@ select_profile() {
             echo -e "${RED}Invalid selection${NC}"
             exit 1
         fi
-        PROFILE_DIR="${PROFILES[$((selection-1))]}"
-        echo -e "${GREEN}+${NC} Selected: $(basename "$PROFILE_DIR")"
+        SELECTED_PROFILES=("${PROFILES[$((selection-1))]}")
+        echo -e "${GREEN}+${NC} Selected: $(basename "${SELECTED_PROFILES[0]}")"
     fi
+}
 
+# Set per-profile path variables for a given profile directory
+set_profile_paths() {
+    PROFILE_DIR="$1"
     CHROME_DIR="$PROFILE_DIR/chrome"
     JS_DIR="$CHROME_DIR/JS"
     ACTORS_DIR="$JS_DIR/actors"
@@ -172,7 +199,7 @@ check_fxautoconfig() {
     echo "fx-autoconfig is required to load .uc.js extensions."
     echo "Install it from: https://github.com/MrOtherGuy/fx-autoconfig"
     echo "Or install ZenLeap first (which includes fx-autoconfig)."
-    exit 1
+    return 1
 }
 
 check_zen_running() {
@@ -210,19 +237,28 @@ clear_cache() {
     fi
 }
 
-do_install() {
-    detect_os
-    find_profiles
-    select_profile
-    check_fxautoconfig
-    check_zen_running
+install_to_profile() {
+    # Install agent files to a single profile (PROFILE_DIR must be set)
+    set_profile_paths "$1"
+    local pname
+    pname=$(basename "$1")
 
     echo ""
-    echo -e "${BLUE}Installing Zen AI Agent...${NC}"
+    echo -e "${BLUE}--- $pname ---${NC}"
+
+    if ! check_fxautoconfig; then
+        echo -e "  ${YELLOW}!${NC} Skipping this profile (fx-autoconfig required)"
+        return 1
+    fi
 
     # Create directories
     mkdir -p "$JS_DIR"
     mkdir -p "$ACTORS_DIR"
+
+    # Guard: detect Sine-managed config.mjs — never overwrite it
+    if [ -f "$CHROME_DIR/config.mjs" ]; then
+        echo -e "  ${DIM}config.mjs detected (Sine or custom loader) — preserving${NC}"
+    fi
 
     # Check for existing installation
     if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
@@ -236,7 +272,7 @@ do_install() {
             read -r response <&3
             if [ "$response" != "y" ] && [ "$response" != "Y" ]; then
                 echo "  Skipped."
-                exit 0
+                return 0
             fi
         else
             echo "  Overwriting with v$new_v"
@@ -260,14 +296,42 @@ do_install() {
 
     if [ "$ok" = false ]; then
         echo -e "  ${RED}Error: File verification failed! Copies may be corrupted.${NC}"
-        exit 1
+        return 1
     fi
     echo -e "  ${GREEN}+${NC} File integrity verified"
+}
+
+do_install() {
+    detect_os
+    find_profiles
+    select_profiles
+
+    # Track if Zen was running before we close it
+    ZEN_WAS_RUNNING=false
+    if pgrep -x "zen" > /dev/null 2>&1 || pgrep -x "Zen Browser" > /dev/null 2>&1 || pgrep -x "Twilight" > /dev/null 2>&1; then
+        ZEN_WAS_RUNNING=true
+    fi
+
+    check_zen_running
+
+    echo ""
+    echo -e "${BLUE}Installing Zen AI Agent...${NC}"
+
+    # Install to each selected profile
+    local install_failed=false
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        install_to_profile "$profile" || install_failed=true
+    done
+
+    if [ "$install_failed" = true ]; then
+        echo -e "${RED}Some profiles failed to install. Check errors above.${NC}"
+        exit 1
+    fi
 
     clear_cache
 
     local installed_v
-    installed_v=$(get_version "$JS_DIR/zenleap_agent.uc.js")
+    installed_v=$(get_version "$SCRIPT_DIR/browser/zenleap_agent.uc.js")
 
     echo ""
     echo -e "${GREEN}======================================================${NC}"
@@ -287,13 +351,20 @@ do_install() {
     echo -e "${DIM}The agent runs a WebSocket server on localhost:9876${NC}"
     echo ""
 
-    # Offer to open Zen
-    if [ "$AUTO_YES" != true ]; then
+    # Relaunch if it was running, or offer to open
+    if [ "$ZEN_WAS_RUNNING" = true ]; then
+        echo -e "${BLUE}Restarting Zen Browser...${NC}"
+        if [ "$OS" = "macos" ]; then
+            open -a "Zen" 2>/dev/null || open -a "Zen Browser" 2>/dev/null || open -a "Twilight" 2>/dev/null || true
+        else
+            zen &
+        fi
+    elif [ "$AUTO_YES" != true ]; then
         echo -n "Open Zen Browser now? (y/n): "
         read -r response <&3
         if [ "$response" = "y" ] || [ "$response" = "Y" ]; then
             if [ "$OS" = "macos" ]; then
-                open -a "Zen"
+                open -a "Zen" 2>/dev/null || open -a "Zen Browser" 2>/dev/null || true
             else
                 zen &
             fi
@@ -304,45 +375,55 @@ do_install() {
 do_uninstall() {
     detect_os
     find_profiles
-    select_profile
+    select_profiles
     check_zen_running
 
     echo ""
     echo -e "${BLUE}Uninstalling Zen AI Agent...${NC}"
 
-    local found=false
-
-    if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
-        rm -f "$JS_DIR/zenleap_agent.uc.js"
-        echo -e "  ${GREEN}+${NC} Removed zenleap_agent.uc.js"
-        found=true
-    fi
-
-    if [ -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" ]; then
-        rm -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
-        echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentChild.sys.mjs"
-        found=true
-    fi
-
-    if [ -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs" ]; then
-        rm -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
-        echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentParent.sys.mjs"
-        found=true
-    fi
-
-    # Clean up empty actors directory
-    if [ -d "$ACTORS_DIR" ] && [ -z "$(ls -A "$ACTORS_DIR")" ]; then
-        rmdir "$ACTORS_DIR"
-    fi
-
-    if [ "$found" = true ]; then
-        clear_cache
+    for profile in "${SELECTED_PROFILES[@]}"; do
+        set_profile_paths "$profile"
+        local pname
+        pname=$(basename "$profile")
         echo ""
-        echo -e "${GREEN}Zen AI Agent uninstalled.${NC}"
-        echo -e "${YELLOW}Restart Zen Browser for changes to take effect.${NC}"
-    else
-        echo -e "  ${DIM}Zen AI Agent was not installed in this profile.${NC}"
-    fi
+        echo -e "${BLUE}--- $pname ---${NC}"
+
+        local found=false
+
+        if [ -f "$JS_DIR/zenleap_agent.uc.js" ]; then
+            rm -f "$JS_DIR/zenleap_agent.uc.js"
+            echo -e "  ${GREEN}+${NC} Removed zenleap_agent.uc.js"
+            found=true
+        fi
+
+        if [ -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs" ]; then
+            rm -f "$ACTORS_DIR/ZenLeapAgentChild.sys.mjs"
+            echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentChild.sys.mjs"
+            found=true
+        fi
+
+        if [ -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs" ]; then
+            rm -f "$ACTORS_DIR/ZenLeapAgentParent.sys.mjs"
+            echo -e "  ${GREEN}+${NC} Removed ZenLeapAgentParent.sys.mjs"
+            found=true
+        fi
+
+        # Clean up empty actors directory
+        if [ -d "$ACTORS_DIR" ] && [ -z "$(ls -A "$ACTORS_DIR")" ]; then
+            rmdir "$ACTORS_DIR"
+        fi
+
+        if [ "$found" = true ]; then
+            echo -e "  ${GREEN}+${NC} Agent removed"
+        else
+            echo -e "  ${DIM}Zen AI Agent was not installed in this profile.${NC}"
+        fi
+    done
+
+    clear_cache
+    echo ""
+    echo -e "${GREEN}Uninstallation complete.${NC}"
+    echo -e "${YELLOW}Restart Zen Browser for changes to take effect.${NC}"
 }
 
 do_list() {

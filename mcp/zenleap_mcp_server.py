@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-ZenLeap Browser MCP Server
+Zen AI Agent MCP Server
 Exposes Zen Browser control tools to Claude Code via Model Context Protocol.
-Connects to the ZenLeap Agent WebSocket server running in the browser.
+Connects to the Zen AI Agent WebSocket server running in the browser.
 """
 
 import asyncio
@@ -22,8 +22,8 @@ SESSION_ID = os.environ.get("ZENLEAP_SESSION_ID", "")
 mcp = FastMCP(
     "zenleap-browser",
     instructions=(
-        "Browser control tools for Zen Browser via ZenLeap Agent. "
-        "All tab operations are scoped to the 'ZenLeap AI' workspace."
+        "Browser control tools for Zen Browser via Zen AI Agent. "
+        "All tab operations are scoped to the 'Zen AI Agent' workspace."
     ),
 )
 
@@ -144,7 +144,7 @@ def text_result(data) -> str:
 
 @mcp.tool()
 async def browser_create_tab(url: str = "about:blank") -> str:
-    """Create a new browser tab in the ZenLeap AI workspace and navigate to a URL."""
+    """Create a new browser tab in the Zen AI Agent workspace and navigate to a URL."""
     return text_result(await browser_command("create_tab", {"url": url}))
 
 
@@ -158,13 +158,13 @@ async def browser_close_tab(tab_id: str = "") -> str:
 
 @mcp.tool()
 async def browser_switch_tab(tab_id: str) -> str:
-    """Switch to a different tab in the ZenLeap AI workspace."""
+    """Switch to a different tab in the Zen AI Agent workspace."""
     return text_result(await browser_command("switch_tab", {"tab_id": tab_id}))
 
 
 @mcp.tool()
 async def browser_list_tabs() -> str:
-    """List all open tabs in the ZenLeap AI workspace with IDs, titles, and URLs."""
+    """List all open tabs in the Zen AI Agent workspace with IDs, titles, and URLs."""
     return text_result(await browser_command("list_tabs"))
 
 
@@ -942,7 +942,7 @@ async def browser_compare_tabs(tab_ids: str) -> str:
 @mcp.tool()
 async def browser_batch_navigate(urls: str) -> str:
     """Open multiple URLs in new tabs at once. Pass comma-separated URLs.
-    All tabs are created in the ZenLeap AI workspace.
+    All tabs are created in the Zen AI Agent workspace.
     Returns the tab IDs for all opened tabs."""
     url_list = [u.strip() for u in urls.split(",") if u.strip()]
     if not url_list:
@@ -1196,7 +1196,7 @@ async def browser_session_info() -> str:
 @mcp.tool()
 async def browser_session_close() -> str:
     """Close session, destroying all tabs and the workspace.
-    Closes all tabs owned by this session. The shared ZenLeap AI workspace
+    Closes all tabs owned by this session. The shared Zen AI Agent workspace
     is never destroyed."""
     return text_result(await browser_command("session_close"))
 
@@ -1205,6 +1205,29 @@ async def browser_session_close() -> str:
 async def browser_list_sessions() -> str:
     """List all active browser sessions (admin/debug)."""
     return text_result(await browser_command("list_sessions"))
+
+
+# ── Tab Claiming (Phase 13) ─────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_list_workspace_tabs() -> str:
+    """List ALL tabs in the Zen AI Agent workspace, including user-opened tabs
+    and tabs from other agent sessions. Each tab shows its ownership status:
+    'unclaimed' (user-opened, available to claim), 'owned' (active agent session),
+    or 'stale' (owner session inactive for 2+ minutes, available to claim).
+    Use browser_claim_tab to take ownership of unclaimed or stale tabs."""
+    return text_result(await browser_command("list_workspace_tabs"))
+
+
+@mcp.tool()
+async def browser_claim_tab(tab_id: str) -> str:
+    """Claim an unclaimed or stale tab in the workspace into this session.
+    After claiming, the tab becomes accessible to all session-scoped tools
+    (screenshot, get_dom, click, etc.). Only unclaimed tabs (user-opened)
+    and stale tabs (owner inactive 2+ min) can be claimed.
+    tab_id: the tab_id from browser_list_workspace_tabs, or a URL."""
+    return text_result(await browser_command("claim_tab", {"tab_id": tab_id}))
 
 
 # ── Entry Point ─────────────────────────────────────────────────

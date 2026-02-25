@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session bootstrap helper for ZenLeap + MCPorter workflows."""
+"""Session bootstrap helper for Zen AI Agent + MCPorter workflows."""
 
 import argparse
 import asyncio
@@ -22,7 +22,7 @@ async def _create_session(ws_url: str) -> str:
 
         session_id = headers.get("X-ZenLeap-Session") if headers else None
         if not session_id:
-            raise RuntimeError("Missing X-ZenLeap-Session header from ZenLeap agent")
+            raise RuntimeError("Missing X-ZenLeap-Session header from Zen AI Agent")
         return session_id
 
 
