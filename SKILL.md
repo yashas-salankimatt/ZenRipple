@@ -104,7 +104,7 @@ npx -y mcporter call zenleap.browser_session_close --output json
 
 Session management tools:
 - `browser_session_info` — get current session ID, workspace, connection count, tab count.
-- `browser_session_close` — close the session and release all tabs.
+- `browser_session_close` — close the session: created tabs are closed, claimed tabs are released back to unclaimed.
 - `browser_list_sessions` — list all active sessions (admin/debug).
 - `browser_session_save` / `browser_session_restore` — save/restore open tabs and cookies to a JSON file.
 
@@ -118,11 +118,11 @@ All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to
 
 To visit a URL, create a tab and wait for it to load:
 
-- `browser_create_tab(url)` — open a new tab with a URL (defaults to `about:blank`).
+- `browser_create_tab(url, persist)` — open a new tab with a URL (defaults to `about:blank`). Set `persist=true` to keep the tab alive after session close (released to unclaimed instead of destroyed).
 - `browser_navigate(url)` — navigate the active (or specified) tab to a URL.
 - `browser_go_back` / `browser_go_forward` — history navigation.
 - `browser_reload` — refresh the page.
-- `browser_batch_navigate(urls)` — open multiple URLs at once (comma-separated). Returns tab IDs.
+- `browser_batch_navigate(urls, persist)` — open multiple URLs at once (comma-separated). Returns tab IDs. Set `persist=true` to keep all tabs alive after session close.
 - `browser_wait_for_load(timeout)` — wait until the page finishes loading. **Always use this after navigation instead of fixed sleeps.**
 - `browser_get_navigation_status` — check HTTP status code, error code, and loading state after navigation. Useful for detecting 404s or network failures.
 
@@ -185,6 +185,7 @@ The workspace may contain tabs you didn't open — tabs opened by the user or ab
   - `ownership`: `"unclaimed"` (user-opened, no agent owns it), `"owned"` (active agent session), or `"stale"` (owner agent disconnected for 2+ minutes)
   - `is_mine`: `true` if you own this tab
   - `owner_session_id`: included for tabs owned by other agents (not for your own)
+  - `claimed`: (only for your own tabs) `true` if the tab will survive session close (acquired via `browser_claim_tab` or created with `persist=true`), `false` if it will be destroyed on session close.
 
 - `browser_claim_tab(tab_id)` — claim an unclaimed or stale tab into your session. You can pass either the tab ID or the tab's URL.
   - **Unclaimed tabs** (user-opened): claimed immediately.
@@ -192,13 +193,42 @@ The workspace may contain tabs you didn't open — tabs opened by the user or ab
   - **Actively owned tabs**: rejected with an error. You cannot steal tabs from active agents.
   - **Already yours**: returns success with `already_owned: true`.
 
-After claiming, the tab behaves like any tab you created — you can navigate, read DOM, take screenshots, interact, etc. using its `tab_id`.
+After claiming, the tab is fully accessible — you can navigate, read DOM, take screenshots, interact, etc. using its `tab_id`. The key difference from created tabs: when your session closes, claimed tabs are released back to unclaimed status (not destroyed), so they persist in the workspace for future use.
 
 **Typical workflow:**
 1. Call `browser_list_workspace_tabs` to see what's available.
 2. Find tabs with `ownership: "unclaimed"` or `ownership: "stale"` that are relevant to your task.
 3. Call `browser_claim_tab(tab_id)` to take ownership.
 4. Use the tab normally with any other tool.
+
+### Tab Persistence (Keeping Tabs Alive After Session Close)
+
+By default, all tabs created by your session are **closed** when the session is destroyed (explicit close, grace timer, or stale sweep). There are two ways to make tabs survive session destruction:
+
+1. **`persist=true` on creation** — create a tab that will be released to unclaimed on session close instead of destroyed.
+2. **`browser_claim_tab`** — claim an existing tab from the workspace. Claimed tabs are always released (not destroyed) on session close.
+
+Both mechanisms work the same way internally. When your session closes, persistent/claimed tabs have their session ownership removed and revert to "unclaimed" status in the workspace, where they can be re-claimed by a future session.
+
+**When to use `persist=true`:**
+- The user asks you to leave tabs open after you're done.
+- You're opening reference pages the user will want to keep.
+- You're setting up a workspace for the user to continue working in.
+
+**MCP (tool call):**
+```
+browser_create_tab(url="https://example.com", persist=true)
+browser_batch_navigate(urls="https://a.com,https://b.com", persist=true)
+```
+
+**MCPorter CLI:**
+```bash
+npx -y mcporter call zenleap.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
+npx -y mcporter call zenleap.browser_batch_navigate --args '{"urls":["https://a.com","https://b.com"],"persist":true}' --output json
+```
+
+**Checking persistence status:**
+Call `browser_list_workspace_tabs` — your tabs will have `claimed: true` if they will survive session close, `claimed: false` if they will be destroyed.
 
 ### Handling Dialogs & Popups
 

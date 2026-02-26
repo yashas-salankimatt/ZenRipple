@@ -143,9 +143,11 @@ def text_result(data) -> str:
 
 
 @mcp.tool()
-async def browser_create_tab(url: str = "about:blank") -> str:
-    """Create a new browser tab in the Zen AI Agent workspace and navigate to a URL."""
-    return text_result(await browser_command("create_tab", {"url": url}))
+async def browser_create_tab(url: str = "about:blank", persist: bool = False) -> str:
+    """Create a new browser tab in the Zen AI Agent workspace and navigate to a URL.
+    Set persist=true to keep the tab alive after session close (it will be
+    released back to unclaimed instead of destroyed)."""
+    return text_result(await browser_command("create_tab", {"url": url, "persist": persist}))
 
 
 @mcp.tool()
@@ -940,14 +942,15 @@ async def browser_compare_tabs(tab_ids: str) -> str:
 
 
 @mcp.tool()
-async def browser_batch_navigate(urls: str) -> str:
+async def browser_batch_navigate(urls: str, persist: bool = False) -> str:
     """Open multiple URLs in new tabs at once. Pass comma-separated URLs.
     All tabs are created in the Zen AI Agent workspace.
-    Returns the tab IDs for all opened tabs."""
+    Returns the tab IDs for all opened tabs.
+    Set persist=true to keep all tabs alive after session close."""
     url_list = [u.strip() for u in urls.split(",") if u.strip()]
     if not url_list:
         return "Error: provide at least 1 URL"
-    return text_result(await browser_command("batch_navigate", {"urls": url_list}))
+    return text_result(await browser_command("batch_navigate", {"urls": url_list, "persist": persist}))
 
 
 # ── Visual Grounding (Phase 9) ────────────────────────────────
@@ -1195,9 +1198,9 @@ async def browser_session_info() -> str:
 
 @mcp.tool()
 async def browser_session_close() -> str:
-    """Close session, destroying all tabs and the workspace.
-    Closes all tabs owned by this session. The shared Zen AI Agent workspace
-    is never destroyed."""
+    """Close session. Created tabs are closed; claimed tabs are released back
+    to unclaimed status so they persist in the workspace. The shared Zen AI
+    Agent workspace is never destroyed."""
     return text_result(await browser_command("session_close"))
 
 

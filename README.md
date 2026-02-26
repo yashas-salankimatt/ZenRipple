@@ -110,7 +110,7 @@ Optional helper test for isolation:
 ### Navigation
 | Tool | Description |
 |------|-------------|
-| `browser_create_tab` | Open a new tab |
+| `browser_create_tab` | Open a new tab (supports `persist` flag) |
 | `browser_close_tab` | Close a tab |
 | `browser_switch_tab` | Switch to a tab |
 | `browser_list_tabs` | List all open tabs |
@@ -191,15 +191,22 @@ Optional helper test for isolation:
 | `browser_wait_for_load` | Wait for page to finish loading |
 | `browser_wait_for_download` | Wait for a download to complete |
 
+### Tab Claiming & Persistence
+| Tool | Description |
+|------|-------------|
+| `browser_list_workspace_tabs` | List ALL tabs in workspace (owned, unclaimed, stale) |
+| `browser_claim_tab` | Claim an unclaimed/stale tab into your session |
+| `browser_create_tab` | Open a new tab (`persist=true` to survive session close) |
+| `browser_batch_navigate` | Open multiple URLs at once (`persist=true` to survive session close) |
+
 ### Multi-Tab & Sessions
 | Tool | Description |
 |------|-------------|
 | `browser_compare_tabs` | Compare content across tabs |
-| `browser_batch_navigate` | Open multiple URLs at once |
 | `browser_session_save` | Save session to file |
 | `browser_session_restore` | Restore saved session |
-| `browser_session_info` | Get current session info |
-| `browser_session_close` | Close session and all tabs |
+| `browser_session_info` | Get current session info (includes `claimed_tab_count`) |
+| `browser_session_close` | Close session; close created tabs, release claimed/persist tabs |
 | `browser_list_sessions` | List active sessions |
 
 ### Clipboard

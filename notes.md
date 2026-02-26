@@ -113,9 +113,9 @@ Similarly, `#typeText` should NOT dispatch KeyboardEvent per character — use v
 
 - **Root cause of old crashes:** per-session workspace create/destroy triggered `removeWorkspace()` → `_performWorkspaceChange` → `warmupTab` crash with null `linkedBrowser`. Unfixable from our side.
 - **New design:** ONE permanent "ZenLeap AI" workspace shared by all sessions. Tab ownership tracked via `data-agent-session-id` attributes. Never create/destroy workspaces per session.
-- **Session lifecycle:** `createSession()` just creates Session object (no workspace), `destroySession()` only closes session's tabs, defers via `setTimeout(50)`.
+- **Session lifecycle:** `createSession()` just creates Session object (no workspace), `destroySession()` closes created tabs and releases claimed tabs back to unclaimed, defers via `setTimeout(50)`.
 - **URL routing in handshake:** `GET /new` creates session, `GET /session/<uuid>` joins existing, `GET /` creates (backward compat).
-- **Per-session state:** agentTabs (Set), tabEvents (monotonic index, max 200), recordingActive, recordedActions.
+- **Per-session state:** agentTabs (Set), claimedTabs (Set, subset of agentTabs — exempt from auto-cleanup), tabEvents (monotonic index, max 200), recordingActive, recordedActions.
 - **Per-connection state:** connectionId, sessionId, `currentAgentTab`, `tabEventCursor` (independent event consumption per sub-agent).
 - **Tab resolution:** `resolveTabScoped()` filters by `data-agent-session-id` — no `gBrowser.selectedTab` fallback (prevents hijacking user tabs).
 - **All handlers:** `async (params, ctx)` where `ctx = {session, connection, resolveTab}`. Global handlers ignore ctx.

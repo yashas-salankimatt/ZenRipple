@@ -38,6 +38,7 @@
       this.id = id;
       this.connections = new Map();     // connId -> WebSocketConnection
       this.agentTabs = new Set();
+      this.claimedTabs = new Set();     // Tabs claimed from other sessions/user — exempt from auto-cleanup
       this.tabEvents = [];              // max 200, per-session
       this.tabEventIndex = 0;           // monotonic
       this.recordingActive = false;
@@ -88,15 +89,31 @@
     }
     session.connections.clear();
 
-    // Close ONLY this session's tabs
-    // Copy to array first — removeTab triggers TabClose which modifies agentTabs during iteration
-    const tabsToRemove = [...session.agentTabs];
+    // Close created tabs, release claimed tabs back to unclaimed.
+    // Copy to array first — removeTab triggers TabClose which modifies agentTabs during iteration.
+    const tabsToProcess = [...session.agentTabs];
     session.agentTabs.clear();
-    for (const tab of tabsToRemove) {
-      try {
-        if (tab.parentNode) gBrowser.removeTab(tab);
-      } catch (e) {
-        log('Error removing tab during session destroy: ' + e);
+    const claimedSet = new Set(session.claimedTabs);
+    session.claimedTabs.clear();
+    for (const tab of tabsToProcess) {
+      if (claimedSet.has(tab)) {
+        // Revert claimed tab to unclaimed — do NOT close it.
+        // Keep data-agent-tab-id so the tab retains its stable identifier
+        // and can be re-claimed by another session via list_workspace_tabs.
+        try {
+          tab.removeAttribute('data-agent-session-id');
+          log('Released claimed tab back to unclaimed: ' +
+            (tab.getAttribute('data-agent-tab-id') || tab.linkedPanel));
+        } catch (e) {
+          log('Error releasing claimed tab: ' + e);
+        }
+      } else {
+        // Close tabs the session created
+        try {
+          if (tab.parentNode) gBrowser.removeTab(tab);
+        } catch (e) {
+          log('Error removing tab during session destroy: ' + e);
+        }
       }
     }
 
@@ -921,6 +938,7 @@
         const session = sessionId ? sessions.get(sessionId) : null;
         if (session) {
           session.agentTabs.delete(tab);
+          session.claimedTabs.delete(tab);
           session.pushTabEvent({
             type: 'tab_closed',
             tab_id: tab.getAttribute('data-agent-tab-id') || tab.linkedPanel,
@@ -1309,7 +1327,7 @@
     },
 
     // --- Tab Management ---
-    create_tab: async ({ url }, ctx) => {
+    create_tab: async ({ url, persist }, ctx) => {
       ensureSessionCanOpenTabs(ctx.session, 1);
       const wsId = await ensureAgentWorkspace();
       const tab = gBrowser.addTab(url || 'about:blank', {
@@ -1320,6 +1338,8 @@
       tab.setAttribute('data-agent-tab-id', stableId);
       tab.setAttribute('data-agent-session-id', ctx.session.id);
       ctx.session.agentTabs.add(tab);
+      // When persist is true, mark as claimed so the tab survives session destruction
+      if (persist) ctx.session.claimedTabs.add(tab);
 
       // Move tab to shared agent workspace
       if (wsId && gZenWorkspaces) {
@@ -1332,11 +1352,13 @@
           gBrowser.selectedTab = tab;
         }
       } catch (e) { /* ignore — workspace may not be active */ }
-      log('Created tab: ' + stableId + ' -> ' + (url || 'about:blank') + ' [session:' + ctx.session.id.substring(0, 8) + ']');
+      log('Created tab: ' + stableId + ' -> ' + (url || 'about:blank') +
+        (persist ? ' [persist]' : '') + ' [session:' + ctx.session.id.substring(0, 8) + ']');
 
       return {
         tab_id: stableId,
-        url: url || 'about:blank'
+        url: url || 'about:blank',
+        persist: !!persist,
       };
     },
 
@@ -1345,6 +1367,7 @@
       if (!tab) throw new Error('Tab not found');
       if (ctx.connection.currentAgentTab === tab) ctx.connection.currentAgentTab = null;
       ctx.session.agentTabs.delete(tab);
+      ctx.session.claimedTabs.delete(tab);
       gBrowser.removeTab(tab);
       return { success: true };
     },
@@ -1888,6 +1911,9 @@
     },
 
     // --- Session Persistence (Phase 7) — scoped to session ---
+    // Note: session_save/session_restore does not preserve claimed-vs-created
+    // distinction. Restored tabs are always treated as newly created tabs and
+    // will be closed on session destroy (not released back to unclaimed).
     session_save: async ({ file_path }, ctx) => {
       if (!file_path) throw new Error('file_path is required');
       const tabs = getSessionTabs(ctx.session.id);
@@ -2016,7 +2042,7 @@
       return results;
     },
 
-    batch_navigate: async ({ urls }, ctx) => {
+    batch_navigate: async ({ urls, persist }, ctx) => {
       if (!urls || !Array.isArray(urls) || urls.length === 0) {
         throw new Error('urls must be a non-empty array');
       }
@@ -2031,12 +2057,13 @@
         tab.setAttribute('data-agent-tab-id', stableId);
         tab.setAttribute('data-agent-session-id', ctx.session.id);
         ctx.session.agentTabs.add(tab);
+        if (persist) ctx.session.claimedTabs.add(tab);
         if (wsId && gZenWorkspaces) {
           gZenWorkspaces.moveTabToWorkspace(tab, wsId);
         }
         opened.push({ tab_id: stableId, url });
       }
-      return { success: true, tabs: opened };
+      return { success: true, tabs: opened, persist: !!persist };
     },
 
     // --- Action Recording (Phase 9, per-session) ---
@@ -2271,6 +2298,7 @@
         connection_id: ctx.connection.connectionId,
         connection_count: ctx.session.connections.size,
         tab_count: getSessionTabs(ctx.session.id).length,
+        claimed_tab_count: ctx.session.claimedTabs.size,
         created_at: ctx.session.createdAt,
       };
     },
@@ -2278,9 +2306,15 @@
     session_close: async (params, ctx) => {
       const sessionId = ctx.session.id;
       const tabCount = getSessionTabs(sessionId).length;
+      const claimedCount = ctx.session.claimedTabs.size;
       // Defer destruction so this response is sent first
       setTimeout(() => destroySession(sessionId), 50);
-      return { success: true, session_id: sessionId, tabs_closed: tabCount };
+      return {
+        success: true,
+        session_id: sessionId,
+        tabs_closed: Math.max(0, tabCount - claimedCount),
+        tabs_released: claimedCount,
+      };
     },
 
     list_sessions: async () => {
@@ -2318,6 +2352,11 @@
         // Include owner session ID for owned/stale tabs (for transparency)
         if (sessionId && !isMine) {
           entry.owner_session_id = sessionId;
+        }
+
+        // Surface claimed status for calling session's tabs
+        if (isMine) {
+          entry.claimed = ctx.session.claimedTabs.has(tab);
         }
 
         return entry;
@@ -2381,6 +2420,7 @@
         const prevSession = sessions.get(existingSessionId);
         if (prevSession) {
           prevSession.agentTabs.delete(targetTab);
+          prevSession.claimedTabs.delete(targetTab);
           prevSession.pushTabEvent({
             type: 'tab_claimed_away',
             tab_id: targetTab.getAttribute('data-agent-tab-id') || targetTab.linkedPanel,
@@ -2395,6 +2435,7 @@
       targetTab.setAttribute('data-agent-tab-id', stableId);
       targetTab.setAttribute('data-agent-session-id', ctx.session.id);
       ctx.session.agentTabs.add(targetTab);
+      ctx.session.claimedTabs.add(targetTab);
 
       // Ensure tab is in the agent workspace (agentWorkspaceId already set by
       // the ensureAgentWorkspace() call at the top of this handler)

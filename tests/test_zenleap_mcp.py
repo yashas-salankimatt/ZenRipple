@@ -217,6 +217,28 @@ class TestToolDefinitions:
         assert msg["params"]["url"] == "https://example.com"
 
     @pytest.mark.asyncio
+    async def test_create_tab_persist(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"tab_id": "panel1", "url": "https://example.com", "persist": True}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_create_tab("https://example.com", persist=True)
+        data = json.loads(result)
+        assert data["persist"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["persist"] is True
+
+    @pytest.mark.asyncio
+    async def test_create_tab_no_persist_by_default(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"tab_id": "panel1", "url": "https://example.com", "persist": False}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_create_tab("https://example.com")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["persist"] is False
+
+    @pytest.mark.asyncio
     async def test_close_tab_default(self):
         fake_ws = FakeWebSocket(
             responses=[{"id": "x", "result": {"success": True}}]
@@ -1615,6 +1637,20 @@ class TestMultiTabCoordination:
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "batch_navigate"
         assert msg["params"]["urls"] == ["https://a.com", "https://b.com"]
+        assert msg["params"]["persist"] is False
+
+    @pytest.mark.asyncio
+    async def test_batch_navigate_persist(self):
+        resp = {"success": True, "tabs": [
+            {"tab_id": "p1", "url": "https://a.com"},
+        ], "persist": True}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_batch_navigate("https://a.com", persist=True)
+        data = json.loads(result)
+        assert data["persist"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["persist"] is True
 
     @pytest.mark.asyncio
     async def test_batch_navigate_empty(self):
@@ -2247,6 +2283,7 @@ class TestSessionManagement:
             "connection_id": "conn-1",
             "connection_count": 2,
             "tab_count": 3,
+            "claimed_tab_count": 1,
             "created_at": 1700000000000,
         }
         fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
@@ -2257,18 +2294,20 @@ class TestSessionManagement:
         assert data["workspace_name"] == "Zen AI Agent"
         assert data["connection_count"] == 2
         assert data["tab_count"] == 3
+        assert data["claimed_tab_count"] == 1
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "session_info"
 
     @pytest.mark.asyncio
     async def test_session_close(self):
-        resp = {"success": True, "session_id": "abc-1234", "tabs_closed": 3}
+        resp = {"success": True, "session_id": "abc-1234", "tabs_closed": 3, "tabs_released": 2}
         fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
         with patch.object(server, "get_ws", return_value=fake_ws):
             result = await server.browser_session_close()
         data = json.loads(result)
         assert data["success"] is True
         assert data["tabs_closed"] == 3
+        assert data["tabs_released"] == 2
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "session_close"
 
@@ -2398,6 +2437,25 @@ class TestListWorkspaceTabs:
         data = json.loads(result)
         assert data[0]["is_mine"] is True
         assert data[1]["is_mine"] is False
+
+    @pytest.mark.asyncio
+    async def test_claimed_field_for_owned_tabs(self):
+        """Tabs owned by calling session should include claimed status."""
+        resp = [
+            {"tab_id": "p1", "title": "Created", "url": "u1", "ownership": "owned",
+             "is_mine": True, "claimed": False},
+            {"tab_id": "p2", "title": "Claimed", "url": "u2", "ownership": "owned",
+             "is_mine": True, "claimed": True},
+            {"tab_id": "p3", "title": "Foreign", "url": "u3", "ownership": "unclaimed",
+             "is_mine": False},
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_workspace_tabs()
+        data = json.loads(result)
+        assert data[0]["claimed"] is False
+        assert data[1]["claimed"] is True
+        assert "claimed" not in data[2]
 
     @pytest.mark.asyncio
     async def test_empty_workspace(self):
