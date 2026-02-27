@@ -1229,6 +1229,8 @@ async def browser_claim_tab(tab_id: str) -> str:
     After claiming, the tab becomes accessible to all session-scoped tools
     (screenshot, get_dom, click, etc.). Only unclaimed tabs (user-opened)
     and stale tabs (owner inactive 2+ min) can be claimed.
+    Claimed tabs automatically persist — they survive session close and are
+    released back to unclaimed status instead of being destroyed.
     tab_id: the tab_id from browser_list_workspace_tabs, or a URL."""
     return text_result(await browser_command("claim_tab", {"tab_id": tab_id}))
 

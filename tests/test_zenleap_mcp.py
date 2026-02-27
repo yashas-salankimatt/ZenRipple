@@ -2503,6 +2503,7 @@ class TestClaimTab:
             "tab_id": "panel2",
             "url": "https://user.example.com",
             "title": "User Tab",
+            "persist": True,
             "previous_owner": None,
             "was_stale": False,
         }
@@ -2512,6 +2513,7 @@ class TestClaimTab:
         data = json.loads(result)
         assert data["success"] is True
         assert data["tab_id"] == "panel2"
+        assert data["persist"] is True
         assert data["previous_owner"] is None
         assert data["was_stale"] is False
         msg = json.loads(fake_ws.sent[0])
@@ -2526,6 +2528,7 @@ class TestClaimTab:
             "tab_id": "panel3",
             "url": "https://stale.example.com",
             "title": "Stale Tab",
+            "persist": True,
             "previous_owner": "old-session-123",
             "was_stale": True,
         }

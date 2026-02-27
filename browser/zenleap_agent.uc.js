@@ -2460,6 +2460,7 @@
         tab_id: stableId,
         url: targetTab.linkedBrowser?.currentURI?.spec || '',
         title: targetTab.label || '',
+        persist: true,  // Claimed tabs always survive session destruction
         previous_owner: existingSessionId,
         was_stale: ownership === 'stale',
       };
