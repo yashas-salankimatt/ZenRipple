@@ -86,7 +86,12 @@ detect_os() {
             ;;
         Linux)
             OS="linux"
-            PROFILE_BASE="$HOME/.zen"
+            # Zen Browser on Linux may use either ~/.zen/ directly or ~/.zen/Profiles/
+            if [ -d "$HOME/.zen/Profiles" ]; then
+                PROFILE_BASE="$HOME/.zen/Profiles"
+            else
+                PROFILE_BASE="$HOME/.zen"
+            fi
             ;;
         MINGW*|MSYS*|CYGWIN*)
             echo -e "${RED}Windows is not currently supported.${NC}"
@@ -248,6 +253,14 @@ clear_cache() {
     if [ -d "$cache_dir" ]; then
         rm -rf "$cache_dir/startupCache" 2>/dev/null || true
         echo -e "${GREEN}+${NC} Startup cache cleared"
+    fi
+}
+
+check_python3() {
+    if ! command -v python3 &> /dev/null; then
+        echo -e "${RED}Error: python3 is required but not found on PATH.${NC}"
+        echo "Install Python 3 and ensure 'python3' is available."
+        exit 1
     fi
 }
 
@@ -416,6 +429,7 @@ install_to_profile() {
 
 do_install() {
     detect_os
+    check_python3
     find_profiles
     select_profiles
 
@@ -454,7 +468,7 @@ do_install() {
     echo -e "${BLUE}Next steps:${NC}"
     echo "  1. Restart Zen Browser"
     echo "  2. Set up the MCP server for Claude Code:"
-    echo "     cd $(basename "$SCRIPT_DIR")/mcp && uv sync"
+    echo "     cd \"$SCRIPT_DIR/mcp\" && uv sync"
     echo "  3. Add to your Claude Code project's .mcp.json:"
     echo "     {\"mcpServers\": {\"zenleap-browser\": {"
     echo "       \"command\": \"uv\","
@@ -470,7 +484,11 @@ do_install() {
         if [ "$OS" = "macos" ]; then
             open -a "Zen" 2>/dev/null || open -a "Zen Browser" 2>/dev/null || open -a "Twilight" 2>/dev/null || true
         else
-            zen &
+            if command -v zen &> /dev/null; then
+                zen & disown
+            else
+                echo -e "${YELLOW}Could not find 'zen' on PATH — please restart Zen Browser manually.${NC}"
+            fi
         fi
     elif [ "$AUTO_YES" != true ]; then
         echo -n "Open Zen Browser now? (y/n): "
@@ -479,7 +497,11 @@ do_install() {
             if [ "$OS" = "macos" ]; then
                 open -a "Zen" 2>/dev/null || open -a "Zen Browser" 2>/dev/null || true
             else
-                zen &
+                if command -v zen &> /dev/null; then
+                    zen & disown
+                else
+                    echo -e "${YELLOW}Could not find 'zen' on PATH — please open Zen Browser manually.${NC}"
+                fi
             fi
         fi
     fi
@@ -601,6 +623,7 @@ os.replace(tmp_path, mods_path)
 
 do_uninstall() {
     detect_os
+    check_python3
     find_profiles
     select_profiles
 

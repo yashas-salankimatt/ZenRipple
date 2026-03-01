@@ -31,7 +31,7 @@ Claude Code / AI Agent
 ## Quick Install
 
 ```bash
-git clone <this-repo> zen-ai-agent
+git clone https://github.com/yashas-salankimatt/zen-ai-agent.git
 cd zen-ai-agent
 
 # Install browser extension to your Zen profile
@@ -159,6 +159,7 @@ Optional helper test for isolation:
 | `browser_console_setup` | Start capturing console output |
 | `browser_console_logs` | Get captured console messages |
 | `browser_console_errors` | Get captured errors |
+| `browser_console_teardown` | Stop capturing and clean up listeners |
 | `browser_console_eval` | Execute JavaScript in page context |
 | `browser_eval_chrome` | Execute JavaScript in chrome context |
 
@@ -208,6 +209,7 @@ Optional helper test for isolation:
 | `browser_session_info` | Get current session info (includes `claimed_tab_count`) |
 | `browser_session_close` | Close session; close created tabs, release claimed/persist tabs |
 | `browser_list_sessions` | List active sessions |
+| `browser_ping` | Health check with version mismatch detection |
 
 ### Clipboard
 | Tool | Description |
@@ -257,8 +259,8 @@ Profile locations:
 ## Running Tests
 
 ```bash
-# Unit tests (173+ tests)
-cd mcp && uv run pytest ../tests/test_zenleap_mcp.py -v
+# Unit tests (195 tests)
+PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenleap_mcp.py -v
 
 # Benchmarks (requires running browser + Claude Agent SDK)
 cd bench && uv run python -m bench run --suite smoke

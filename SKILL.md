@@ -45,7 +45,7 @@ cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
 ## Prerequisites
 
 - macOS or Linux with Zen Browser installed and run at least once.
-- `uv`, `python`, `node`, `npm`/`npx` available.
+- **Python >= 3.13**, `uv`, `node`, `npm`/`npx` available.
 - Zen profile has `fx-autoconfig` (ZenLeap includes this).
 
 ## Fresh Setup
@@ -103,6 +103,7 @@ npx -y mcporter call zenleap.browser_session_close --output json
 ```
 
 Session management tools:
+- `browser_ping` — health check. Verifies the browser agent is alive, returns version info for both MCP server and browser agent, and warns on version mismatch.
 - `browser_session_info` — get current session ID, workspace, connection count, tab count.
 - `browser_session_close` — close the session: created tabs are closed, claimed tabs are released back to unclaimed.
 - `browser_list_sessions` — list all active sessions (admin/debug).

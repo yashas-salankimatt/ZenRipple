@@ -47,6 +47,13 @@ class FakeWebSocket:
         if self._response_idx < len(self._responses):
             resp = self._responses[self._response_idx]
             self._response_idx += 1
+            # Echo back the correct message ID from the sent request
+            if isinstance(resp, dict) and self.sent:
+                try:
+                    sent_msg = json.loads(self.sent[-1])
+                    resp = {**resp, "id": sent_msg.get("id", resp.get("id"))}
+                except (json.JSONDecodeError, IndexError):
+                    pass
             return json.dumps(resp) if isinstance(resp, dict) else resp
         raise asyncio.TimeoutError("No more responses")
 
@@ -958,7 +965,7 @@ class TestErrorPaths:
             new_callable=AsyncMock,
             side_effect=ConnectionRefusedError("refused"),
         ):
-            with pytest.raises(ConnectionRefusedError):
+            with pytest.raises(ConnectionError, match="Could not connect to Zen Browser"):
                 await server.get_ws()
         server._ws_connection = None
 

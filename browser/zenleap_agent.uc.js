@@ -117,6 +117,13 @@
       }
     }
 
+    // Clean up intercept rules created by this session
+    for (let i = interceptRules.length - 1; i >= 0; i--) {
+      if (interceptRules[i].sessionId === sessionId) {
+        interceptRules.splice(i, 1);
+      }
+    }
+
     if (session.staleTimer) {
       clearTimeout(session.staleTimer);
       session.staleTimer = null;
@@ -1006,7 +1013,7 @@
   let networkMonitorActive = false;
   const networkLog = [];           // Circular buffer of network entries
   const MAX_NETWORK_LOG = 500;
-  const interceptRules = [];       // {id, pattern: RegExp, action: 'block'|'modify_headers', headers: {}}
+  const interceptRules = [];       // {id, sessionId, pattern: RegExp, action: 'block'|'modify_headers', headers: {}}
   let interceptNextId = 1;
 
   const networkObserver = {
@@ -1219,7 +1226,21 @@
     try {
       return wg.getActor('ZenLeapAgent');
     } catch (e) {
-      log('getActor failed: ' + e + ' (url: ' + (browser.currentURI?.spec || '?') + ')');
+      const url = browser.currentURI?.spec || '?';
+      log('getActor failed: ' + e + ' (url: ' + url + ')');
+      // Give a helpful error for non-HTTP pages where the actor won't load
+      if (url === 'about:blank') {
+        throw new Error(
+          'Cannot access page content — the tab is on about:blank. ' +
+          'Navigate to a URL first, then use wait_for_load before interacting.'
+        );
+      }
+      if (url.startsWith('about:') || url.startsWith('data:')) {
+        throw new Error(
+          'Cannot access page content — the tab is on ' + url +
+          ' which is not an HTTP/HTTPS page. Navigate to an HTTP/HTTPS URL first.'
+        );
+      }
       throw new Error('Cannot access page content: ' + e.message);
     }
   }
@@ -1849,7 +1870,11 @@
     network_get_log: async ({ url_filter, method_filter, status_filter, limit }) => {
       let entries = [...networkLog];
       if (url_filter) {
-        const re = new RegExp(url_filter, 'i');
+        if (url_filter.length > 1000) throw new Error('url_filter too long: max 1000 characters');
+        let re;
+        try { re = new RegExp(url_filter, 'i'); } catch (e) {
+          throw new Error('Invalid regex in url_filter: ' + e.message);
+        }
         entries = entries.filter(e => re.test(e.url));
       }
       if (method_filter) {
@@ -1864,15 +1889,26 @@
     },
 
     // --- Request Interception (Phase 7, global) ---
-    intercept_add_rule: async ({ pattern, action, headers }) => {
+    intercept_add_rule: async ({ pattern, action, headers }, ctx) => {
       if (!pattern || !action) throw new Error('pattern and action are required');
       if (!['block', 'modify_headers'].includes(action)) {
         throw new Error('action must be "block" or "modify_headers"');
       }
+      // Validate regex pattern to prevent ReDoS — reject overly long patterns
+      if (pattern.length > 1000) {
+        throw new Error('Pattern too long: max 1000 characters');
+      }
       ensureNetworkObserver();
-      const compiled = new RegExp(pattern, 'i');
+      let compiled;
+      try {
+        compiled = new RegExp(pattern, 'i');
+      } catch (e) {
+        throw new Error('Invalid regex pattern: ' + e.message);
+      }
       const normalizedHeaders = headers || {};
+      // Duplicate detection is session-scoped — only dedupe within this session
       const existing = interceptRules.find(r =>
+        r.sessionId === ctx.session.id &&
         r.pattern.source === compiled.source &&
         r.action === action &&
         JSON.stringify(r.headers || {}) === JSON.stringify(normalizedHeaders)
@@ -1886,6 +1922,7 @@
       const id = interceptNextId++;
       interceptRules.push({
         id,
+        sessionId: ctx.session.id,
         pattern: compiled,
         action,
         headers: normalizedHeaders,
@@ -1893,20 +1930,25 @@
       return { success: true, rule_id: id };
     },
 
-    intercept_remove_rule: async ({ rule_id }) => {
+    intercept_remove_rule: async ({ rule_id }, ctx) => {
       if (!rule_id) throw new Error('rule_id is required');
       const idx = interceptRules.findIndex(r => r.id === rule_id);
       if (idx === -1) throw new Error('Rule not found: ' + rule_id);
+      const rule = interceptRules[idx];
+      if (rule.sessionId && rule.sessionId !== ctx.session.id) {
+        throw new Error('Cannot remove rule ' + rule_id + ': owned by another session');
+      }
       interceptRules.splice(idx, 1);
       return { success: true };
     },
 
-    intercept_list_rules: async () => {
+    intercept_list_rules: async (params, ctx) => {
       return interceptRules.map(r => ({
         id: r.id,
         pattern: r.pattern.source,
         action: r.action,
         headers: r.headers,
+        own: r.sessionId === ctx.session.id,
       }));
     },
 

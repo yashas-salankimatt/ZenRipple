@@ -37,3 +37,19 @@ bench/results/artifacts/
 # Env
 .env
 .env.local
+
+# Local tool state
+.sidecar/
+
+# Local helper scripts
+mc.sh
+review_step.sh
+
+# MCPorter config (local paths)
+config/
+
+# Guides and review outputs
+guides/
+
+# Dev notes
+notes.md

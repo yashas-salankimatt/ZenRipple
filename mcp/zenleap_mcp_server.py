@@ -64,24 +64,33 @@ async def get_ws():
         else:
             url = f"{BROWSER_WS_URL}/new"
 
+        _connect_kwargs = dict(
+            max_size=10 * 1024 * 1024,  # 10MB — screenshots can exceed 1MB
+            ping_interval=30,  # Send keepalive every 30s
+            ping_timeout=120,  # Wait up to 120s for pong (browser may be busy)
+        )
+
         try:
-            _ws_connection = await websockets.connect(
-                url,
-                max_size=10 * 1024 * 1024,  # 10MB — screenshots can exceed 1MB
-                ping_interval=30,  # Send keepalive every 30s
-                ping_timeout=120,  # Wait up to 120s for pong (browser may be busy)
-            )
-        except Exception:
+            _ws_connection = await websockets.connect(url, **_connect_kwargs)
+        except Exception as first_err:
             if reconnect_id and not SESSION_ID:
                 # Session was destroyed (grace timer expired) — create a new one
                 _session_id = None
                 url = f"{BROWSER_WS_URL}/new"
-                _ws_connection = await websockets.connect(
-                    url,
-                    max_size=10 * 1024 * 1024,
-                    ping_interval=30,
-                    ping_timeout=120,
-                )
+                try:
+                    _ws_connection = await websockets.connect(url, **_connect_kwargs)
+                except OSError:
+                    raise ConnectionError(
+                        f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
+                        "Make sure Zen Browser is running with the Zen AI Agent installed. "
+                        "If you just installed, restart Zen Browser first."
+                    ) from first_err
+            elif isinstance(first_err, OSError):
+                raise ConnectionError(
+                    f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
+                    "Make sure Zen Browser is running with the Zen AI Agent installed. "
+                    "If you just installed, restart Zen Browser first."
+                ) from first_err
             else:
                 raise
 
@@ -113,8 +122,9 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
                 msg = {"id": msg_id, "method": method, "params": params or {}}
                 await ws.send(json.dumps(msg))
                 raw = await asyncio.wait_for(ws.recv(), timeout=120)
+                resp = json.loads(raw)
             except Exception:
-                # Connection-level error (send/recv failed, timeout, etc.)
+                # Connection-level error (send/recv failed, timeout, malformed data)
                 if attempt == 0:
                     old_ws = _ws_connection
                     _ws_connection = None
@@ -125,7 +135,12 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
                             pass
                     continue  # retry with reconnection
                 raise
-            resp = json.loads(raw)
+            # Validate response ID matches what we sent
+            resp_id = resp.get("id")
+            if resp_id is not None and resp_id != msg_id:
+                raise Exception(
+                    f"Response ID mismatch: expected {msg_id}, got {resp_id}"
+                )
             if "error" in resp:
                 raise Exception(resp["error"].get("message", "Unknown browser error"))
             return resp.get("result", {})
@@ -281,8 +296,10 @@ async def browser_screenshot(tab_id: str = "") -> Image:
     Use this to verify page state, understand layouts, or see visual content."""
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
+    if not data_url:
+        raise Exception("Screenshot returned empty image data")
     # Strip data URL prefix: "data:image/jpeg;base64,..." or "data:image/png;base64,..."
-    if data_url.startswith("data:"):
+    if data_url.startswith("data:") and "," in data_url:
         header, b64 = data_url.split(",", 1)
         fmt = "jpeg" if "jpeg" in header else "png"
     else:
@@ -704,7 +721,9 @@ async def browser_save_screenshot(file_path: str, tab_id: str = "") -> str:
     The file_path can be absolute or relative to the server's working directory."""
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
-    if data_url.startswith("data:"):
+    if not data_url:
+        raise Exception("Screenshot returned empty image data")
+    if data_url.startswith("data:") and "," in data_url:
         b64 = data_url.split(",", 1)[1]
     else:
         b64 = data_url
@@ -890,7 +909,10 @@ async def browser_intercept_add_rule(
     headers: JSON object of headers to set (only for modify_headers action)."""
     params: dict = {"pattern": pattern, "action": action}
     if headers:
-        params["headers"] = json.loads(headers)
+        try:
+            params["headers"] = json.loads(headers)
+        except json.JSONDecodeError as e:
+            return f"Error: invalid JSON in headers parameter: {e}"
     return text_result(await browser_command("intercept_add_rule", params))
 
 
@@ -1121,26 +1143,38 @@ async def browser_reflect(goal: str = "", tab_id: str = "") -> list:
     Returns a screenshot (as an image) plus page text and metadata.
     Use this to understand the full page state before making decisions.
     goal: optional description of what you're trying to accomplish."""
-    # 1. Screenshot
-    screenshot_result = await browser_command("screenshot", {"tab_id": tab_id or None})
-    # 2. Page text
-    text_result_data = await browser_command("get_page_text", {"tab_id": tab_id or None})
-    # 3. Page info
-    info_result = await browser_command("get_page_info", {"tab_id": tab_id or None})
-
     blocks = []
+    errors = []
 
-    # Add screenshot as Image block
-    data_url = screenshot_result.get("image", "")
-    if data_url:
-        if data_url.startswith("data:"):
-            header, b64 = data_url.split(",", 1)
-            fmt = "jpeg" if "jpeg" in header else "png"
-        else:
-            b64 = data_url
-            fmt = "jpeg"
-        raw_bytes = base64.b64decode(b64)
-        blocks.append(Image(data=raw_bytes, format=fmt))
+    # 1. Screenshot (best-effort — don't fail reflect if screenshot fails)
+    try:
+        screenshot_result = await browser_command("screenshot", {"tab_id": tab_id or None})
+        data_url = screenshot_result.get("image", "")
+        if data_url:
+            if data_url.startswith("data:") and "," in data_url:
+                header, b64 = data_url.split(",", 1)
+                fmt = "jpeg" if "jpeg" in header else "png"
+            else:
+                b64 = data_url
+                fmt = "jpeg"
+            raw_bytes = base64.b64decode(b64)
+            blocks.append(Image(data=raw_bytes, format=fmt))
+    except Exception as e:
+        errors.append(f"screenshot: {e}")
+
+    # 2. Page text (best-effort)
+    text_result_data = {}
+    try:
+        text_result_data = await browser_command("get_page_text", {"tab_id": tab_id or None})
+    except Exception as e:
+        errors.append(f"page_text: {e}")
+
+    # 3. Page info (best-effort)
+    info_result = {}
+    try:
+        info_result = await browser_command("get_page_info", {"tab_id": tab_id or None})
+    except Exception as e:
+        errors.append(f"page_info: {e}")
 
     # Add text summary
     summary = f"URL: {info_result.get('url', '?')}\n"
@@ -1150,6 +1184,8 @@ async def browser_reflect(goal: str = "", tab_id: str = "") -> list:
         summary += f"\nGoal: {goal}\n"
     page_text = (text_result_data.get("text") or "")[:50000]
     summary += f"\n--- Page Text (first 50K chars) ---\n{page_text}"
+    if errors:
+        summary += f"\n\n--- Partial failures ---\n" + "\n".join(errors)
     blocks.append(summary)
 
     return blocks
@@ -1233,6 +1269,49 @@ async def browser_claim_tab(tab_id: str) -> str:
     released back to unclaimed status instead of being destroyed.
     tab_id: the tab_id from browser_list_workspace_tabs, or a URL."""
     return text_result(await browser_command("claim_tab", {"tab_id": tab_id}))
+
+
+# ── Health Check ─────────────────────────────────────────────────
+
+def _read_version() -> str:
+    """Read version from pyproject.toml so it stays in sync automatically."""
+    try:
+        toml_path = os.path.join(os.path.dirname(__file__), "pyproject.toml")
+        with open(toml_path) as f:
+            for line in f:
+                stripped = line.strip()
+                if stripped.startswith("version") and "=" in stripped:
+                    key = stripped.split("=", 1)[0].strip()
+                    if key == "version":
+                        return stripped.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        pass
+    return "unknown"
+
+
+MCP_SERVER_VERSION = _read_version()
+
+
+@mcp.tool()
+async def browser_ping() -> str:
+    """Check if the browser agent is alive and responsive.
+    Returns version info for both the MCP server and the browser agent.
+    Warns if their versions don't match."""
+    result = await browser_command("ping")
+    browser_version = result.get("version", "unknown")
+    info = {
+        "status": "ok",
+        "browser_agent_version": browser_version,
+        "mcp_server_version": MCP_SERVER_VERSION,
+        "session_id": result.get("session_id", ""),
+    }
+    if browser_version != MCP_SERVER_VERSION:
+        info["warning"] = (
+            f"Version mismatch: MCP server is v{MCP_SERVER_VERSION} but "
+            f"browser agent is v{browser_version}. "
+            "Run ./install.sh to update the browser agent."
+        )
+    return text_result(info)
 
 
 # ── Entry Point ─────────────────────────────────────────────────
