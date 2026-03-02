@@ -11,7 +11,7 @@ All agent tabs live in a dedicated "Zen AI Agent" workspace inside Zen Browser. 
 
 ## Zero-Touch Bootstrap
 
-If loaded from a raw URL on a fresh machine, clone first:
+If loaded from a raw URL on a fresh machine, clone first. If the repo already exists, pull updates.
 
 ```bash
 REPO_URL="https://github.com/yashas-salankimatt/zen-ai-agent.git"
@@ -26,6 +26,8 @@ fi
 cd "$REPO_DIR"
 REPO="$(pwd)"
 ```
+
+**After pulling, always run the Setup checks below** to verify the installed browser agent is up to date with the repo. A `git pull` updates the source files but does NOT update the installed copies in the Zen profile — you need `./install.sh --yes` + browser restart for that.
 
 To persist locally (optional):
 
@@ -53,19 +55,31 @@ cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
 **Before installing, check if Zen AI Agent is already set up.** Most of the time it is.
 
 ```bash
+REPO="${REPO:-$HOME/zen-ai-agent}"
+
 # 1. Check if MCPorter already knows about zenleap
 npx -y mcporter list --json 2>/dev/null | grep -q zenleap && echo "MCPorter: OK" || echo "MCPorter: NOT CONFIGURED"
 
 # 2. Check if browser agent is installed (look for the uc.js in any profile)
-ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenleap_agent.uc.js \
+INSTALLED_UC=$(ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenleap_agent.uc.js \
    ~/Library/Application\ Support/zen/Profiles/*/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js \
-   ~/.zen/*/chrome/JS/zenleap_agent.uc.js 2>/dev/null | head -1 && echo "Browser agent: OK" || echo "Browser agent: NOT INSTALLED"
+   ~/.zen/*/chrome/JS/zenleap_agent.uc.js 2>/dev/null | head -1)
+[ -n "$INSTALLED_UC" ] && echo "Browser agent: OK" || echo "Browser agent: NOT INSTALLED"
 
-# 3. Quick smoke test — if this returns a pong, everything is working
+# 3. Check if installed files are up to date with the repo
+if [ -n "$INSTALLED_UC" ] && [ -f "$REPO/browser/zenleap_agent.uc.js" ]; then
+  if diff -q "$REPO/browser/zenleap_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1; then
+    echo "Browser agent: UP TO DATE"
+  else
+    echo "Browser agent: OUT OF DATE — run ./install.sh --yes and restart Zen Browser"
+  fi
+fi
+
+# 4. Quick smoke test — if this returns a pong, everything is working
 MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenleap.browser_ping --output json 2>/dev/null && echo "Live connection: OK"
 ```
 
-**Only run the full install if the checks above fail.** If MCPorter and the browser agent are already configured, skip to Sessions.
+**Only run the full install if the checks above fail.** If everything says OK/UP TO DATE, skip to Sessions. If the browser agent is OUT OF DATE, re-run `./install.sh --yes` and restart Zen Browser.
 
 ### Full Install (only if needed)
 
