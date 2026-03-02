@@ -48,7 +48,26 @@ cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
 - **Python >= 3.13**, `uv`, `node`, `npm`/`npx` available.
 - Zen profile has `fx-autoconfig` (ZenLeap includes this).
 
-## Fresh Setup
+## Setup
+
+**Before installing, check if Zen AI Agent is already set up.** Most of the time it is.
+
+```bash
+# 1. Check if MCPorter already knows about zenleap
+npx -y mcporter list --json 2>/dev/null | grep -q zenleap && echo "MCPorter: OK" || echo "MCPorter: NOT CONFIGURED"
+
+# 2. Check if browser agent is installed (look for the uc.js in any profile)
+ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenleap_agent.uc.js \
+   ~/Library/Application\ Support/zen/Profiles/*/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js \
+   ~/.zen/*/chrome/JS/zenleap_agent.uc.js 2>/dev/null | head -1 && echo "Browser agent: OK" || echo "Browser agent: NOT INSTALLED"
+
+# 3. Quick smoke test — if this returns a pong, everything is working
+MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenleap.browser_ping --output json 2>/dev/null && echo "Live connection: OK"
+```
+
+**Only run the full install if the checks above fail.** If MCPorter and the browser agent are already configured, skip to Sessions.
+
+### Full Install (only if needed)
 
 1. Enter repo and install dependencies:
 
@@ -108,6 +127,87 @@ Session management tools:
 - `browser_session_close` — close the session: created tabs are closed, claimed tabs are released back to unclaimed.
 - `browser_list_sessions` — list all active sessions (admin/debug).
 - `browser_session_save` / `browser_session_restore` — save/restore open tabs and cookies to a JSON file.
+
+---
+
+## OpenRouter API Key (for Grounded Clicks)
+
+`browser_grounded_click` uses a VLM (Qwen2.5-VL-72B via OpenRouter) for pixel-accurate coordinate prediction. It needs an OpenRouter API key.
+
+**The key only needs to be provided once.** On first use, pass it as an env var. The MCP server stores it in Firefox prefs automatically. All subsequent calls (even without the env var) will load it from the browser.
+
+```bash
+# First time — provide the key via env var:
+OPENROUTER_API_KEY="sk-or-v1-..." npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the Submit button"}'
+
+# Every time after — no env var needed, key is remembered:
+npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the Submit button"}'
+```
+
+You can also read/write the stored key directly via browser config commands:
+
+```bash
+# Check if a key is stored:
+npx -y mcporter call zenleap.browser_get_config --args '{"key": "openrouter_api_key"}'
+
+# Store a key manually:
+npx -y mcporter call zenleap.browser_set_config --args '{"key": "openrouter_api_key", "value": "sk-or-v1-..."}'
+```
+
+The grounding model and API URL are also configurable via env vars:
+- `ZENLEAP_GROUNDING_MODEL` — default: `qwen/qwen2.5-vl-72b-instruct`
+- `ZENLEAP_GROUNDING_API_URL` — default: `https://openrouter.ai/api/v1/chat/completions`
+
+---
+
+## Click Strategy (IMPORTANT)
+
+When you need to click something on a page, use this priority order. **Always start with DOM-based methods** and only fall back to coordinate-based methods when DOM methods fail.
+
+### Priority 1: DOM Clicks (most reliable)
+
+Use `browser_get_dom` or `browser_get_elements_compact` to find the element's index, then `browser_click(index)`.
+
+```bash
+# Get interactive elements
+npx -y mcporter call zenleap.browser_get_elements_compact --output json
+# Click element at index 5
+npx -y mcporter call zenleap.browser_click --args '{"index": 5}'
+```
+
+Also try `browser_find_element_by_description` for fuzzy matching:
+
+```bash
+npx -y mcporter call zenleap.browser_find_element_by_description --args '{"description": "login button"}'
+```
+
+DOM clicks are pixel-perfect and never miss. Use them whenever the target is an interactive element visible in the DOM.
+
+### Priority 2: Grounded Clicks (for visual/non-standard targets)
+
+If the element isn't in the DOM index list (e.g., canvas content, custom-rendered UI, elements inside complex frameworks), use `browser_grounded_click(description)`. This takes a screenshot, sends it to a VLM for coordinate prediction, and clicks.
+
+```bash
+npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the circular target on the blue background"}'
+```
+
+Grounded clicks are very accurate for medium-to-large targets (buttons, icons, headings, links) but can miss on very dense UIs like spreadsheet cells where rows are only ~11px tall. Requires an OpenRouter API key (see above).
+
+### Priority 3: Coordinate Clicks (last resort)
+
+Only use `browser_click_coordinates(x, y)` as a last resort when both DOM clicks and grounded clicks are unavailable. Coordinates are estimated from screenshots and are the least reliable method.
+
+```bash
+npx -y mcporter call zenleap.browser_click_coordinates --args '{"x": 500, "y": 300}'
+```
+
+If screenshot and viewport dimensions differ, coordinates are auto-scaled from screenshot-space to viewport-space. Take a fresh screenshot before clicking to ensure the dimension cache is current.
+
+### Visual distinction
+
+- **Red crosshair** = regular `browser_click_coordinates` (manual coordinate click)
+- **Cyan crosshair** = `browser_grounded_click` (VLM-grounded click)
+- **No crosshair** = `browser_click` (DOM index click — always preferred)
 
 ---
 
@@ -173,8 +273,9 @@ Before interacting, you need to see what's on the page:
 
 The general pattern: call `browser_get_dom` (or `browser_get_elements_compact`) to get element indices, then use those indices to interact.
 
-- `browser_click(index)` — click an element by its index.
-- `browser_click_coordinates(x, y)` — click at exact pixel coordinates. Use with screenshot + DOM for precision.
+- `browser_click(index)` — click an element by its index. **Always prefer this over coordinate methods.**
+- `browser_grounded_click(description)` — click an element by natural language description using VLM grounding. Use when DOM index isn't available. Shows a cyan crosshair. Requires OpenRouter API key (stored automatically after first use).
+- `browser_click_coordinates(x, y)` — click at exact pixel coordinates. **Last resort** — only use when DOM and grounded clicks both fail. Shows a red crosshair.
 - `browser_fill(index, value)` — clear a form field and set a new value. Dispatches input/change events.
 - `browser_select_option(index, value)` — select a dropdown option by value or visible text.
 - `browser_type(text)` — type character-by-character into the focused element. Click an element first to focus it.

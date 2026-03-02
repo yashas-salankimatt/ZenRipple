@@ -1090,6 +1090,7 @@
     'record_save', 'record_replay', 'get_tab_events', 'get_dialogs',
     'list_tabs', 'list_workspace_tabs', 'claim_tab', 'get_page_info', 'get_navigation_status',
     'network_get_log', 'intercept_list_rules', 'eval_chrome',
+    'get_config', 'set_config',
     'session_info', 'session_close', 'list_sessions',
   ]);
 
@@ -1180,7 +1181,7 @@
           ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
           // JPEG is 5-10x smaller than PNG for web page screenshots
           const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
-          return { image: dataUrl, width: canvas.width, height: canvas.height };
+          return { image: dataUrl, width: canvas.width, height: canvas.height, viewport_width: bitmap.width, viewport_height: bitmap.height };
         } finally {
           bitmap.close(); // Prevent memory leak
         }
@@ -1523,6 +1524,12 @@
     },
 
     // --- Observation ---
+    get_viewport_dimensions: async ({ tab_id, frame_id }, ctx) => {
+      const tab = ctx.resolveTab(tab_id);
+      const actor = getActorForTab(tab, frame_id);
+      return await actor.sendQuery('ZenLeapAgent:GetViewportDimensions', {});
+    },
+
     get_page_info: async ({ tab_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       if (!tab) throw new Error('Tab not found');
@@ -1577,10 +1584,12 @@
       return await actorInteraction(tab, 'ZenLeapAgent:ClickElement', { index }, null, frame_id);
     },
 
-    click_coordinates: async ({ tab_id, frame_id, x, y }, ctx) => {
+    click_coordinates: async ({ tab_id, frame_id, x, y, color }, ctx) => {
       if (x === undefined || y === undefined) throw new Error('x and y are required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:ClickCoordinates', { x, y }, null, frame_id);
+      const data = { x, y };
+      if (color) data.color = color;
+      return await actorInteraction(tab, 'ZenLeapAgent:ClickCoordinates', data, null, frame_id);
     },
 
     fill_field: async ({ tab_id, frame_id, index, value }, ctx) => {
@@ -2161,6 +2170,24 @@
       return { success: true, replayed, total: actions.length, errors: errors.length > 0 ? errors : undefined };
     },
 
+    // --- Config (Firefox prefs under zenleap.*) ---
+    get_config: async ({ key }) => {
+      if (!key) throw new Error('key is required');
+      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.]/g, '');
+      try {
+        return { key, value: Services.prefs.getStringPref(prefKey, '') };
+      } catch (e) {
+        return { key, value: '' };
+      }
+    },
+
+    set_config: async ({ key, value }) => {
+      if (!key) throw new Error('key is required');
+      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.]/g, '');
+      Services.prefs.setStringPref(prefKey, String(value || ''));
+      return { success: true, key };
+    },
+
     // --- Chrome-Context Eval (Phase 10) ---
     eval_chrome: async ({ expression }) => {
       if (!expression) throw new Error('expression is required');
@@ -2181,7 +2208,7 @@
         return { error: e.message, stack: e.stack || '' };
       } finally {
         // Immediately destroy sandbox compartment to prevent memory accumulation
-        Cu.nukeSandbox(sandbox);
+        try { Cu.nukeSandbox(sandbox); } catch (_) {}
       }
     },
 

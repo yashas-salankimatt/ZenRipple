@@ -67,7 +67,13 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
       case 'ZenLeapAgent:Hover':
         return this.#hover(data.index);
       case 'ZenLeapAgent:ClickCoordinates':
-        return this.#clickCoordinates(data.x, data.y);
+        return this.#clickCoordinates(data.x, data.y, data.color);
+      case 'ZenLeapAgent:GetViewportDimensions':
+        return {
+          width: this.contentWindow.innerWidth,
+          height: this.contentWindow.innerHeight,
+          devicePixelRatio: this.contentWindow.devicePixelRatio,
+        };
       case 'ZenLeapAgent:SetupConsoleCapture':
         return this.#setupConsoleCapture();
       case 'ZenLeapAgent:TeardownConsoleCapture':
@@ -747,11 +753,11 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     return { success: true, tag: el.tagName.toLowerCase(), text: this.#getVisibleText(el).substring(0, 100) };
   }
 
-  #clickCoordinates(x, y) {
+  #clickCoordinates(x, y, color) {
     const win = this.contentWindow;
     const doc = win?.document;
     if (!doc) throw new Error('No document');
-    this.#showCursor(x, y);
+    this.#showCursor(x, y, color);
     const el = doc.elementFromPoint(x, y);
     // Use windowUtils for native-level trusted mouse events
     const utils = win.windowUtils;
@@ -1011,16 +1017,27 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
 
   // --- Virtual Cursor ---
 
-  #showCursor(x, y) {
+  #showCursor(x, y, color) {
     const doc = this.contentWindow?.document;
     if (!doc) return;
     // Validate inputs are finite numbers
     const numX = Number(x);
     const numY = Number(y);
     if (!Number.isFinite(numX) || !Number.isFinite(numY)) return;
+    // Sanitize color: only allow safe CSS color values (hex, named colors, rgb/rgba)
+    const c = (typeof color === 'string' && /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\))$/.test(color.trim())) ? color.trim() : 'red';
+    // Derive rgba background from the color
+    const bgAlpha = c === 'red' ? 'rgba(255,0,0,0.2)' :
+                    c === 'cyan' ? 'rgba(0,255,255,0.2)' :
+                    c === 'lime' || c === 'green' ? 'rgba(0,255,0,0.2)' :
+                    'rgba(128,128,128,0.2)';
+    const glowAlpha = c === 'red' ? 'rgba(255,0,0,0.6)' :
+                      c === 'cyan' ? 'rgba(0,255,255,0.6)' :
+                      c === 'lime' || c === 'green' ? 'rgba(0,255,0,0.6)' :
+                      'rgba(128,128,128,0.6)';
     // Remove previous cursor
     this.#removeCursor();
-    // Create cursor overlay: red crosshair with ring
+    // Create cursor overlay: crosshair with ring
     const cursor = doc.createElement('div');
     cursor.id = '__zenleap_cursor';
     // Use individual style properties (not cssText concatenation) to prevent CSS injection
@@ -1031,15 +1048,15 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     cursor.style.top = (numY - 12) + 'px';
     cursor.style.width = '24px';
     cursor.style.height = '24px';
-    cursor.style.border = '3px solid red';
+    cursor.style.border = '3px solid ' + c;
     cursor.style.borderRadius = '50%';
-    cursor.style.background = 'rgba(255,0,0,0.2)';
-    cursor.style.boxShadow = '0 0 8px rgba(255,0,0,0.6)';
+    cursor.style.background = bgAlpha;
+    cursor.style.boxShadow = '0 0 8px ' + glowAlpha;
     // Crosshair lines
     const hLine = doc.createElement('div');
-    hLine.style.cssText = 'position:absolute;top:50%;left:-4px;right:-4px;height:1px;background:red;transform:translateY(-50%)';
+    hLine.style.cssText = 'position:absolute;top:50%;left:-4px;right:-4px;height:1px;background:' + c + ';transform:translateY(-50%)';
     const vLine = doc.createElement('div');
-    vLine.style.cssText = 'position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:red;transform:translateX(-50%)';
+    vLine.style.cssText = 'position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:' + c + ';transform:translateX(-50%)';
     cursor.appendChild(hLine);
     cursor.appendChild(vLine);
     doc.documentElement.appendChild(cursor);

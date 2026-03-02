@@ -9,8 +9,10 @@ import asyncio
 import base64
 import json
 import os
+import re
 from uuid import uuid4
 
+import httpx
 import websockets
 
 from mcp.server.fastmcp import FastMCP
@@ -18,6 +20,20 @@ from mcp.server.fastmcp.utilities.types import Image
 
 BROWSER_WS_URL = os.environ.get("ZENLEAP_WS_URL", "ws://localhost:9876")
 SESSION_ID = os.environ.get("ZENLEAP_SESSION_ID", "")
+
+# Grounding VLM configuration for browser_grounded_click.
+# Uses an external VLM (default: Qwen2.5-VL-72B via OpenRouter) for accurate
+# pixel coordinate prediction from screenshots.
+# The API key is loaded from env var on startup, but also persisted in Firefox
+# prefs so the user only needs to provide it once.
+_GROUNDING_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
+_GROUNDING_MODEL = os.environ.get(
+    "ZENLEAP_GROUNDING_MODEL", "qwen/qwen2.5-vl-72b-instruct"
+)
+_GROUNDING_API_URL = os.environ.get(
+    "ZENLEAP_GROUNDING_API_URL", "https://openrouter.ai/api/v1/chat/completions"
+)
+_GROUNDING_KEY_SYNCED = False  # Whether we've synced with browser prefs yet
 
 mcp = FastMCP(
     "zenleap-browser",
@@ -31,6 +47,10 @@ _ws_connection = None
 _ws_lock = asyncio.Lock()
 _ws_command_lock = asyncio.Lock()
 _session_id: str | None = None  # Populated from X-ZenLeap-Session after connect
+
+# Cache screenshot ↔ viewport dimensions for auto-scaling click coordinates.
+# Keyed by tab_id (empty string for default tab).
+_last_screenshot_dims: dict[str, dict] = {}
 
 
 async def get_ws():
@@ -291,9 +311,10 @@ async def browser_get_page_info(tab_id: str = "") -> str:
 
 
 @mcp.tool()
-async def browser_screenshot(tab_id: str = "") -> Image:
-    """Take a screenshot of a browser tab. Returns the image so you can see the page.
-    Use this to verify page state, understand layouts, or see visual content."""
+async def browser_screenshot(tab_id: str = "") -> list:
+    """Take a screenshot of a browser tab. Returns the image and viewport dimensions.
+    Use this to verify page state, understand layouts, or see visual content.
+    Coordinates from this screenshot are auto-scaled when passed to browser_click_coordinates."""
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
     if not data_url:
@@ -306,7 +327,23 @@ async def browser_screenshot(tab_id: str = "") -> Image:
         b64 = data_url
         fmt = "jpeg"
     raw_bytes = base64.b64decode(b64)
-    return Image(data=raw_bytes, format=fmt)
+
+    # Cache screenshot ↔ viewport dimensions for auto-scaling
+    sw = result.get("width")
+    sh = result.get("height")
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+    tab_key = tab_id or ""
+    if sw and sh:
+        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
+
+    blocks: list = [Image(data=raw_bytes, format=fmt)]
+    if sw and sh and vw and vh:
+        info = f"Screenshot: {sw}x{sh}px | Viewport: {vw}x{vh}px"
+        if sw != vw:
+            info += f" | Scale factor: {vw / sw:.3f}"
+        blocks.append(info)
+    return blocks
 
 
 @mcp.tool()
@@ -488,11 +525,197 @@ async def browser_click(index: int, tab_id: str = "", frame_id: int = 0) -> str:
 @mcp.tool()
 async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: int = 0) -> str:
     """Click at specific x,y coordinates on the page.
-    Use browser_screenshot + browser_get_dom to identify coordinates."""
+    Use browser_screenshot + browser_get_dom to identify coordinates.
+    If screenshot and viewport dimensions differ, coordinates are auto-scaled
+    from screenshot-space to viewport-space."""
+    tab_key = tab_id or ""
+    dims = _last_screenshot_dims.get(tab_key)
+
+    # Scale from screenshot-space to viewport-space if they differ
+    if dims and dims["sw"] and dims["vw"] and dims["sw"] != dims["vw"]:
+        scale_x = dims["vw"] / dims["sw"]
+        scale_y = dims["vh"] / dims["sh"]
+        x = round(x * scale_x)
+        y = round(y * scale_y)
+
     params = {"tab_id": tab_id or None, "x": x, "y": y}
     if frame_id:
         params["frame_id"] = frame_id
     return text_result(await browser_command("click_coordinates", params))
+
+
+def _parse_grounding_coordinates(text: str, img_w: int, img_h: int):
+    """Parse pixel coordinates from a grounding VLM response.
+
+    Handles formats from Qwen-VL, UI-TARS, and generic models:
+      - Bounding box: (x1,y1,x2,y2) or [x1,y1,x2,y2] → center
+      - Absolute: (x, y) or [x, y]
+      - Normalized: (0.xx, 0.yy) → scaled to image dims
+      - Qwen box tokens: <|box_start|>(x,y)<|box_end|>
+      - Point tags: <point>x y</point>
+    """
+    # Qwen box token format
+    m = re.search(r"<\|box_start\|>\((\d+),\s*(\d+)\)<\|box_end\|>", text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    # <point>x y</point>
+    m = re.search(r"<point>(\d+)\s+(\d+)</point>", text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    # Bounding box (x1, y1, x2, y2) → center
+    m = re.search(
+        r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text
+    )
+    if m:
+        x1, y1, x2, y2 = (
+            int(m.group(1)), int(m.group(2)),
+            int(m.group(3)), int(m.group(4)),
+        )
+        return (x1 + x2) // 2, (y1 + y2) // 2
+    # Normalized floats (0.xx, 0.yy)
+    m = re.search(r"[\(\[]\s*(0\.\d+)\s*,\s*(0\.\d+)\s*[\)\]]", text)
+    if m:
+        return round(float(m.group(1)) * img_w), round(float(m.group(2)) * img_h)
+    # Absolute integers (x, y)
+    m = re.search(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    return None, None
+
+
+async def _ensure_grounding_key() -> str:
+    """Get the grounding API key, syncing between env var and Firefox prefs.
+
+    Priority: env var > Firefox prefs.
+    If env var is set, store it to Firefox prefs for future sessions.
+    If env var is empty, try to load from Firefox prefs.
+    Returns the key or empty string.
+    """
+    global _GROUNDING_API_KEY, _GROUNDING_KEY_SYNCED
+    if _GROUNDING_API_KEY and not _GROUNDING_KEY_SYNCED:
+        # We have an env var key — persist it to browser config
+        try:
+            await browser_command("set_config", {
+                "key": "openrouter_api_key",
+                "value": _GROUNDING_API_KEY,
+            })
+        except Exception:
+            pass  # Non-fatal: key still works from env var
+        _GROUNDING_KEY_SYNCED = True
+        return _GROUNDING_API_KEY
+
+    if not _GROUNDING_API_KEY and not _GROUNDING_KEY_SYNCED:
+        # No env var — try loading from browser config
+        try:
+            result = await browser_command("get_config", {
+                "key": "openrouter_api_key",
+            })
+            stored_key = result.get("value", "")
+            if stored_key:
+                _GROUNDING_API_KEY = stored_key
+        except Exception:
+            pass  # Browser not connected yet or config unavailable
+        _GROUNDING_KEY_SYNCED = True
+
+    return _GROUNDING_API_KEY
+
+
+@mcp.tool()
+async def browser_grounded_click(
+    description: str, tab_id: str = "", frame_id: int = 0
+) -> str:
+    """Click on a page element described in natural language using VLM grounding.
+
+    Takes a screenshot, sends it to a grounding VLM (Qwen2.5-VL-72B by default)
+    which returns precise pixel coordinates, then clicks at that position.
+    Much more accurate than manual coordinate estimation for dense UIs.
+
+    The API key is read from OPENROUTER_API_KEY env var on first use, then
+    persisted in the browser so it doesn't need to be provided again.
+
+    Args:
+        description: Natural language description of what to click
+                     (e.g. "the Submit button", "the search input field")
+        tab_id: Optional tab ID (defaults to active tab)
+        frame_id: Optional frame ID for iframe content
+    """
+    api_key = await _ensure_grounding_key()
+    if not api_key:
+        return "Error: OPENROUTER_API_KEY not set (provide via env var or it will be remembered from a previous session)"
+
+    # Step 1: Take a screenshot
+    result = await browser_command("screenshot", {"tab_id": tab_id or None})
+    data_url = result.get("image", "")
+    if not data_url:
+        return "Error: screenshot returned empty image"
+
+    if data_url.startswith("data:") and "," in data_url:
+        header, b64 = data_url.split(",", 1)
+        media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+    else:
+        b64 = data_url
+        media_type = "image/png"
+
+    sw = result.get("width", 0)
+    sh = result.get("height", 0)
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+
+    # Cache dimensions for consistency
+    tab_key = tab_id or ""
+    if sw and sh:
+        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
+
+    # Step 2: Ask the grounding VLM for coordinates
+    prompt = (
+        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
+        f"of {description}. Return ONLY the center point coordinates as (x, y). "
+        f"Nothing else."
+    )
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            _GROUNDING_API_URL,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": _GROUNDING_MODEL,
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:{media_type};base64,{b64}"
+                    }},
+                    {"type": "text", "text": prompt},
+                ]}],
+                "max_tokens": 100,
+            },
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        vlm_text = resp.json()["choices"][0]["message"]["content"]
+
+    # Step 3: Parse coordinates
+    px, py = _parse_grounding_coordinates(vlm_text, sw, sh)
+    if px is None or py is None:
+        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
+
+    # Step 4: Scale from screenshot-space to viewport-space if needed
+    click_x, click_y = px, py
+    if sw and vw and sw != vw:
+        click_x = round(px * vw / sw)
+        click_y = round(py * vh / sh)
+
+    # Step 5: Click (cyan crosshair to distinguish from manual coordinate clicks)
+    params = {"tab_id": tab_id or None, "x": click_x, "y": click_y, "color": "cyan"}
+    if frame_id:
+        params["frame_id"] = frame_id
+    click_result = text_result(await browser_command("click_coordinates", params))
+
+    return (
+        f"Grounded click: \"{description}\" → VLM predicted ({px},{py}), "
+        f"clicked ({click_x},{click_y}). {click_result}"
+    )
 
 
 @mcp.tool()
@@ -1159,6 +1382,15 @@ async def browser_reflect(goal: str = "", tab_id: str = "") -> list:
                 fmt = "jpeg"
             raw_bytes = base64.b64decode(b64)
             blocks.append(Image(data=raw_bytes, format=fmt))
+            # Cache dimensions for auto-scaling click coordinates
+            sw = screenshot_result.get("width")
+            sh = screenshot_result.get("height")
+            vw = screenshot_result.get("viewport_width", sw)
+            vh = screenshot_result.get("viewport_height", sh)
+            if sw and sh:
+                _last_screenshot_dims[tab_id or ""] = {
+                    "sw": sw, "sh": sh, "vw": vw, "vh": vh,
+                }
     except Exception as e:
         errors.append(f"screenshot: {e}")
 

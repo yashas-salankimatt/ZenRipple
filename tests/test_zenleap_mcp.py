@@ -351,7 +351,7 @@ _TINY_DATA_URL = f"data:image/png;base64,{_TINY_PNG_B64}"
 
 class TestScreenshot:
     @pytest.mark.asyncio
-    async def test_returns_image(self):
+    async def test_returns_image_and_dimensions(self):
         fake_ws = FakeWebSocket(
             responses=[
                 {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}}
@@ -359,7 +359,9 @@ class TestScreenshot:
         )
         with patch.object(server, "get_ws", return_value=fake_ws):
             result = await server.browser_screenshot()
-        assert isinstance(result, Image)
+        assert isinstance(result, list)
+        assert isinstance(result[0], Image)
+        assert "1x1px" in result[1]
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "screenshot"
 
@@ -548,12 +550,14 @@ class TestClick:
                 {"id": "x", "result": {"success": True, "tag": "div", "text": ""}}
             ]
         )
+        server._last_screenshot_dims.clear()
         with patch.object(server, "get_ws", return_value=fake_ws):
             result = await server.browser_click_coordinates(100, 200)
         data = json.loads(result)
         assert data["success"] is True
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "click_coordinates"
+        # No scaling when no cached dimensions
         assert msg["params"]["x"] == 100
         assert msg["params"]["y"] == 200
 
@@ -2743,3 +2747,305 @@ class TestTabClaimingWorkflow:
         assert len(mine) == 2
         assert len(claimable) == 2  # t3 (unclaimed) + t5 (stale)
         assert len(not_claimable) == 1  # t4 (active other agent)
+
+
+# ── Screenshot Dimension Metadata ──────────────────────────────────
+
+
+class TestScreenshotDimensions:
+    @pytest.mark.asyncio
+    async def test_returns_scale_factor_when_downscaled(self):
+        """When viewport > screenshot, scale factor is shown."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568,
+                        "height": 882,
+                        "viewport_width": 1920,
+                        "viewport_height": 1080,
+                    },
+                }
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_screenshot()
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert isinstance(result[0], Image)
+        assert "1920x1080" in result[1]
+        assert "Scale factor" in result[1]
+
+    @pytest.mark.asyncio
+    async def test_no_scale_factor_when_no_downscale(self):
+        """When viewport == screenshot, no scale factor is shown."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1200,
+                        "height": 800,
+                        "viewport_width": 1200,
+                        "viewport_height": 800,
+                    },
+                }
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_screenshot()
+        assert isinstance(result, list)
+        assert "Scale factor" not in result[1]
+
+    @pytest.mark.asyncio
+    async def test_caches_dimensions(self):
+        """Screenshot caches dimensions for auto-scaling."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568,
+                        "height": 882,
+                        "viewport_width": 1920,
+                        "viewport_height": 1080,
+                    },
+                }
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_screenshot()
+        dims = server._last_screenshot_dims.get("")
+        assert dims is not None
+        assert dims["sw"] == 1568
+        assert dims["vw"] == 1920
+
+
+# ── Click Coordinate Auto-Scaling ──────────────────────────────────
+
+
+class TestClickCoordinatesScaling:
+    @pytest.mark.asyncio
+    async def test_auto_scales_when_downscaled(self):
+        """Coordinates scaled from screenshot-space to viewport-space."""
+        server._last_screenshot_dims[""] = {
+            "sw": 1568, "sh": 882, "vw": 1920, "vh": 1080
+        }
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True, "tag": "button", "text": "OK"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_click_coordinates(784, 441)
+        msg = json.loads(fake_ws.sent[0])
+        # Viewport scaling only: 784*(1920/1568)=960, 441*(1080/882)=540
+        assert msg["params"]["x"] == 960
+        assert msg["params"]["y"] == 540
+
+    @pytest.mark.asyncio
+    async def test_no_scaling_when_dimensions_match(self):
+        """No scaling when screenshot and viewport dims match."""
+        server._last_screenshot_dims[""] = {
+            "sw": 1200, "sh": 800, "vw": 1200, "vh": 800
+        }
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True, "tag": "div", "text": ""}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_click_coordinates(600, 400)
+        msg = json.loads(fake_ws.sent[0])
+        # Pass-through: no scaling needed
+        assert msg["params"]["x"] == 600
+        assert msg["params"]["y"] == 400
+
+    @pytest.mark.asyncio
+    async def test_no_viewport_scaling_without_cache(self):
+        """Pass-through when no screenshot dimensions cached."""
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True, "tag": "a", "text": ""}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_click_coordinates(500, 300)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["x"] == 500
+        assert msg["params"]["y"] == 300
+
+    @pytest.mark.asyncio
+    async def test_scales_per_tab(self):
+        """Different tabs get different viewport scaling."""
+        server._last_screenshot_dims["tab-a"] = {
+            "sw": 1568, "sh": 882, "vw": 1920, "vh": 1080
+        }
+        server._last_screenshot_dims["tab-b"] = {
+            "sw": 800, "sh": 600, "vw": 800, "vh": 600
+        }
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "tag": "a", "text": ""}},
+                {"id": "x", "result": {"success": True, "tag": "a", "text": ""}},
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_click_coordinates(100, 100, tab_id="tab-a")
+            await server.browser_click_coordinates(100, 100, tab_id="tab-b")
+        msg_a = json.loads(fake_ws.sent[0])
+        msg_b = json.loads(fake_ws.sent[1])
+        # tab-a: viewport scaling 100*(1920/1568)=122
+        assert msg_a["params"]["x"] == 122
+        # tab-b: no scaling (sw==vw)
+        assert msg_b["params"]["x"] == 100
+
+
+# ── Grounding Coordinate Parser ──────────────────────────────────
+
+
+class TestParseGroundingCoordinates:
+    def test_absolute_coordinates(self):
+        x, y = server._parse_grounding_coordinates("(523, 312)", 1568, 882)
+        assert (x, y) == (523, 312)
+
+    def test_absolute_square_brackets(self):
+        x, y = server._parse_grounding_coordinates("[523, 312]", 1568, 882)
+        assert (x, y) == (523, 312)
+
+    def test_normalized_floats(self):
+        x, y = server._parse_grounding_coordinates("(0.5, 0.3)", 1568, 882)
+        assert (x, y) == (784, 265)
+
+    def test_bounding_box_center(self):
+        x, y = server._parse_grounding_coordinates("[100, 200, 300, 400]", 1568, 882)
+        assert (x, y) == (200, 300)
+
+    def test_qwen_box_token(self):
+        x, y = server._parse_grounding_coordinates(
+            "<|box_start|>(456,219)<|box_end|>", 1568, 882
+        )
+        assert (x, y) == (456, 219)
+
+    def test_point_tag(self):
+        x, y = server._parse_grounding_coordinates(
+            "<point>100 200</point>", 1568, 882
+        )
+        assert (x, y) == (100, 200)
+
+    def test_unparseable(self):
+        x, y = server._parse_grounding_coordinates("no coordinates here", 1568, 882)
+        assert x is None
+        assert y is None
+
+
+# ── API Key Persistence ──────────────────────────────────────────
+
+
+class TestEnsureGroundingKey:
+    @pytest.mark.asyncio
+    async def test_env_var_stored_to_config(self):
+        """When env var is set, key is stored to browser config."""
+        server._GROUNDING_API_KEY = "sk-test-123"
+        server._GROUNDING_KEY_SYNCED = False
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"success": True, "key": "openrouter_api_key"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            key = await server._ensure_grounding_key()
+        assert key == "sk-test-123"
+        assert server._GROUNDING_KEY_SYNCED is True
+        # Verify set_config was called to store the key
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "set_config"
+        assert msg["params"]["key"] == "openrouter_api_key"
+        assert msg["params"]["value"] == "sk-test-123"
+
+    @pytest.mark.asyncio
+    async def test_loads_from_config_when_no_env(self):
+        """When no env var, key is loaded from browser config."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = False
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"key": "openrouter_api_key", "value": "sk-stored-456"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            key = await server._ensure_grounding_key()
+        assert key == "sk-stored-456"
+        assert server._GROUNDING_API_KEY == "sk-stored-456"
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_key_anywhere(self):
+        """When no env var and no stored key, returns empty string."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = False
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"key": "openrouter_api_key", "value": ""}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            key = await server._ensure_grounding_key()
+        assert key == ""
+
+    @pytest.mark.asyncio
+    async def test_skips_sync_when_already_synced(self):
+        """When already synced, returns cached key without browser call."""
+        server._GROUNDING_API_KEY = "sk-cached"
+        server._GROUNDING_KEY_SYNCED = True
+        key = await server._ensure_grounding_key()
+        assert key == "sk-cached"
+
+
+# ── Grounded Click ───────────────────────────────────────────────
+
+
+class TestGroundedClick:
+    @pytest.mark.asyncio
+    async def test_no_key_returns_error(self):
+        """Returns error when no API key available."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = True
+        result = await server.browser_grounded_click("the button")
+        assert "OPENROUTER_API_KEY" in result
+
+    @pytest.mark.asyncio
+    async def test_passes_cyan_color(self):
+        """Grounded click passes cyan color to click_coordinates."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                # screenshot
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                # click_coordinates
+                {"id": "x", "result": {"success": True, "tag": "a", "text": "Link"}},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(400, 300)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("the link")
+
+        assert "Grounded click" in result
+        # Check the click_coordinates call has cyan color
+        click_msg = json.loads(fake_ws.sent[1])
+        assert click_msg["method"] == "click_coordinates"
+        assert click_msg["params"]["color"] == "cyan"
+        assert click_msg["params"]["x"] == 400
+        assert click_msg["params"]["y"] == 300
+
+
