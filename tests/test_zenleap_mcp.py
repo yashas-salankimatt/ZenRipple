@@ -11,6 +11,7 @@ import os
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+import httpx
 import pytest
 import pytest_asyncio
 
@@ -2829,6 +2830,14 @@ class TestScreenshotDimensions:
 
 
 class TestClickCoordinatesScaling:
+    @pytest.fixture(autouse=True)
+    def _save_restore_dims(self):
+        """Save and restore _last_screenshot_dims to prevent test leakage."""
+        orig = dict(server._last_screenshot_dims)
+        yield
+        server._last_screenshot_dims.clear()
+        server._last_screenshot_dims.update(orig)
+
     @pytest.mark.asyncio
     async def test_auto_scales_when_downscaled(self):
         """Coordinates scaled from screenshot-space to viewport-space."""
@@ -2916,6 +2925,16 @@ class TestParseGroundingCoordinates:
         x, y = server._parse_grounding_coordinates("(0.5, 0.3)", 1568, 882)
         assert (x, y) == (784, 265)
 
+    def test_normalized_floats_one_point_zero(self):
+        """Normalized regex matches 1.0 (bottom-right corner)."""
+        x, y = server._parse_grounding_coordinates("(1.0, 1.0)", 1568, 882)
+        assert (x, y) == (1568, 882)
+
+    def test_normalized_floats_zero_point_zero(self):
+        """Normalized regex matches 0.0 (top-left corner)."""
+        x, y = server._parse_grounding_coordinates("(0.0, 0.0)", 1568, 882)
+        assert (x, y) == (0, 0)
+
     def test_bounding_box_center(self):
         x, y = server._parse_grounding_coordinates("[100, 200, 300, 400]", 1568, 882)
         assert (x, y) == (200, 300)
@@ -2941,9 +2960,22 @@ class TestParseGroundingCoordinates:
 # ── API Key Persistence ──────────────────────────────────────────
 
 
+@pytest.fixture(autouse=False)
+def reset_grounding_globals():
+    """Reset grounding module globals before/after each test that uses this fixture."""
+    orig_key = server._GROUNDING_API_KEY
+    orig_synced = server._GROUNDING_KEY_SYNCED
+    orig_dims = dict(server._last_screenshot_dims)
+    yield
+    server._GROUNDING_API_KEY = orig_key
+    server._GROUNDING_KEY_SYNCED = orig_synced
+    server._last_screenshot_dims.clear()
+    server._last_screenshot_dims.update(orig_dims)
+
+
 class TestEnsureGroundingKey:
     @pytest.mark.asyncio
-    async def test_env_var_stored_to_config(self):
+    async def test_env_var_stored_to_config(self, reset_grounding_globals):
         """When env var is set, key is stored to browser config."""
         server._GROUNDING_API_KEY = "sk-test-123"
         server._GROUNDING_KEY_SYNCED = False
@@ -2961,7 +2993,18 @@ class TestEnsureGroundingKey:
         assert msg["params"]["value"] == "sk-test-123"
 
     @pytest.mark.asyncio
-    async def test_loads_from_config_when_no_env(self):
+    async def test_env_var_not_synced_on_set_failure(self, reset_grounding_globals):
+        """When set_config fails, _GROUNDING_KEY_SYNCED stays False so retry happens."""
+        server._GROUNDING_API_KEY = "sk-test-123"
+        server._GROUNDING_KEY_SYNCED = False
+        with patch.object(server, "browser_command", side_effect=Exception("ws error")):
+            key = await server._ensure_grounding_key()
+        assert key == "sk-test-123"
+        # Should NOT be synced since set_config failed
+        assert server._GROUNDING_KEY_SYNCED is False
+
+    @pytest.mark.asyncio
+    async def test_loads_from_config_when_no_env(self, reset_grounding_globals):
         """When no env var, key is loaded from browser config."""
         server._GROUNDING_API_KEY = ""
         server._GROUNDING_KEY_SYNCED = False
@@ -2972,9 +3015,20 @@ class TestEnsureGroundingKey:
             key = await server._ensure_grounding_key()
         assert key == "sk-stored-456"
         assert server._GROUNDING_API_KEY == "sk-stored-456"
+        assert server._GROUNDING_KEY_SYNCED is True
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_key_anywhere(self):
+    async def test_not_synced_on_get_failure(self, reset_grounding_globals):
+        """When get_config fails, _GROUNDING_KEY_SYNCED stays False so retry happens."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = False
+        with patch.object(server, "browser_command", side_effect=Exception("ws error")):
+            key = await server._ensure_grounding_key()
+        assert key == ""
+        assert server._GROUNDING_KEY_SYNCED is False
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_when_no_key_anywhere(self, reset_grounding_globals):
         """When no env var and no stored key, returns empty string."""
         server._GROUNDING_API_KEY = ""
         server._GROUNDING_KEY_SYNCED = False
@@ -2986,7 +3040,7 @@ class TestEnsureGroundingKey:
         assert key == ""
 
     @pytest.mark.asyncio
-    async def test_skips_sync_when_already_synced(self):
+    async def test_skips_sync_when_already_synced(self, reset_grounding_globals):
         """When already synced, returns cached key without browser call."""
         server._GROUNDING_API_KEY = "sk-cached"
         server._GROUNDING_KEY_SYNCED = True
@@ -2999,7 +3053,7 @@ class TestEnsureGroundingKey:
 
 class TestGroundedClick:
     @pytest.mark.asyncio
-    async def test_no_key_returns_error(self):
+    async def test_no_key_returns_error(self, reset_grounding_globals):
         """Returns error when no API key available."""
         server._GROUNDING_API_KEY = ""
         server._GROUNDING_KEY_SYNCED = True
@@ -3007,7 +3061,7 @@ class TestGroundedClick:
         assert "OPENROUTER_API_KEY" in result
 
     @pytest.mark.asyncio
-    async def test_passes_cyan_color(self):
+    async def test_passes_cyan_color(self, reset_grounding_globals):
         """Grounded click passes cyan color to click_coordinates."""
         server._GROUNDING_API_KEY = "sk-test"
         server._GROUNDING_KEY_SYNCED = True
@@ -3047,5 +3101,267 @@ class TestGroundedClick:
         assert click_msg["params"]["color"] == "cyan"
         assert click_msg["params"]["x"] == 400
         assert click_msg["params"]["y"] == 300
+
+    @pytest.mark.asyncio
+    async def test_viewport_scaling_in_grounded_click(self, reset_grounding_globals):
+        """Grounded click scales coordinates from screenshot to viewport space."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                # screenshot: 1568px wide → viewport 1920px wide
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1920, "viewport_height": 1080,
+                    },
+                },
+                # click_coordinates
+                {"id": "x", "result": {"success": True}},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(784, 441)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("center of page")
+
+        assert "Grounded click" in result
+        click_msg = json.loads(fake_ws.sent[1])
+        # 784 * (1920/1568) = 960, 441 * (1080/882) = 540
+        assert click_msg["params"]["x"] == 960
+        assert click_msg["params"]["y"] == 540
+
+    @pytest.mark.asyncio
+    async def test_4xx_not_retried(self, reset_grounding_globals):
+        """4xx client errors (except 429) fail immediately without retry."""
+        server._GROUNDING_API_KEY = "sk-bad"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        # Simulate a 401 Unauthorized from VLM API
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "Unauthorized"
+
+        call_count = 0
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.HTTPStatusError("401", request=MagicMock(), response=mock_response)
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("the button")
+
+        assert "401" in result
+        assert call_count == 1  # No retries for 4xx
+
+    @pytest.mark.asyncio
+    async def test_coordinate_bounds_clamped(self, reset_grounding_globals):
+        """VLM coordinates outside screenshot bounds are clamped."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                {"id": "x", "result": {"success": True}},
+            ]
+        )
+        # VLM returns coordinates beyond image bounds
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(1600, 900)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("off-screen element")
+
+        assert "Grounded click" in result
+        click_msg = json.loads(fake_ws.sent[1])
+        # Clamped: 1600 → 1567 (1568-1), 900 → 881 (882-1)
+        assert click_msg["params"]["x"] == 1567
+        assert click_msg["params"]["y"] == 881
+
+    @pytest.mark.asyncio
+    async def test_empty_screenshot_returns_error(self, reset_grounding_globals):
+        """Returns error when screenshot is empty."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "result": {"image": ""}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_grounded_click("the button")
+        assert "empty image" in result.lower() or "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_unparseable_vlm_returns_error(self, reset_grounding_globals):
+        """Returns error when VLM response cannot be parsed into coordinates."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "I cannot find that element on the page."}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("nonexistent element")
+
+        assert "could not parse coordinates" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_malformed_vlm_json_returns_error(self, reset_grounding_globals):
+        """Returns error when VLM response JSON has unexpected structure."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        # Response missing "choices" key entirely
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"error": "model overloaded"},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_click("the button")
+
+        assert "unexpected VLM response" in result.lower() or "Error" in result
+
+    @pytest.mark.asyncio
+    async def test_5xx_retried_then_succeeds(self, reset_grounding_globals):
+        """5xx errors trigger retry; eventual success works."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                {"id": "x", "result": {"success": True}},
+            ]
+        )
+        call_count = 0
+        mock_error_resp = MagicMock()
+        mock_error_resp.status_code = 503
+        mock_error_resp.text = "Service Unavailable"
+
+        mock_ok_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(400, 300)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise httpx.HTTPStatusError("503", request=MagicMock(), response=mock_error_resp)
+            return mock_ok_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server.browser_grounded_click("the link")
+
+        assert "Grounded click" in result
+        assert call_count == 2  # First call failed, second succeeded
+
+
+class TestParseGroundingCoordinatesExtended:
+    """Additional edge-case tests for _parse_grounding_coordinates."""
+
+    def test_coordinates_embedded_in_text(self):
+        """Coordinates embedded in natural language are extracted."""
+        x, y = server._parse_grounding_coordinates(
+            "The button is located at (523, 312) in the image.", 1568, 882
+        )
+        assert (x, y) == (523, 312)
+
+    def test_qwen_box_takes_priority(self):
+        """Qwen box token is matched before generic tuple patterns."""
+        text = "<|box_start|>(100,200)<|box_end|> (300, 400)"
+        x, y = server._parse_grounding_coordinates(text, 1568, 882)
+        assert (x, y) == (100, 200)
+
+    def test_decimal_absolute_coordinates(self):
+        """Decimal absolute coordinates are rounded to integers."""
+        x, y = server._parse_grounding_coordinates("(523.7, 312.2)", 1568, 882)
+        assert (x, y) == (524, 312)
 
 

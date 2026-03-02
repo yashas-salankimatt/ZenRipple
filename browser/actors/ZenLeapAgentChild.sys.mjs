@@ -1024,8 +1024,12 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     const numX = Number(x);
     const numY = Number(y);
     if (!Number.isFinite(numX) || !Number.isFinite(numY)) return;
-    // Sanitize color: only allow safe CSS color values (hex, named colors, rgb/rgba)
-    const c = (typeof color === 'string' && /^(#[0-9a-fA-F]{3,8}|[a-zA-Z]+|rgba?\([^)]+\))$/.test(color.trim())) ? color.trim() : 'red';
+    // Sanitize color: allowlist of safe CSS color names + hex/rgb formats
+    const SAFE_COLORS = new Set(['red', 'cyan', 'lime', 'green', 'blue', 'yellow', 'orange', 'white', 'magenta', 'purple']);
+    const trimmed = (typeof color === 'string') ? color.trim().toLowerCase() : '';
+    const c = SAFE_COLORS.has(trimmed) ? trimmed
+            : /^(#[0-9a-fA-F]{3,8}|rgba?\([^)]+\))$/.test(trimmed) ? trimmed
+            : 'red';
     // Derive rgba background from the color
     const bgAlpha = c === 'red' ? 'rgba(255,0,0,0.2)' :
                     c === 'cyan' ? 'rgba(0,255,255,0.2)' :
@@ -1052,11 +1056,23 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     cursor.style.borderRadius = '50%';
     cursor.style.background = bgAlpha;
     cursor.style.boxShadow = '0 0 8px ' + glowAlpha;
-    // Crosshair lines
+    // Crosshair lines — use individual style properties (consistent with ring above)
     const hLine = doc.createElement('div');
-    hLine.style.cssText = 'position:absolute;top:50%;left:-4px;right:-4px;height:1px;background:' + c + ';transform:translateY(-50%)';
+    hLine.style.position = 'absolute';
+    hLine.style.top = '50%';
+    hLine.style.left = '-4px';
+    hLine.style.right = '-4px';
+    hLine.style.height = '1px';
+    hLine.style.background = c;
+    hLine.style.transform = 'translateY(-50%)';
     const vLine = doc.createElement('div');
-    vLine.style.cssText = 'position:absolute;left:50%;top:-4px;bottom:-4px;width:1px;background:' + c + ';transform:translateX(-50%)';
+    vLine.style.position = 'absolute';
+    vLine.style.left = '50%';
+    vLine.style.top = '-4px';
+    vLine.style.bottom = '-4px';
+    vLine.style.width = '1px';
+    vLine.style.background = c;
+    vLine.style.transform = 'translateX(-50%)';
     cursor.appendChild(hLine);
     cursor.appendChild(vLine);
     doc.documentElement.appendChild(cursor);

@@ -2173,7 +2173,7 @@
     // --- Config (Firefox prefs under zenleap.*) ---
     get_config: async ({ key }) => {
       if (!key) throw new Error('key is required');
-      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.]/g, '');
+      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
       try {
         return { key, value: Services.prefs.getStringPref(prefKey, '') };
       } catch (e) {
@@ -2183,7 +2183,7 @@
 
     set_config: async ({ key, value }) => {
       if (!key) throw new Error('key is required');
-      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.]/g, '');
+      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
       Services.prefs.setStringPref(prefKey, String(value || ''));
       return { success: true, key };
     },

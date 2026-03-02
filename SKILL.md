@@ -82,11 +82,15 @@ INSTALLED_UC=$(ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenlea
 
 # 4. Check if installed browser files match the repo (detects stale installs after git pull)
 if [ -n "$INSTALLED_UC" ] && [ -f "$REPO/browser/zenleap_agent.uc.js" ]; then
-  if diff -q "$REPO/browser/zenleap_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1; then
-    echo "Browser agent: UP TO DATE"
-  else
-    echo "Browser agent: OUT OF DATE — run ./install.sh --yes and restart Zen Browser"
+  INSTALLED_DIR=$(dirname "$INSTALLED_UC")
+  STALE=0
+  diff -q "$REPO/browser/zenleap_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1 || STALE=1
+  # Also check the actor file
+  INSTALLED_ACTOR=$(find "$(dirname "$INSTALLED_DIR")" -path "*/actors/ZenLeapAgentChild.sys.mjs" 2>/dev/null | head -1)
+  if [ -n "$INSTALLED_ACTOR" ] && [ -f "$REPO/browser/actors/ZenLeapAgentChild.sys.mjs" ]; then
+    diff -q "$REPO/browser/actors/ZenLeapAgentChild.sys.mjs" "$INSTALLED_ACTOR" >/dev/null 2>&1 || STALE=1
   fi
+  [ "$STALE" -eq 0 ] && echo "Browser agent: UP TO DATE" || echo "Browser agent: OUT OF DATE — run ./install.sh --yes and restart Zen Browser"
 fi
 
 # 5. Quick smoke test — if this returns a pong, everything is working
@@ -172,14 +176,14 @@ OPENROUTER_API_KEY="sk-or-v1-..." npx -y mcporter call zenleap.browser_grounded_
 npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the Submit button"}'
 ```
 
-You can also read/write the stored key directly via browser config commands:
+You can also read/write the stored key directly via `browser_eval_chrome` (the config commands are internal browser commands, not separate MCP tools):
 
 ```bash
 # Check if a key is stored:
-npx -y mcporter call zenleap.browser_get_config --args '{"key": "openrouter_api_key"}'
+npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Services.prefs.getStringPref(\"zenleap.openrouter_api_key\", \"\")"}'
 
 # Store a key manually:
-npx -y mcporter call zenleap.browser_set_config --args '{"key": "openrouter_api_key", "value": "sk-or-v1-..."}'
+npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Services.prefs.setStringPref(\"zenleap.openrouter_api_key\", \"sk-or-v1-...\"); \"ok\""}'
 ```
 
 The grounding model and API URL are also configurable via env vars:

@@ -188,9 +188,12 @@ async def browser_create_tab(url: str = "about:blank", persist: bool = False) ->
 @mcp.tool()
 async def browser_close_tab(tab_id: str = "") -> str:
     """Close a browser tab. If no tab_id, closes the active tab."""
-    return text_result(
+    result = text_result(
         await browser_command("close_tab", {"tab_id": tab_id or None})
     )
+    # Clean up cached screenshot dimensions for the closed tab
+    _last_screenshot_dims.pop(tab_id or "", None)
+    return result
 
 
 @mcp.tool()
@@ -572,14 +575,18 @@ def _parse_grounding_coordinates(text: str, img_w: int, img_h: int):
             int(m.group(3)), int(m.group(4)),
         )
         return (x1 + x2) // 2, (y1 + y2) // 2
-    # Normalized floats (0.xx, 0.yy)
-    m = re.search(r"[\(\[]\s*(0\.\d+)\s*,\s*(0\.\d+)\s*[\)\]]", text)
+    # Normalized floats (0.xx, 0.yy) — also matches 1.0 and 0.0
+    m = re.search(r"[\(\[]\s*([01]\.\d+)\s*,\s*([01]\.\d+)\s*[\)\]]", text)
     if m:
         return round(float(m.group(1)) * img_w), round(float(m.group(2)) * img_h)
     # Absolute integers (x, y)
     m = re.search(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text)
     if m:
         return int(m.group(1)), int(m.group(2))
+    # Absolute decimals (x.x, y.y) — some VLMs return non-integer pixel coords
+    m = re.search(r"[\(\[]\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)\s*[\)\]]", text)
+    if m:
+        return round(float(m.group(1))), round(float(m.group(2)))
     return None, None
 
 
@@ -599,9 +606,9 @@ async def _ensure_grounding_key() -> str:
                 "key": "openrouter_api_key",
                 "value": _GROUNDING_API_KEY,
             })
+            _GROUNDING_KEY_SYNCED = True
         except Exception:
-            pass  # Non-fatal: key still works from env var
-        _GROUNDING_KEY_SYNCED = True
+            pass  # Non-fatal: key still works from env var, retry sync next call
         return _GROUNDING_API_KEY
 
     if not _GROUNDING_API_KEY and not _GROUNDING_KEY_SYNCED:
@@ -613,9 +620,9 @@ async def _ensure_grounding_key() -> str:
             stored_key = result.get("value", "")
             if stored_key:
                 _GROUNDING_API_KEY = stored_key
+            _GROUNDING_KEY_SYNCED = True
         except Exception:
-            pass  # Browser not connected yet or config unavailable
-        _GROUNDING_KEY_SYNCED = True
+            pass  # Browser not connected yet — retry sync next call
 
     return _GROUNDING_API_KEY
 
@@ -673,32 +680,66 @@ async def browser_grounded_click(
         f"Nothing else."
     )
 
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            _GROUNDING_API_URL,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": _GROUNDING_MODEL,
-                "messages": [{"role": "user", "content": [
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:{media_type};base64,{b64}"
-                    }},
-                    {"type": "text", "text": prompt},
-                ]}],
-                "max_tokens": 100,
-            },
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        vlm_text = resp.json()["choices"][0]["message"]["content"]
+    payload = {
+        "model": _GROUNDING_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{media_type};base64,{b64}"
+            }},
+            {"type": "text", "text": prompt},
+        ]}],
+        "max_tokens": 100,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
-    # Step 3: Parse coordinates
+    # Retry with exponential backoff for transient errors (transport failures,
+    # server errors, rate limits). Do NOT retry 4xx client errors (except 429).
+    max_retries = 3
+    last_error = None
+    vlm_text = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    _GROUNDING_API_URL,
+                    headers=headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                try:
+                    vlm_text = resp.json()["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as e:
+                    return f"Error: unexpected VLM response format: {e}"
+                break
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                status = e.response.status_code
+                # Only retry 5xx server errors and 429 rate limits
+                if status >= 500 or status == 429:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (2**attempt))
+                    continue
+                # 4xx client errors (auth, bad request, etc.) — fail immediately
+                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (2**attempt))
+                continue
+
+    if vlm_text is None:
+        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
+
+    # Step 3: Parse coordinates and validate bounds
     px, py = _parse_grounding_coordinates(vlm_text, sw, sh)
     if px is None or py is None:
         return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
+    # Clamp to screenshot bounds — VLM may return slightly out-of-range values
+    px = max(0, min(px, sw - 1)) if sw else px
+    py = max(0, min(py, sh - 1)) if sh else py
 
     # Step 4: Scale from screenshot-space to viewport-space if needed
     click_x, click_y = px, py
@@ -951,14 +992,19 @@ async def browser_save_screenshot(file_path: str, tab_id: str = "") -> str:
     else:
         b64 = data_url
     raw = base64.b64decode(b64)
+    # Cache screenshot ↔ viewport dimensions (consistent with browser_screenshot)
+    sw = result.get("width")
+    sh = result.get("height")
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+    if sw and sh:
+        _last_screenshot_dims[tab_id or ""] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
     # Ensure parent directory exists
     parent = os.path.dirname(os.path.abspath(file_path))
     os.makedirs(parent, exist_ok=True)
     with open(file_path, "wb") as f:
         f.write(raw)
-    width = result.get("width", "?")
-    height = result.get("height", "?")
-    return f"Screenshot saved to {file_path} ({len(raw)} bytes, {width}x{height})"
+    return f"Screenshot saved to {file_path} ({len(raw)} bytes, {sw or '?'}x{sh or '?'})"
 
 
 # ── Cookies (Phase 7) ──────────────────────────────────────────
