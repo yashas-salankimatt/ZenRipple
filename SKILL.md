@@ -57,16 +57,30 @@ cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
 ```bash
 REPO="${REPO:-$HOME/zen-ai-agent}"
 
-# 1. Check if MCPorter already knows about zenleap
+# 1. Pull latest code from remote
+if [ -d "$REPO/.git" ]; then
+  git -C "$REPO" fetch --quiet
+  LOCAL=$(git -C "$REPO" rev-parse HEAD)
+  REMOTE=$(git -C "$REPO" rev-parse @{u} 2>/dev/null)
+  if [ "$LOCAL" = "$REMOTE" ]; then
+    echo "Repo: UP TO DATE ($LOCAL)"
+  else
+    echo "Repo: OUT OF DATE — pulling latest..."
+    git -C "$REPO" pull --ff-only
+    echo "Repo: UPDATED ($(git -C "$REPO" rev-parse --short HEAD))"
+  fi
+fi
+
+# 2. Check if MCPorter already knows about zenleap
 npx -y mcporter list --json 2>/dev/null | grep -q zenleap && echo "MCPorter: OK" || echo "MCPorter: NOT CONFIGURED"
 
-# 2. Check if browser agent is installed (look for the uc.js in any profile)
+# 3. Check if browser agent is installed (look for the uc.js in any profile)
 INSTALLED_UC=$(ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenleap_agent.uc.js \
    ~/Library/Application\ Support/zen/Profiles/*/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js \
    ~/.zen/*/chrome/JS/zenleap_agent.uc.js 2>/dev/null | head -1)
-[ -n "$INSTALLED_UC" ] && echo "Browser agent: OK" || echo "Browser agent: NOT INSTALLED"
+[ -n "$INSTALLED_UC" ] && echo "Browser agent: INSTALLED" || echo "Browser agent: NOT INSTALLED"
 
-# 3. Check if installed files are up to date with the repo
+# 4. Check if installed browser files match the repo (detects stale installs after git pull)
 if [ -n "$INSTALLED_UC" ] && [ -f "$REPO/browser/zenleap_agent.uc.js" ]; then
   if diff -q "$REPO/browser/zenleap_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1; then
     echo "Browser agent: UP TO DATE"
@@ -75,11 +89,11 @@ if [ -n "$INSTALLED_UC" ] && [ -f "$REPO/browser/zenleap_agent.uc.js" ]; then
   fi
 fi
 
-# 4. Quick smoke test — if this returns a pong, everything is working
+# 5. Quick smoke test — if this returns a pong, everything is working
 MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenleap.browser_ping --output json 2>/dev/null && echo "Live connection: OK"
 ```
 
-**Only run the full install if the checks above fail.** If everything says OK/UP TO DATE, skip to Sessions. If the browser agent is OUT OF DATE, re-run `./install.sh --yes` and restart Zen Browser.
+**Only run the full install if the checks above fail.** If everything says OK/UP TO DATE, skip to Sessions. If the repo was updated or the browser agent is OUT OF DATE, re-run `./install.sh --yes` and restart Zen Browser.
 
 ### Full Install (only if needed)
 
