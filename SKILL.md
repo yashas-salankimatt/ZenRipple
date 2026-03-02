@@ -113,7 +113,35 @@ Session management tools:
 
 ## How To Use Your Tools
 
-All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to active tab) and `frame_id` (defaults to 0, the top frame). Use `--output json` with MCPorter CLI.
+All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to active tab) and `frame_id` (defaults to 0, the top frame).
+
+### MCPorter CLI Syntax (CRITICAL)
+
+**Always use `--args` with a JSON object** for tool parameters. Never use positional arguments or `-- --param` syntax — these break on values containing colons (like URLs).
+
+```bash
+# CORRECT — always use --args with JSON:
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_create_tab --args '{"url":"https://example.com"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_navigate --args '{"url":"https://example.com"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_wait_for_load --args '{"timeout":15}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_click --args '{"index":5}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_fill --args '{"index":3,"value":"hello"}' --output json
+
+# WRONG — do NOT use these formats:
+# npx -y mcporter call zenleap.browser_navigate "https://example.com"          # URL colon parsed as key:value
+# npx -y mcporter call zenleap.browser_navigate -- --url "https://example.com" # --url becomes literal text
+```
+
+**Always set `MCPORTER_CALL_TIMEOUT=30000`** (or higher) as an env var — the default timeout is too low for page loads and screenshots.
+
+**Always export `ZENLEAP_SESSION_ID`** so every call uses the same browser session.
+
+Recommended shell setup at the start of every session:
+```bash
+export ZENLEAP_SESSION_ID="<your-session-id>"
+alias mc='MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call'
+# Then: mc zenleap.browser_navigate --args '{"url":"https://example.com"}' --output json
+```
 
 ### Opening & Navigating Pages
 
