@@ -164,7 +164,7 @@ Session management tools:
 
 ## OpenRouter API Key (for Grounded Clicks)
 
-`browser_grounded_click` uses a VLM (Qwen2.5-VL-72B via OpenRouter) for pixel-accurate coordinate prediction. It needs an OpenRouter API key.
+`browser_grounded_click` uses a VLM (Qwen3-VL-235B-A22B via OpenRouter) for pixel-accurate coordinate prediction. It needs an OpenRouter API key.
 
 **The key only needs to be provided once.** On first use, pass it as an env var. The MCP server stores it in Firefox prefs automatically. All subsequent calls (even without the env var) will load it from the browser.
 
@@ -186,9 +186,10 @@ npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Service
 npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Services.prefs.setStringPref(\"zenleap.openrouter_api_key\", \"sk-or-v1-...\"); \"ok\""}'
 ```
 
-The grounding model and API URL are also configurable via env vars:
-- `ZENLEAP_GROUNDING_MODEL` — default: `qwen/qwen2.5-vl-72b-instruct`
+The grounding model, API URL, and coordinate mode are configurable via env vars, but the defaults work out of the box — you shouldn't need to change any of these:
+- `ZENLEAP_GROUNDING_MODEL` — default: `qwen/qwen3-vl-235b-a22b-instruct`
 - `ZENLEAP_GROUNDING_API_URL` — default: `https://openrouter.ai/api/v1/chat/completions`
+- `ZENLEAP_GROUNDING_COORD_MODE` — default: `norm1000` (matches Qwen3-VL). Set to `absolute` only if switching to a model that outputs raw pixel coordinates (e.g., Qwen2.5-VL, UI-TARS).
 
 ---
 
