@@ -2966,9 +2966,13 @@ def reset_grounding_globals():
     orig_key = server._GROUNDING_API_KEY
     orig_synced = server._GROUNDING_KEY_SYNCED
     orig_dims = dict(server._last_screenshot_dims)
+    orig_coord_mode = server._GROUNDING_COORD_MODE
+    # Use "absolute" for existing tests written for Qwen2.5-VL-style responses
+    server._GROUNDING_COORD_MODE = "absolute"
     yield
     server._GROUNDING_API_KEY = orig_key
     server._GROUNDING_KEY_SYNCED = orig_synced
+    server._GROUNDING_COORD_MODE = orig_coord_mode
     server._last_screenshot_dims.clear()
     server._last_screenshot_dims.update(orig_dims)
 
@@ -3363,5 +3367,58 @@ class TestParseGroundingCoordinatesExtended:
         """Decimal absolute coordinates are rounded to integers."""
         x, y = server._parse_grounding_coordinates("(523.7, 312.2)", 1568, 882)
         assert (x, y) == (524, 312)
+
+
+class TestParseGroundingCoordinatesNorm1000:
+    """Tests for coord_mode='norm1000' (Qwen3-VL 0-1000 normalized grid)."""
+
+    def test_norm1000_integer_pair(self):
+        """0-1000 normalized coords denormalized to pixel space."""
+        x, y = server._parse_grounding_coordinates(
+            "(500, 500)", 1568, 1101, coord_mode="norm1000"
+        )
+        # 500/1000 * 1568 = 784.0, 500/1000 * 1101 = 550.5 → rounds to 550
+        assert (x, y) == (784, 550)
+
+    def test_norm1000_bounding_box(self):
+        """Bounding box center denormalized from 0-1000 grid."""
+        x, y = server._parse_grounding_coordinates(
+            "(400, 300, 600, 500)", 1568, 1101, coord_mode="norm1000"
+        )
+        # center = (500, 400), denorm = (784, 440)
+        assert (x, y) == (784, 440)
+
+    def test_norm1000_qwen_box_token(self):
+        """Qwen box tokens also denormalized in norm1000 mode."""
+        x, y = server._parse_grounding_coordinates(
+            "<|box_start|>(895,20)<|box_end|>", 1568, 1101, coord_mode="norm1000"
+        )
+        assert (x, y) == (round(895 * 1568 / 1000), round(20 * 1101 / 1000))
+
+    def test_norm1000_point_tag(self):
+        """Point tags also denormalized in norm1000 mode."""
+        x, y = server._parse_grounding_coordinates(
+            "<point>500 300</point>", 1568, 1101, coord_mode="norm1000"
+        )
+        assert (x, y) == (784, 330)
+
+    def test_absolute_mode_unchanged(self):
+        """Absolute mode returns raw values (backwards compatible)."""
+        x, y = server._parse_grounding_coordinates(
+            "(523, 312)", 1568, 882, coord_mode="absolute"
+        )
+        assert (x, y) == (523, 312)
+
+    def test_normalized_floats_unaffected_by_coord_mode(self):
+        """Normalized floats (0.xx) already scale to image dims, not affected by mode."""
+        x, y = server._parse_grounding_coordinates(
+            "(0.5, 0.3)", 1568, 882, coord_mode="norm1000"
+        )
+        assert (x, y) == (784, 265)
+
+    def test_default_coord_mode_is_absolute(self):
+        """Default coord_mode is absolute for backwards compatibility."""
+        x, y = server._parse_grounding_coordinates("(500, 500)", 1568, 1101)
+        assert (x, y) == (500, 500)
 
 

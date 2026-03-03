@@ -28,11 +28,14 @@ SESSION_ID = os.environ.get("ZENLEAP_SESSION_ID", "")
 # prefs so the user only needs to provide it once.
 _GROUNDING_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 _GROUNDING_MODEL = os.environ.get(
-    "ZENLEAP_GROUNDING_MODEL", "qwen/qwen2.5-vl-72b-instruct"
+    "ZENLEAP_GROUNDING_MODEL", "qwen/qwen3-vl-235b-a22b-instruct"
 )
 _GROUNDING_API_URL = os.environ.get(
     "ZENLEAP_GROUNDING_API_URL", "https://openrouter.ai/api/v1/chat/completions"
 )
+# Coordinate mode: "norm1000" for Qwen3-VL/Qwen3.5 (0-1000 normalized grid),
+# "absolute" for Qwen2.5-VL/UI-TARS (raw pixel coords).
+_GROUNDING_COORD_MODE = os.environ.get("ZENLEAP_GROUNDING_COORD_MODE", "norm1000")
 _GROUNDING_KEY_SYNCED = False  # Whether we've synced with browser prefs yet
 
 mcp = FastMCP(
@@ -547,7 +550,9 @@ async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
     return text_result(await browser_command("click_coordinates", params))
 
 
-def _parse_grounding_coordinates(text: str, img_w: int, img_h: int):
+def _parse_grounding_coordinates(
+    text: str, img_w: int, img_h: int, coord_mode: str = "absolute"
+):
     """Parse pixel coordinates from a grounding VLM response.
 
     Handles formats from Qwen-VL, UI-TARS, and generic models:
@@ -556,15 +561,25 @@ def _parse_grounding_coordinates(text: str, img_w: int, img_h: int):
       - Normalized: (0.xx, 0.yy) → scaled to image dims
       - Qwen box tokens: <|box_start|>(x,y)<|box_end|>
       - Point tags: <point>x y</point>
+
+    Args:
+        coord_mode: "norm1000" for Qwen3-VL/Qwen3.5 (0-1000 normalized grid,
+                    pixel = coord/1000 * img_dim), "absolute" for raw pixels.
     """
+    def _denorm(x, y):
+        """Apply 0-1000 denormalization if coord_mode is norm1000."""
+        if coord_mode == "norm1000":
+            return round(x * img_w / 1000), round(y * img_h / 1000)
+        return x, y
+
     # Qwen box token format
     m = re.search(r"<\|box_start\|>\((\d+),\s*(\d+)\)<\|box_end\|>", text)
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _denorm(int(m.group(1)), int(m.group(2)))
     # <point>x y</point>
     m = re.search(r"<point>(\d+)\s+(\d+)</point>", text)
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _denorm(int(m.group(1)), int(m.group(2)))
     # Bounding box (x1, y1, x2, y2) → center
     m = re.search(
         r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text
@@ -574,19 +589,21 @@ def _parse_grounding_coordinates(text: str, img_w: int, img_h: int):
             int(m.group(1)), int(m.group(2)),
             int(m.group(3)), int(m.group(4)),
         )
-        return (x1 + x2) // 2, (y1 + y2) // 2
-    # Normalized floats (0.xx, 0.yy) — also matches 1.0 and 0.0
+        cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+        return _denorm(cx, cy)
+    # Normalized floats (0.xx, 0.yy) — already scale to image dims, no denorm needed
     m = re.search(r"[\(\[]\s*([01]\.\d+)\s*,\s*([01]\.\d+)\s*[\)\]]", text)
     if m:
         return round(float(m.group(1)) * img_w), round(float(m.group(2)) * img_h)
     # Absolute integers (x, y)
     m = re.search(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text)
     if m:
-        return int(m.group(1)), int(m.group(2))
+        return _denorm(int(m.group(1)), int(m.group(2)))
     # Absolute decimals (x.x, y.y) — some VLMs return non-integer pixel coords
     m = re.search(r"[\(\[]\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)\s*[\)\]]", text)
     if m:
-        return round(float(m.group(1))), round(float(m.group(2)))
+        x, y = round(float(m.group(1))), round(float(m.group(2)))
+        return _denorm(x, y)
     return None, None
 
 
@@ -633,7 +650,7 @@ async def browser_grounded_click(
 ) -> str:
     """Click on a page element described in natural language using VLM grounding.
 
-    Takes a screenshot, sends it to a grounding VLM (Qwen2.5-VL-72B by default)
+    Takes a screenshot, sends it to a grounding VLM (Qwen3-VL-235B-A22B by default)
     which returns precise pixel coordinates, then clicks at that position.
     Much more accurate than manual coordinate estimation for dense UIs.
 
@@ -734,7 +751,7 @@ async def browser_grounded_click(
         return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
 
     # Step 3: Parse coordinates and validate bounds
-    px, py = _parse_grounding_coordinates(vlm_text, sw, sh)
+    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
     if px is None or py is None:
         return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
     # Clamp to screenshot bounds — VLM may return slightly out-of-range values
