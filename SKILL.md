@@ -441,6 +441,31 @@ Record a sequence of browser actions and replay them later:
 - `browser_record_save(file_path)` — save the recording to a JSON file.
 - `browser_record_replay(file_path, delay)` — replay a recording with optional delay between actions (default 0.5s).
 
+### Session Replay (Video)
+
+Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when `ZENLEAP_SESSION_ID` is set (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
+
+**Workflow:**
+
+1. Replay starts automatically when `ZENLEAP_SESSION_ID` is set. No need to call `browser_replay_start`.
+2. Call `browser_replay_mark_prompt(text)` each time a new user prompt begins — this creates visual prompt-boundary markers in the video.
+3. Perform browser actions as normal — screenshots are captured automatically after every visual tool call (navigate, click, scroll, type, etc.).
+4. Call `browser_replay_save_video(output_path)` to assemble an MP4. Use `scope` to control what's included:
+   - `"session"` (default) — all frames from the entire session
+   - `"last_prompt"` — only frames from the most recent prompt
+   - `"prompt"` + `prompt_index=N` — frames from a specific prompt
+5. Optionally call `browser_replay_stop` to stop capturing. Frame data is preserved, so `save_video` still works after stopping.
+
+**Opt-out:** Set `ZENLEAP_NO_REPLAY=1` to disable automatic replay capture.
+
+**Tools:**
+
+- `browser_replay_start(output_dir?)` — backwards-compatible; can resume a stopped session. Not required for normal use.
+- `browser_replay_mark_prompt(text)` — mark the start of a new user prompt. Creates a title card frame in the video.
+- `browser_replay_save_video(output_path, scope?, prompt_index?)` — assemble frames into an MP4 using ffmpeg. Frame durations are computed from real timestamps.
+- `browser_replay_status` — check if replay is active, frame count, prompt count, and storage directory.
+- `browser_replay_stop` — stop capturing. Frame data is preserved for later `save_video` calls.
+
 ### Clipboard
 
 - `browser_clipboard_read` — read text from the system clipboard.

@@ -2,7 +2,7 @@
 
 Browser automation server for [Zen Browser](https://zen-browser.app/) that enables Claude Code (and other AI agents) to control the browser via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 
-Runs a WebSocket server inside Zen Browser with 55+ commands for navigation, DOM interaction, screenshots, console access, cookie/storage management, network monitoring, and more.
+Runs a WebSocket server inside Zen Browser with 60+ commands for navigation, DOM interaction, screenshots, console access, cookie/storage management, network monitoring, and more.
 
 ## Architecture
 
@@ -27,6 +27,7 @@ Claude Code / AI Agent
 - [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) installed in the target profile
 - Python 3.13+
 - [uv](https://docs.astral.sh/uv/) (Python package manager)
+- `ffmpeg` in PATH (optional, for session replay video export)
 
 ## Quick Install
 
@@ -105,7 +106,7 @@ Optional helper test for isolation:
 ./install.sh --list                   # Show installation status
 ```
 
-## Available MCP Tools (55+)
+## Available MCP Tools (60+)
 
 ### Navigation
 | Tool | Description |
@@ -233,6 +234,15 @@ Optional helper test for isolation:
 | `browser_record_save` | Save recording to file |
 | `browser_record_replay` | Replay a recording |
 
+### Session Replay (Video — Always-On)
+| Tool | Description |
+|------|-------------|
+| `browser_replay_start` | Backwards-compatible; auto-enabled when `ZENLEAP_SESSION_ID` is set |
+| `browser_replay_mark_prompt` | Mark a new user prompt boundary (creates title card) |
+| `browser_replay_save_video` | Assemble frames into MP4 (scope: session/last_prompt/prompt) |
+| `browser_replay_status` | Check replay state, frame/prompt counts |
+| `browser_replay_stop` | Stop capturing (frame data preserved for later export) |
+
 ## Session Model
 
 The agent supports multiple concurrent AI sessions:
@@ -259,7 +269,7 @@ Profile locations:
 ## Running Tests
 
 ```bash
-# Unit tests (195 tests)
+# Unit tests (273 tests)
 PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenleap_mcp.py -v
 
 # Benchmarks (requires running browser + Claude Agent SDK)
