@@ -1,6 +1,6 @@
 [project]
 name = "zen-ai-agent-mcp"
-version = "3.0.0"
+version = "1.0.0"
 description = "MCP server for Zen AI Agent — browser automation for Claude Code and AI agents"
 requires-python = ">=3.13"
 dependencies = [

@@ -305,7 +305,7 @@ mods['zen-ai-agent'] = {
     'description': 'Browser automation server for Claude Code and AI agents',
     'homepage': 'https://github.com/yashas-salankimatt/zen-ai-agent',
     'author': 'Zen AI Agent',
-    'version': version or '3.0.0',
+    'version': version or '1.0.0',
     'tags': ['ai', 'agent', 'automation'],
     'fork': ['zen'],
     'scripts': {

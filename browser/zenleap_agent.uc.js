@@ -3,13 +3,13 @@
 // @description    WebSocket server exposing browser control via MCP for AI agents
 // @include        main
 // @author         Zen AI Agent
-// @version        3.0.0
+// @version        1.0.0
 // ==/UserScript==
 
 (function() {
   'use strict';
 
-  const VERSION = '3.0.0';
+  const VERSION = '1.0.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'Zen AI Agent';
