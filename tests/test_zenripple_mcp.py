@@ -2128,6 +2128,7 @@ class TestGetWsSessionRouting:
             response_headers={"X-ZenRipple-Session": "abc-1234"}
         )
         with patch.object(server, "SESSION_ID", ""), \
+             patch.object(server, "_read_auth_token", return_value="test-token"), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
             ws = await server.get_ws()
         assert ws is fake_ws
@@ -2136,6 +2137,7 @@ class TestGetWsSessionRouting:
             max_size=10 * 1024 * 1024,
             ping_interval=30,
             ping_timeout=120,
+            additional_headers={"Authorization": "Bearer test-token"},
         )
         assert server._session_id == "abc-1234"
         server._ws_connection = None
@@ -2150,6 +2152,7 @@ class TestGetWsSessionRouting:
             response_headers={"X-ZenRipple-Session": "existing-session"}
         )
         with patch.object(server, "SESSION_ID", "existing-session"), \
+             patch.object(server, "_read_auth_token", return_value="test-token"), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
             ws = await server.get_ws()
         assert ws is fake_ws
@@ -2158,6 +2161,7 @@ class TestGetWsSessionRouting:
             max_size=10 * 1024 * 1024,
             ping_interval=30,
             ping_timeout=120,
+            additional_headers={"Authorization": "Bearer test-token"},
         )
         assert server._session_id == "existing-session"
         server._ws_connection = None
@@ -2171,6 +2175,7 @@ class TestGetWsSessionRouting:
         fake_ws = FakeWebSocket()
         with patch.object(server, "SESSION_ID", ""), \
              patch.object(server, "BROWSER_WS_URL", "ws://remote:1234"), \
+             patch.object(server, "_read_auth_token", return_value="test-token"), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
             ws = await server.get_ws()
         mock_connect.assert_called_once_with(
@@ -2178,6 +2183,7 @@ class TestGetWsSessionRouting:
             max_size=10 * 1024 * 1024,
             ping_interval=30,
             ping_timeout=120,
+            additional_headers={"Authorization": "Bearer test-token"},
         )
         server._ws_connection = None
         server._session_id = None
@@ -2211,7 +2217,8 @@ class TestGetWsSessionRouting:
         server._session_id = None
 
     @pytest.mark.asyncio
-    async def test_reconnect_uses_saved_session_id(self):
+    @patch.object(server, "_read_auth_token", return_value="test-token")
+    async def test_reconnect_uses_saved_session_id(self, _mock_token):
         """When connection dies, reconnects to same session using saved _session_id."""
         dead_ws = FakeWebSocket()
         dead_ws.closed = True
@@ -2231,6 +2238,7 @@ class TestGetWsSessionRouting:
             max_size=10 * 1024 * 1024,
             ping_interval=30,
             ping_timeout=120,
+            additional_headers={"Authorization": "Bearer test-token"},
         )
         assert server._session_id == "old-session"
         server._ws_connection = None
@@ -2276,6 +2284,72 @@ class TestGetWsSessionRouting:
             ws = await server.get_ws()
         assert ws is fake_ws
         assert server._session_id is None
+        server._ws_connection = None
+        server._session_id = None
+
+
+# ── Auth Token ────────────────────────────────────────────────
+
+
+class TestAuthToken:
+    """Tests for _read_auth_token and auth header passing."""
+
+    def test_auth_token_from_env(self):
+        """ZENRIPPLE_AUTH_TOKEN env var takes priority."""
+        with patch.dict(os.environ, {"ZENRIPPLE_AUTH_TOKEN": "env-token-123"}):
+            assert server._read_auth_token() == "env-token-123"
+
+    def test_auth_token_from_file(self, tmp_path):
+        """Reads token from ~/.zenripple/auth file."""
+        auth_file = tmp_path / ".zenripple" / "auth"
+        auth_file.parent.mkdir()
+        auth_file.write_text("file-token-456\n")
+        with patch.dict(os.environ, {"ZENRIPPLE_AUTH_TOKEN": ""}), \
+             patch("zenripple_mcp_server.Path.home", return_value=tmp_path):
+            assert server._read_auth_token() == "file-token-456"
+
+    def test_auth_token_missing_file(self, tmp_path):
+        """Returns empty string when file doesn't exist."""
+        with patch.dict(os.environ, {"ZENRIPPLE_AUTH_TOKEN": ""}), \
+             patch("zenripple_mcp_server.Path.home", return_value=tmp_path):
+            assert server._read_auth_token() == ""
+
+    def test_auth_token_env_overrides_file(self, tmp_path):
+        """Env var takes priority even when file exists."""
+        auth_file = tmp_path / ".zenripple" / "auth"
+        auth_file.parent.mkdir()
+        auth_file.write_text("file-token\n")
+        with patch.dict(os.environ, {"ZENRIPPLE_AUTH_TOKEN": "env-token"}), \
+             patch("zenripple_mcp_server.Path.home", return_value=tmp_path):
+            assert server._read_auth_token() == "env-token"
+
+    @pytest.mark.asyncio
+    async def test_empty_token_sends_no_header(self):
+        """When no token available, additional_headers is empty dict."""
+        server._ws_connection = None
+        server._session_id = None
+        fake_ws = FakeWebSocket()
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(server, "_read_auth_token", return_value=""), \
+             patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
+            await server.get_ws()
+        _, kwargs = mock_connect.call_args
+        assert kwargs["additional_headers"] == {}
+        server._ws_connection = None
+        server._session_id = None
+
+    @pytest.mark.asyncio
+    async def test_token_sends_bearer_header(self):
+        """When token is available, Authorization header is passed."""
+        server._ws_connection = None
+        server._session_id = None
+        fake_ws = FakeWebSocket()
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(server, "_read_auth_token", return_value="my-secret"), \
+             patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
+            await server.get_ws()
+        _, kwargs = mock_connect.call_args
+        assert kwargs["additional_headers"] == {"Authorization": "Bearer my-secret"}
         server._ws_connection = None
         server._session_id = None
 

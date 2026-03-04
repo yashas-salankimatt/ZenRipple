@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import os
+from pathlib import Path
 import sys
 
 import websockets
@@ -12,8 +13,22 @@ import websockets
 DEFAULT_WS_URL = os.environ.get("ZENRIPPLE_WS_URL", "ws://localhost:9876")
 
 
+def _read_auth_token() -> str:
+    """Read auth token from env var or ~/.zenripple/auth file."""
+    from_env = os.environ.get("ZENRIPPLE_AUTH_TOKEN", "").strip()
+    if from_env:
+        return from_env
+    auth_file = Path.home() / ".zenripple" / "auth"
+    try:
+        return auth_file.read_text().strip()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+
 async def _create_session(ws_url: str) -> str:
-    async with websockets.connect(f"{ws_url}/new") as ws:
+    token = _read_auth_token()
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    async with websockets.connect(f"{ws_url}/new", additional_headers=headers) as ws:
         headers = None
         if hasattr(ws, "response") and ws.response:
             headers = ws.response.headers

@@ -379,7 +379,37 @@
 
   let serverSocket = null;
 
-  function startServer() {
+  // --- Auth token: shared secret at ~/.zenripple/auth ---
+  let authToken = null;
+
+  async function loadOrCreateAuthToken() {
+    const homeDir = Services.dirsvc.get('Home', Ci.nsIFile).path;
+    const dir = PathUtils.join(homeDir, '.zenripple');
+    const file = PathUtils.join(dir, 'auth');
+    try {
+      const text = await IOUtils.readUTF8(file);
+      const token = text.trim();
+      if (token.length >= 32) {
+        authToken = token;
+        log('Auth token loaded from ' + file);
+        return;
+      }
+    } catch (e) { /* file doesn't exist yet — generate below */ }
+
+    // Generate new token (73 chars: two UUIDs joined by hyphen)
+    authToken = crypto.randomUUID() + '-' + crypto.randomUUID();
+    try {
+      await IOUtils.makeDirectory(dir, { ignoreExisting: true });
+      await IOUtils.writeUTF8(file, authToken + '\n');
+      await IOUtils.setPermissions(file, 0o600);
+      log('Auth token generated and saved to ' + file);
+    } catch (e) {
+      log('WARNING: Could not write auth token to ' + file + ': ' + e);
+      // Token is still in memory — connections will work for this session
+    }
+  }
+
+  async function startServer() {
     // Check if another window already started the server
     if (Services.appinfo && globalThis[GLOBAL_KEY]) {
       log('Server already running in another window — skipping');
@@ -389,6 +419,9 @@
     // Clean up any stale server from a previous load
     stopServer();
 
+    // Load or generate auth token before opening socket
+    await loadOrCreateAuthToken();
+
     try {
       serverSocket = Cc['@mozilla.org/network/server-socket;1']
         .createInstance(Ci.nsIServerSocket);
@@ -396,7 +429,7 @@
       serverSocket.asyncListen({
         onSocketAccepted(server, transport) {
           log('New connection from ' + transport.host + ':' + transport.port);
-          // Accept all connections — multi-session support
+          // Accept all connections — auth validated during WebSocket handshake
           new WebSocketConnection(transport);
         },
         onStopListening(server, status) {
@@ -583,6 +616,22 @@
         log('Invalid WebSocket handshake — no Sec-WebSocket-Key');
         this.close();
         return;
+      }
+
+      // Validate auth token
+      if (authToken) {
+        const authMatch = request.match(/Authorization:\s*Bearer\s+(\S+)/i);
+        const clientToken = authMatch ? authMatch[1].trim() : null;
+        if (!clientToken || clientToken !== authToken) {
+          log('Auth failed from ' + this.connectionId + ' — invalid or missing token');
+          const errResp =
+            'HTTP/1.1 401 Unauthorized\r\n' +
+            'Content-Length: 0\r\n' +
+            'Connection: close\r\n\r\n';
+          this.#writeRaw(errResp);
+          this.close();
+          return;
+        }
       }
 
       // Route: determine session
@@ -3258,7 +3307,7 @@
       return;
     }
 
-    startServer();
+    startServer(); // async — loads auth token then opens socket
     injectAgentTabStyles();
     registerActors();
     setupNavTracking();

@@ -13,6 +13,7 @@ except ImportError:
     fcntl = None  # Windows — file locking disabled
 import json
 import os
+from pathlib import Path
 import re
 import shutil
 import tempfile
@@ -56,6 +57,18 @@ mcp = FastMCP(
 
 _ws_connection = None
 _ws_lock = asyncio.Lock()
+
+
+def _read_auth_token() -> str:
+    """Read auth token from env var or ~/.zenripple/auth file."""
+    from_env = os.environ.get("ZENRIPPLE_AUTH_TOKEN", "").strip()
+    if from_env:
+        return from_env
+    auth_file = Path.home() / ".zenripple" / "auth"
+    try:
+        return auth_file.read_text().strip()
+    except (FileNotFoundError, PermissionError):
+        return ""
 _ws_command_lock = asyncio.Lock()
 _session_id: str | None = None  # Populated from X-ZenRipple-Session after connect
 
@@ -112,10 +125,13 @@ async def get_ws():
         else:
             url = f"{BROWSER_WS_URL}/new"
 
+        token = _read_auth_token()
+        _auth_headers = {"Authorization": f"Bearer {token}"} if token else {}
         _connect_kwargs = dict(
             max_size=10 * 1024 * 1024,  # 10MB — screenshots can exceed 1MB
             ping_interval=30,  # Send keepalive every 30s
             ping_timeout=120,  # Wait up to 120s for pong (browser may be busy)
+            additional_headers=_auth_headers,
         )
 
         try:

@@ -124,6 +124,18 @@ fi
 - If it says "ACTION REQUIRED: Restart Zen Browser" — tell the user to restart, then re-run the ping check.
 - If it says "no connection" — Zen Browser may not be running or may need a restart.
 
+### Authentication
+
+WebSocket connections are protected by a shared auth token. **This is fully automatic — no configuration needed.**
+
+- On first startup, the browser agent generates a random token and saves it to `~/.zenripple/auth` (permissions 0600).
+- The MCP server reads this token automatically and sends it as an `Authorization: Bearer` header on every connection.
+- Connections without a valid token are rejected with `401 Unauthorized`.
+
+**Override:** Set `ZENRIPPLE_AUTH_TOKEN` env var to use a custom token (useful for CI/Docker).
+
+**Troubleshooting:** If you get `401 Unauthorized` errors, delete `~/.zenripple/auth` and restart Zen Browser to regenerate the token.
+
 ## Sessions
 
 Session isolation is based on `ZENRIPPLE_SESSION_ID`. One top-level agent = one session. Sub-agents share the parent's session. Different agents must use different sessions.
