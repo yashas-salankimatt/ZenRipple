@@ -50,6 +50,8 @@
       this.notifPopupCursor = 0;       // session-level cursor for notification piggybacking
       this.recordingActive = false;
       this.recordedActions = [];
+      this.name = null;               // Human-readable session name (set via set_session_name)
+      this.colorIndex = 0;            // Index into SESSION_COLOR_PALETTE (assigned by createSession)
       this.createdAt = Date.now();
       this.lastActivity = Date.now();
       this.staleTimer = null;
@@ -119,8 +121,10 @@
   function createSession() {
     const id = crypto.randomUUID();
     const session = new Session(id);
+    session.colorIndex = _nextColorIndex;
+    _nextColorIndex = (_nextColorIndex + 1) % SESSION_COLOR_PALETTE.length;
     sessions.set(id, session);
-    log('Session created: ' + id);
+    log('Session created: ' + id + ' [color:' + session.colorIndex + ']');
     return session;
   }
 
@@ -150,6 +154,7 @@
         // and can be re-claimed by another session via list_workspace_tabs.
         try {
           tab.removeAttribute('data-agent-session-id');
+          clearTabIndicators(tab);
           log('Released claimed tab back to unclaimed: ' +
             (tab.getAttribute('data-agent-tab-id') || tab.linkedPanel));
         } catch (e) {
@@ -209,6 +214,148 @@
   // see what happened via get_tab_events.
   const CLAIM_STALE_MS = 2 * 60 * 1000;
 
+  // Tab indicator: threshold for active→claimed transition
+  const TAB_ACTIVE_THRESHOLD_MS = 60 * 1000;   // 60 seconds
+  const TAB_INDICATOR_SWEEP_MS = 5 * 1000;     // check every 5s
+  const MAX_SESSION_NAME_LENGTH = 32;
+
+  // Session accent color palette — visually distinct hues for dark backgrounds.
+  // Each entry is an RGB triplet string for use with rgba(var(--sh), alpha).
+  const SESSION_COLOR_PALETTE = [
+    '34,211,238',   // cyan/teal
+    '167,139,250',  // violet
+    '251,113,133',  // rose/pink
+    '163,230,53',   // lime
+    '56,189,248',   // sky blue
+    '232,121,249',  // fuchsia
+    '251,146,60',   // orange
+    '250,204,21',   // yellow
+  ];
+  let _nextColorIndex = 0;
+
+  // CSS injected at runtime for agent tab visual indicators.
+  // Uses CSS custom property --sh (session hue as R,G,B) set on each tab element.
+  // data-agent-indicator="active"|"claimed" controls brightness (active = bright, claimed = dim).
+  const AGENT_TAB_CSS = `
+/* === Zen AI Agent Tab Indicators === */
+
+@keyframes zenleap-wave-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+@keyframes zenleap-dot-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22)),
+                0 0 4px rgba(var(--sh),0.4);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22)),
+                0 0 10px rgba(var(--sh),1);
+    opacity: 0.7;
+  }
+}
+
+/* --- ACTIVE: wave sweep + stripe --- */
+.tabbrowser-tab[data-agent-indicator="active"] > .tab-stack > .tab-background {
+  background-image: linear-gradient(
+    90deg,
+    rgba(var(--sh),0.06) 0%,
+    rgba(var(--sh),0.22) 35%,
+    rgba(var(--sh),0.06) 55%,
+    transparent 80%
+  ) !important;
+  background-size: 300% 100% !important;
+  box-shadow: inset 3px 0 0 rgb(var(--sh)) !important;
+  animation: zenleap-wave-sweep 4s ease-in-out infinite !important;
+}
+
+.tabbrowser-tab[data-agent-indicator="active"] .tab-label {
+  opacity: 1 !important;
+}
+
+.tabbrowser-tab[data-agent-indicator="active"] .tab-icon-image {
+  opacity: 1 !important;
+}
+
+/* --- CLAIMED: dim session-colored wash + stripe --- */
+.tabbrowser-tab[data-agent-indicator="claimed"] > .tab-stack > .tab-background {
+  background-image: linear-gradient(90deg, rgba(var(--sh),0.04) 0%, transparent 100%) !important;
+  box-shadow: inset 3px 0 0 rgba(var(--sh),0.25) !important;
+}
+
+.tabbrowser-tab[data-agent-indicator="claimed"] .tab-label {
+  opacity: 0.7 !important;
+}
+
+/* --- Presence dot on favicon via .tab-icon-image::after --- */
+/* NOT .tab-icon-stack::after which conflicts with Zen's sound-playing indicator */
+
+.tabbrowser-tab[data-agent-indicator] .tab-icon-image {
+  overflow: visible !important;
+  position: relative;
+}
+
+.tabbrowser-tab[data-agent-indicator="active"] .tab-icon-image::after,
+.tabbrowser-tab[data-agent-indicator="claimed"] .tab-icon-image::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.tabbrowser-tab[data-agent-indicator="active"] .tab-icon-image::after {
+  width: 7px;
+  height: 7px;
+  background: rgb(var(--sh));
+  box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22)),
+              0 0 5px rgba(var(--sh),0.5);
+  animation: zenleap-dot-breathe 2.5s ease-in-out infinite;
+}
+
+.tabbrowser-tab[data-agent-indicator="claimed"] .tab-icon-image::after {
+  width: 5px;
+  height: 5px;
+  background: rgba(var(--sh),0.5);
+  box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22));
+}
+
+/* --- Selected tab layering: Zen's selected bg shows through, our wash overlays --- */
+.tabbrowser-tab[data-agent-indicator="active"][selected="true"] > .tab-stack > .tab-background {
+  background-image: linear-gradient(
+    90deg,
+    rgba(var(--sh),0.08) 0%,
+    rgba(var(--sh),0.24) 35%,
+    rgba(var(--sh),0.08) 55%,
+    transparent 80%
+  ) !important;
+  background-size: 300% 100% !important;
+}
+
+.tabbrowser-tab[data-agent-indicator="claimed"][selected="true"] > .tab-stack > .tab-background {
+  background-image: linear-gradient(90deg, rgba(var(--sh),0.06) 0%, transparent 100%) !important;
+}
+
+/* --- Sublabel coloring (session name in session accent color) --- */
+.tabbrowser-tab[data-agent-indicator="active"] .zen-tab-sublabel {
+  color: rgb(var(--sh)) !important;
+  opacity: 0.8 !important;
+}
+
+.tabbrowser-tab[data-agent-indicator="claimed"] .zen-tab-sublabel {
+  color: rgb(var(--sh)) !important;
+  opacity: 0.35 !important;
+}
+`;
+
   function staleSweep() {
     const now = Date.now();
     for (const [id, session] of sessions) {
@@ -220,6 +367,7 @@
   }
 
   let staleSweepInterval = null;
+  let tabIndicatorInterval = null;
 
   // ============================================
   // WEBSOCKET SERVER (XPCOM nsIServerSocket)
@@ -256,8 +404,9 @@
         }
       });
       globalThis[GLOBAL_KEY] = true;
-      // Start stale sweep
+      // Start stale sweep and tab indicator sweep
       staleSweepInterval = setInterval(staleSweep, STALE_SWEEP_MS);
+      tabIndicatorInterval = setInterval(updateTabIndicators, TAB_INDICATOR_SWEEP_MS);
       log('WebSocket server listening on localhost:' + AGENT_PORT);
     } catch (e) {
       log('Failed to start server: ' + e);
@@ -283,6 +432,11 @@
       clearInterval(staleSweepInterval);
       staleSweepInterval = null;
     }
+    if (tabIndicatorInterval) {
+      clearInterval(tabIndicatorInterval);
+      tabIndicatorInterval = null;
+    }
+    removeAgentTabStyles();
     // Remove Services.obs observers (process-global — outlive window otherwise)
     if (networkObserverRegistered) {
       try { Services.obs.removeObserver(networkObserver, 'http-on-modify-request'); } catch (e) {}
@@ -931,36 +1085,157 @@
     return 'owned';
   }
 
+  // ============================================
+  // TAB VISUAL INDICATORS
+  // ============================================
+
+  // Set the --sh (session hue) CSS custom property on a tab from its session's color.
+  function stampSessionColor(tab, session) {
+    try {
+      const rgb = SESSION_COLOR_PALETTE[session.colorIndex] || SESSION_COLOR_PALETTE[0];
+      tab.style.setProperty('--sh', rgb);
+    } catch (e) {}
+  }
+
+  // Mark a tab as actively being used right now.
+  function touchTabIndicator(tab) {
+    try {
+      tab.setAttribute('data-agent-tab-active-at', String(Date.now()));
+      tab.setAttribute('data-agent-indicator', 'active');
+    } catch (e) {
+      // Tab may be detaching — ignore
+    }
+  }
+
+  // Periodic sweep: demote active→claimed after TAB_ACTIVE_THRESHOLD_MS of inactivity.
+  function updateTabIndicators() {
+    const now = Date.now();
+    for (const tab of getAllTabs()) {
+      if (tab.getAttribute('data-agent-indicator') !== 'active') continue;
+      const ts = parseInt(tab.getAttribute('data-agent-tab-active-at') || '0', 10);
+      if (now - ts > TAB_ACTIVE_THRESHOLD_MS) {
+        try { tab.setAttribute('data-agent-indicator', 'claimed'); } catch (e) {}
+      }
+    }
+  }
+
+  // Update the sublabel (session name) on a tab.
+  function updateTabSublabel(tab, sessionName) {
+    try {
+      const sublabel = tab.querySelector('.zen-tab-sublabel');
+      if (!sublabel) return; // Zen element not present — skip gracefully
+      if (sessionName) {
+        // Use Zen's l10n system — setting textContent directly gets overwritten
+        // by the localization engine. The l10n template passes through any
+        // tabSubtitle that isn't "zen-default-pinned".
+        document.l10n.setArgs(sublabel, { tabSubtitle: sessionName });
+        tab.setAttribute('zen-show-sublabel', sessionName);
+      } else {
+        // 'zen-default-pinned' is Zen's l10n sentinel that maps to the hidden/default
+        // sublabel state in zen-vertical-tabs.ftl. Setting any other value shows it as-is.
+        document.l10n.setArgs(sublabel, { tabSubtitle: 'zen-default-pinned' });
+        tab.removeAttribute('zen-show-sublabel');
+      }
+    } catch (e) {
+      // Tab may be detaching
+    }
+  }
+
+  // Clear all agent indicator attributes, sublabel, and session color from a tab.
+  function clearTabIndicators(tab) {
+    try {
+      tab.removeAttribute('data-agent-indicator');
+      tab.removeAttribute('data-agent-tab-active-at');
+      tab.style.removeProperty('--sh');
+      updateTabSublabel(tab, null);
+    } catch (e) {}
+  }
+
+  // Group all tabs belonging to a session so they are adjacent in the sidebar.
+  // Tab visual order = DOM order in the workspace container.
+  function groupSessionTabs(sessionId) {
+    try {
+      if (!agentWorkspaceId || !gZenWorkspaces) return;
+      const wsElement = gZenWorkspaces.workspaceElement(agentWorkspaceId);
+      if (!wsElement) return;
+      const container = wsElement.tabsContainer;
+      if (!container) return;
+      const sessionTabs = [];
+      for (const child of container.children) {
+        if (child.getAttribute?.('data-agent-session-id') === sessionId) {
+          sessionTabs.push(child);
+        }
+      }
+      if (sessionTabs.length <= 1) return;
+      // Move all session tabs to be adjacent after the first one
+      let insertAfter = sessionTabs[0];
+      for (let i = 1; i < sessionTabs.length; i++) {
+        const tab = sessionTabs[i];
+        const nextSibling = insertAfter.nextSibling;
+        if (tab !== nextSibling) {
+          container.insertBefore(tab, nextSibling);
+        }
+        insertAfter = tab;
+      }
+    } catch (e) {
+      // Tab grouping is cosmetic — never block operations
+    }
+  }
+
+  // Inject CSS styles for agent tab indicators.
+  const STYLE_ID = 'zenleap-agent-tab-styles';
+  function injectAgentTabStyles() {
+    if (document.getElementById(STYLE_ID)) return; // already injected
+    const style = document.createElement('style');
+    style.id = STYLE_ID;
+    style.textContent = AGENT_TAB_CSS;
+    document.head.appendChild(style);
+    log('Agent tab indicator styles injected');
+  }
+
+  function removeAgentTabStyles() {
+    const el = document.getElementById(STYLE_ID);
+    if (el) el.remove();
+  }
+
   function resolveTabScoped(tabId, session, conn) {
+    let resolved = null;
+
     if (!tabId) {
       // Prefer connection's tracked current tab
       if (conn.currentAgentTab && conn.currentAgentTab.linkedBrowser) {
-        return conn.currentAgentTab;
+        resolved = conn.currentAgentTab;
+      } else {
+        // Fall back to first session tab
+        const sessionTabs = getSessionTabs(session.id);
+        if (sessionTabs.length > 0) {
+          conn.currentAgentTab = sessionTabs[0];
+          resolved = sessionTabs[0];
+        }
       }
-      // Fall back to first session tab
+    } else {
+      // Search within session's tabs by data-agent-tab-id
       const sessionTabs = getSessionTabs(session.id);
-      if (sessionTabs.length > 0) {
-        conn.currentAgentTab = sessionTabs[0];
-        return sessionTabs[0];
+      for (const tab of sessionTabs) {
+        if (tab.getAttribute('data-agent-tab-id') === tabId) { resolved = tab; break; }
       }
-      // No tabs at all — return null (callers should create one or throw)
-      return null;
+      if (!resolved) {
+        // Match by linkedPanel ID
+        for (const tab of sessionTabs) {
+          if (tab.linkedPanel === tabId) { resolved = tab; break; }
+        }
+      }
+      if (!resolved) {
+        // Match by URL within session
+        for (const tab of sessionTabs) {
+          if (tab.linkedBrowser?.currentURI?.spec === tabId) { resolved = tab; break; }
+        }
+      }
     }
 
-    // Search within session's tabs by data-agent-tab-id
-    const sessionTabs = getSessionTabs(session.id);
-    for (const tab of sessionTabs) {
-      if (tab.getAttribute('data-agent-tab-id') === tabId) return tab;
-    }
-    // Match by linkedPanel ID
-    for (const tab of sessionTabs) {
-      if (tab.linkedPanel === tabId) return tab;
-    }
-    // Match by URL within session
-    for (const tab of sessionTabs) {
-      if (tab.linkedBrowser?.currentURI?.spec === tabId) return tab;
-    }
-    return null;
+    // Mark the resolved tab as actively being used
+    if (resolved) touchTabIndicator(resolved);
+    return resolved;
   }
 
   // ============================================
@@ -1003,11 +1278,15 @@
           const popupId = tab.linkedPanel || ('agent-tab-' + Date.now());
           tab.setAttribute('data-agent-tab-id', popupId);
           tab.setAttribute('data-agent-session-id', ownerSession.id);
+          tab.setAttribute('data-agent-indicator', 'claimed');
+          stampSessionColor(tab, ownerSession);
+          if (ownerSession.name) updateTabSublabel(tab, ownerSession.name);
           ownerSession.agentTabs.add(tab);
           // Move to shared agent workspace
           if (agentWorkspaceId && gZenWorkspaces) {
             gZenWorkspaces.moveTabToWorkspace(tab, agentWorkspaceId);
           }
+          groupSessionTabs(ownerSession.id);
           log('Agent popup detected for session ' + ownerSession.id + ': ' + popupId);
         }
 
@@ -1277,7 +1556,7 @@
     'list_tabs', 'list_workspace_tabs', 'claim_tab', 'get_page_info', 'get_navigation_status',
     'network_get_log', 'intercept_list_rules', 'eval_chrome',
     'get_config', 'set_config',
-    'session_info', 'session_close', 'list_sessions',
+    'session_info', 'session_close', 'list_sessions', 'set_session_name',
   ]);
 
   // ============================================
@@ -1545,6 +1824,9 @@
       const stableId = tab.linkedPanel || ('agent-tab-' + Date.now());
       tab.setAttribute('data-agent-tab-id', stableId);
       tab.setAttribute('data-agent-session-id', ctx.session.id);
+      tab.setAttribute('data-agent-indicator', 'claimed');
+      stampSessionColor(tab, ctx.session);
+      if (ctx.session.name) updateTabSublabel(tab, ctx.session.name);
       ctx.session.agentTabs.add(tab);
       // When persist is true, mark as claimed so the tab survives session destruction
       if (persist) ctx.session.claimedTabs.add(tab);
@@ -1553,6 +1835,7 @@
       if (wsId && gZenWorkspaces) {
         gZenWorkspaces.moveTabToWorkspace(tab, wsId);
       }
+      groupSessionTabs(ctx.session.id);
       ctx.connection.currentAgentTab = tab;
       // Only set selectedTab if agent workspace is active
       try {
@@ -1779,9 +2062,13 @@
         newTab.setAttribute('data-agent-tab-id', stableId);
         newTab.setAttribute('data-agent-session-id', ctx.session.id);
         ctx.session.agentTabs.add(newTab);
+        newTab.setAttribute('data-agent-indicator', 'claimed');
+        stampSessionColor(newTab, ctx.session);
+        if (ctx.session.name) updateTabSublabel(newTab, ctx.session.name);
         if (wsId && gZenWorkspaces) {
           gZenWorkspaces.moveTabToWorkspace(newTab, wsId);
         }
+        groupSessionTabs(ctx.session.id);
         openedTabIds.push(stableId);
         ctx.session.pushTabEvent({
           type: 'tab_opened',
@@ -2354,6 +2641,9 @@
           const stableId = tab.linkedPanel || ('agent-tab-' + Date.now() + '-' + tabsRestored);
           tab.setAttribute('data-agent-tab-id', stableId);
           tab.setAttribute('data-agent-session-id', ctx.session.id);
+          tab.setAttribute('data-agent-indicator', 'claimed');
+          stampSessionColor(tab, ctx.session);
+          if (ctx.session.name) updateTabSublabel(tab, ctx.session.name);
           ctx.session.agentTabs.add(tab);
           if (wsId && gZenWorkspaces) {
             gZenWorkspaces.moveTabToWorkspace(tab, wsId);
@@ -2361,6 +2651,7 @@
           tabsRestored++;
         }
       }
+      groupSessionTabs(ctx.session.id);
       return {
         success: true,
         tabs_restored: tabsRestored,
@@ -2411,6 +2702,9 @@
         const stableId = tab.linkedPanel || ('agent-tab-' + Date.now() + '-' + opened.length);
         tab.setAttribute('data-agent-tab-id', stableId);
         tab.setAttribute('data-agent-session-id', ctx.session.id);
+        tab.setAttribute('data-agent-indicator', 'claimed');
+        stampSessionColor(tab, ctx.session);
+        if (ctx.session.name) updateTabSublabel(tab, ctx.session.name);
         ctx.session.agentTabs.add(tab);
         if (persist) ctx.session.claimedTabs.add(tab);
         if (wsId && gZenWorkspaces) {
@@ -2418,6 +2712,7 @@
         }
         opened.push({ tab_id: stableId, url });
       }
+      groupSessionTabs(ctx.session.id);
       return { success: true, tabs: opened, persist: !!persist };
     },
 
@@ -2666,6 +2961,8 @@
     session_info: async (params, ctx) => {
       return {
         session_id: ctx.session.id,
+        name: ctx.session.name,
+        color_index: ctx.session.colorIndex,
         workspace_name: AGENT_WORKSPACE_NAME,
         workspace_id: agentWorkspaceId,
         connection_id: ctx.connection.connectionId,
@@ -2695,6 +2992,8 @@
       for (const [id, session] of sessions) {
         result.push({
           session_id: id,
+          name: session.name,
+          color_index: session.colorIndex,
           workspace_name: AGENT_WORKSPACE_NAME,
           connection_count: session.connections.size,
           tab_count: getSessionTabs(id).length,
@@ -2702,6 +3001,51 @@
         });
       }
       return result;
+    },
+
+    set_session_name: async ({ name }, ctx) => {
+      if (typeof name !== 'string') {
+        throw new Error('name must be a string');
+      }
+      const trimmed = name.trim();
+      // Empty string clears the session name
+      if (trimmed.length === 0) {
+        ctx.session.name = null;
+        for (const tab of getSessionTabs(ctx.session.id)) {
+          updateTabSublabel(tab, null);
+        }
+        log('Session ' + ctx.session.id + ' name cleared');
+        const otherNames = [];
+        for (const [id, session] of sessions) {
+          if (id !== ctx.session.id && session.name) otherNames.push(session.name);
+        }
+        return { name: null, other_session_names: otherNames };
+      }
+      if (trimmed.length > MAX_SESSION_NAME_LENGTH) {
+        throw new Error('name must be at most ' + MAX_SESSION_NAME_LENGTH + ' characters');
+      }
+      // Strip control characters (keep printable Unicode + spaces)
+      const sanitized = trimmed.replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+      if (sanitized.length === 0) {
+        throw new Error('name must contain printable characters');
+      }
+      ctx.session.name = sanitized;
+      // Update sublabel on all existing session tabs
+      for (const tab of getSessionTabs(ctx.session.id)) {
+        updateTabSublabel(tab, sanitized);
+      }
+      // Return other session names so the caller can pick a unique name
+      const otherNames = [];
+      for (const [id, session] of sessions) {
+        if (id !== ctx.session.id && session.name) {
+          otherNames.push(session.name);
+        }
+      }
+      log('Session ' + ctx.session.id + ' named: ' + sanitized);
+      return {
+        name: sanitized,
+        other_session_names: otherNames,
+      };
     },
 
     // --- Tab Claiming (workspace-wide visibility) ---
@@ -2807,6 +3151,9 @@
       const stableId = targetTab.getAttribute('data-agent-tab-id') || targetTab.linkedPanel || ('agent-tab-' + Date.now());
       targetTab.setAttribute('data-agent-tab-id', stableId);
       targetTab.setAttribute('data-agent-session-id', ctx.session.id);
+      targetTab.setAttribute('data-agent-indicator', 'claimed');
+      stampSessionColor(targetTab, ctx.session);
+      if (ctx.session.name) updateTabSublabel(targetTab, ctx.session.name);
       ctx.session.agentTabs.add(targetTab);
       ctx.session.claimedTabs.add(targetTab);
 
@@ -2816,6 +3163,7 @@
         gZenWorkspaces.moveTabToWorkspace(targetTab, agentWorkspaceId);
       }
 
+      groupSessionTabs(ctx.session.id);
       ctx.connection.currentAgentTab = targetTab;
 
       ctx.session.pushTabEvent({
@@ -2911,6 +3259,7 @@
     }
 
     startServer();
+    injectAgentTabStyles();
     registerActors();
     setupNavTracking();
     setupDialogObserver();

@@ -146,6 +146,15 @@ Session isolation is based on `ZENLEAP_SESSION_ID`. One top-level agent = one se
 # Create a session
 export ZENLEAP_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenleap_session.py" new)"
 
+# Name the session (do this right after creating it)
+# The name appears as a sublabel under each tab title in Zen's sidebar,
+# so you can see which agent owns which tabs at a glance.
+# First check what names other sessions are using, then pick a unique name.
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_list_sessions --output json
+# ^ Check the "name" field on each session to avoid duplicates
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_set_session_name --args '{"name":"researcher"}' --output json
+# ^ Returns: {"name": "researcher", "other_session_names": ["coder", ...]}
+
 # Pass to sub-agents if env isn't inherited
 ZENLEAP_SESSION_ID="$ZENLEAP_SESSION_ID" <sub-agent-command>
 
@@ -153,12 +162,50 @@ ZENLEAP_SESSION_ID="$ZENLEAP_SESSION_ID" <sub-agent-command>
 npx -y mcporter call zenleap.browser_session_close --output json
 ```
 
-Session management tools:
+### Session Naming
+
+Every session should be named immediately after creation. The name is displayed as a sublabel under each tab's title in the sidebar, making it easy to tell which agent session owns which tabs. Names are max 32 characters.
+
+**Naming workflow:**
+1. Call `browser_list_sessions` to see existing session names.
+2. Pick a unique, descriptive name (e.g., `"researcher"`, `"code-reviewer"`, `"bug-fixer"`).
+3. Call `browser_set_session_name(name)` — returns the set name and a list of other active session names.
+4. To rename, simply call `browser_set_session_name` again with the new name.
+
+**MCP (tool call):**
+```
+browser_set_session_name(name="researcher")
+```
+
+**MCPorter CLI:**
+```bash
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_set_session_name --args '{"name":"researcher"}' --output json
+```
+
+The name also appears in `browser_session_info` and `browser_list_sessions` responses.
+
+### Session Management Tools
+
 - `browser_ping` — health check. Verifies the browser agent is alive, returns version info for both MCP server and browser agent, and warns on version mismatch.
-- `browser_session_info` — get current session ID, workspace, connection count, tab count.
+- `browser_session_info` — get current session ID, name, workspace, connection count, tab count.
+- `browser_set_session_name(name)` — set or change the session's display name. Shown as sublabel on all session tabs. Max 32 chars. Pass an empty string to clear the name.
 - `browser_session_close` — close the session: created tabs are closed, claimed tabs are released back to unclaimed.
-- `browser_list_sessions` — list all active sessions (admin/debug).
+- `browser_list_sessions` — list all active sessions with their names (admin/debug).
 - `browser_session_save` / `browser_session_restore` — save/restore open tabs and cookies to a JSON file.
+
+### Tab Status Indicators (Visual Feedback)
+
+Agent tabs in Zen's sidebar show visual indicators so the user can see agent activity at a glance. These are automatic — no agent action is needed.
+
+- **Active** (session accent color, bright) — An agent interacted with the tab in the last 60 seconds. Shows a colored gradient wash with breathing animation, a bright left accent stripe, and a glowing presence dot on the favicon. The sublabel appears in the session's accent color.
+- **Claimed** (session accent color, dim) — An agent owns the tab but hasn't used it recently (>60s idle). Shows a dimmed colored gradient wash, a dimmed left accent stripe, and a smaller presence dot. The sublabel appears in a dimmed accent color.
+- **Regular** — No agent association. Normal Zen tab appearance.
+
+Each session is automatically assigned a unique accent color from a palette of 8 hues (cyan, violet, rose, lime, sky blue, fuchsia, orange, yellow). The color identifies the session; the brightness distinguishes active vs idle. Tabs are also auto-grouped by session in the sidebar so each session's tabs are adjacent.
+
+Tabs automatically transition from active → claimed after 60 seconds of inactivity. When a session is destroyed, all indicators and sublabels are cleared.
+
+The session name (set via `browser_set_session_name`) appears as a sublabel under each tab's title in the sidebar, colored to match the session's accent color. The `color_index` field in `session_info` and `list_sessions` responses indicates which palette color was assigned.
 
 ---
 
@@ -280,11 +327,11 @@ alias mc='MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call'
 
 To visit a URL, create a tab and wait for it to load:
 
-- `browser_create_tab(url, persist)` — open a new tab with a URL (defaults to `about:blank`). Set `persist=true` to keep the tab alive after session close (released to unclaimed instead of destroyed).
+- `browser_create_tab(url, persist)` — open a new tab with a URL (defaults to `about:blank`). **Always use `persist=true`** unless the tab is purely for agent scratch work that no human will ever need to see (see Tab Persistence section below).
 - `browser_navigate(url)` — navigate the active (or specified) tab to a URL.
 - `browser_go_back` / `browser_go_forward` — history navigation.
 - `browser_reload` — refresh the page.
-- `browser_batch_navigate(urls, persist)` — open multiple URLs at once (comma-separated). Returns tab IDs. Set `persist=true` to keep all tabs alive after session close.
+- `browser_batch_navigate(urls, persist)` — open multiple URLs at once (comma-separated). Returns tab IDs. **Always use `persist=true`** unless all tabs are throwaway agent scratch work.
 - `browser_wait_for_load(timeout)` — wait until the page finishes loading. **Always use this after navigation instead of fixed sleeps.**
 - `browser_get_navigation_status` — check HTTP status code, error code, and loading state after navigation. Useful for detecting 404s or network failures.
 
@@ -373,10 +420,20 @@ By default, all tabs created by your session are **closed** when the session is 
 
 Both mechanisms work the same way internally. When your session closes, persistent/claimed tabs have their session ownership removed and revert to "unclaimed" status in the workspace, where they can be re-claimed by a future session.
 
-**When to use `persist=true`:**
-- The user asks you to leave tabs open after you're done.
-- You're opening reference pages the user will want to keep.
-- You're setting up a workspace for the user to continue working in.
+**Default to `persist=true`.** The browser workspace is shared with the human user. If there is any chance a human will want to see, review, or continue working with a tab, it must persist. Tabs that vanish unexpectedly are confusing and disruptive.
+
+**When to use `persist=true` (almost always):**
+- Any tab the user asked you to open or find.
+- Any result page, document, dashboard, or reference material.
+- Any page you navigated to as part of fulfilling the user's request.
+- Any tab the user might want to review after your session ends.
+- When in doubt, persist. It's always safer.
+
+**When to skip `persist` (rare):**
+- A temporary intermediate page you'll close immediately (e.g., a Google search you navigate away from right after).
+- A throwaway scratch tab used purely for agent-internal work that no human will ever need to see.
+
+**If you realize a non-persistent tab should persist:** You cannot retroactively add persistence. Instead, claim the tab via `browser_claim_tab(tab_id)` — this re-acquires it with persistence enabled (claimed tabs always persist through session close).
 
 **MCP (tool call):**
 ```
@@ -484,7 +541,24 @@ Many tools accept a `frame_id` parameter to target content inside iframes:
 
 ---
 
-## Human-In-The-Loop Escalation
+## Shared Browser — Human-In-The-Loop Awareness
+
+**This is a shared browser.** A human user is actively using the same Zen Browser instance. The agent workspace tabs are visible to them, and they may interact with pages at any time. This is by design — Zen AI Agent is a human-in-the-loop system, not a headless automation tool.
+
+### Detecting User Activity
+
+If you notice unexpected changes to a page or tab — a different URL than expected, new content that appeared, a form that's been filled in, a tab that was navigated somewhere else — **the user may have interacted with it.** Do not assume something is broken.
+
+When you detect unexpected state:
+1. **Evaluate the change.** Does it help or hinder your current task?
+2. **If it helps or is neutral** — incorporate it and keep going. For example, if the user navigated to a more specific page than what you were looking for, use that.
+3. **If it seems to hinder your task** — do NOT immediately stop. Most unexpected changes are incidental (the user browsing, clicking around, or doing their own thing in parallel). Only pause and defer to the user if you are confident that **both** of the following are true:
+   - The change was clearly caused by the user (not a page redirect, ad, or script).
+   - The user's intent was to take over or redirect the task — e.g., they navigated your tab to a completely different site, closed a tab you were using, or are actively typing into a form you were filling out.
+   If both conditions are met, stop and let the user finish what they're doing. Then ask if they want you to resume.
+4. **Otherwise, work around it.** If the user just happened to interact with a page but wasn't trying to take over, find another path to your goal — open a new tab, re-navigate, or adapt your approach. The default is to keep going, not to stop.
+
+### Escalation
 
 Pause and notify the human when you encounter:
 - CAPTCHA, anti-bot, or human verification challenges.
@@ -523,6 +597,9 @@ npx -y mcporter call zenleap.browser_session_close --output json
 
 ## Guardrails
 
+- **Name your session** immediately after creating it — call `browser_set_session_name` with a unique, descriptive name.
+- **Default to `persist=true`** when creating tabs. Only skip persist for throwaway scratch tabs the user will never need.
+- **Respect user activity.** If page state changed unexpectedly, the user may have acted. Evaluate whether it helps or blocks you, and adapt accordingly (see Shared Browser section above).
 - Do not reuse another active agent's `ZENLEAP_SESSION_ID`.
 - Do not claim actively-owned tabs — only unclaimed or stale ones.
 - Close your session (`browser_session_close`) when done to prevent stale resources.

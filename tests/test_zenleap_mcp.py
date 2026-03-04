@@ -2296,6 +2296,8 @@ class TestSessionManagement:
             "connection_count": 2,
             "tab_count": 3,
             "claimed_tab_count": 1,
+            "color_index": 2,
+            "name": "test-session",
             "created_at": 1700000000000,
         }
         fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
@@ -2307,6 +2309,8 @@ class TestSessionManagement:
         assert data["connection_count"] == 2
         assert data["tab_count"] == 3
         assert data["claimed_tab_count"] == 1
+        assert data["color_index"] == 2
+        assert data["name"] == "test-session"
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "session_info"
 
@@ -2331,6 +2335,8 @@ class TestSessionManagement:
                 "workspace_name": "Zen AI Agent",
                 "connection_count": 1,
                 "tab_count": 2,
+                "color_index": 0,
+                "name": "researcher",
                 "created_at": 1700000000000,
             },
             {
@@ -2338,6 +2344,8 @@ class TestSessionManagement:
                 "workspace_name": "Zen AI Agent",
                 "connection_count": 3,
                 "tab_count": 5,
+                "color_index": 1,
+                "name": None,
                 "created_at": 1700001000000,
             },
         ]
@@ -2347,7 +2355,9 @@ class TestSessionManagement:
         data = json.loads(result)
         assert len(data) == 2
         assert data[0]["session_id"] == "abc-1234"
+        assert data[0]["color_index"] == 0
         assert data[1]["session_id"] == "def-5678"
+        assert data[1]["color_index"] == 1
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "list_sessions"
 
@@ -2376,6 +2386,122 @@ class TestSessionManagement:
         with patch.object(server, "get_ws", return_value=fake_ws):
             with pytest.raises(Exception, match="Session not found"):
                 await server.browser_session_close()
+
+
+class TestSessionNaming:
+    """Tests for browser_set_session_name tool and name in session/list responses."""
+
+    @pytest.mark.asyncio
+    async def test_set_session_name(self):
+        resp = {"name": "researcher", "other_session_names": ["coder", "reviewer"]}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_set_session_name(name="researcher")
+        data = json.loads(result)
+        assert data["name"] == "researcher"
+        assert "coder" in data["other_session_names"]
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "set_session_name"
+        assert msg["params"]["name"] == "researcher"
+
+    @pytest.mark.asyncio
+    async def test_set_session_name_too_long_error(self):
+        fake_ws = FakeWebSocket(
+            responses=[{"id": "x", "error": {"message": "name must be at most 32 characters"}}]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="name must be at most 32 characters"):
+                await server.browser_set_session_name(name="a" * 50)
+
+    @pytest.mark.asyncio
+    async def test_session_info_includes_name(self):
+        resp = {
+            "session_id": "abc-1234",
+            "workspace_name": "Zen AI Agent",
+            "workspace_id": "ws-uuid",
+            "connection_id": "conn-1",
+            "connection_count": 1,
+            "tab_count": 2,
+            "claimed_tab_count": 0,
+            "color_index": 0,
+            "created_at": 1700000000000,
+            "name": "researcher",
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_session_info()
+        data = json.loads(result)
+        assert data["name"] == "researcher"
+
+    @pytest.mark.asyncio
+    async def test_session_info_name_null_when_unset(self):
+        resp = {
+            "session_id": "abc-1234",
+            "workspace_name": "Zen AI Agent",
+            "workspace_id": "ws-uuid",
+            "connection_id": "conn-1",
+            "connection_count": 1,
+            "tab_count": 0,
+            "claimed_tab_count": 0,
+            "color_index": 0,
+            "created_at": 1700000000000,
+            "name": None,
+        }
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_session_info()
+        data = json.loads(result)
+        assert data["name"] is None
+
+    @pytest.mark.asyncio
+    async def test_list_sessions_includes_names(self):
+        resp = [
+            {
+                "session_id": "abc-1234",
+                "workspace_name": "Zen AI Agent",
+                "connection_count": 1,
+                "tab_count": 2,
+                "color_index": 0,
+                "created_at": 1700000000000,
+                "name": "researcher",
+            },
+            {
+                "session_id": "def-5678",
+                "workspace_name": "Zen AI Agent",
+                "connection_count": 1,
+                "tab_count": 1,
+                "color_index": 1,
+                "created_at": 1700001000000,
+                "name": None,
+            },
+        ]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_list_sessions()
+        data = json.loads(result)
+        assert data[0]["name"] == "researcher"
+        assert data[1]["name"] is None
+
+    @pytest.mark.asyncio
+    async def test_set_session_name_clear(self):
+        resp = {"name": None, "other_session_names": ["coder"]}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_set_session_name(name="")
+        data = json.loads(result)
+        assert data["name"] is None
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["name"] == ""
+
+    @pytest.mark.asyncio
+    async def test_set_session_name_other_sessions_empty(self):
+        resp = {"name": "solo-agent", "other_session_names": []}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_set_session_name(name="solo-agent")
+        data = json.loads(result)
+        assert data["name"] == "solo-agent"
+        assert data["other_session_names"] == []
 
 
 # ── Tab Claiming (Phase 13) ──────────────────────────────────────

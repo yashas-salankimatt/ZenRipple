@@ -2350,8 +2350,20 @@ async def browser_session_close() -> str:
 
 @mcp.tool()
 async def browser_list_sessions() -> str:
-    """List all active browser sessions (admin/debug)."""
+    """List all active browser sessions (admin/debug).
+    Each session includes: session_id, name, workspace_name, connection_count,
+    tab_count, created_at. Use the name field to see what other sessions are called."""
     return text_result(await browser_command("list_sessions"))
+
+
+@mcp.tool()
+async def browser_set_session_name(name: str) -> str:
+    """Set a human-readable name for the current session.
+    The name is displayed as a sublabel under each tab title in the sidebar,
+    making it easy to see which agent session owns which tabs.
+    Returns the set name and a list of other active session names so you can
+    pick a unique name. Max 32 characters. Pass an empty string to clear the name."""
+    return text_result(await browser_command("set_session_name", {"name": name}))
 
 
 # ── Tab Claiming (Phase 13) ─────────────────────────────────────
