@@ -13,6 +13,7 @@
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
   const AGENT_WORKSPACE_NAME = 'ZenRipple';
+  const AGENT_WORKSPACE_ICON = '\u{1F916}'; // 🤖
 
   const logBuffer = [];
   const MAX_LOG_LINES = 200;
@@ -1034,6 +1035,11 @@
       const existing = workspaces.find(ws => ws.name === AGENT_WORKSPACE_NAME);
       if (existing) {
         agentWorkspaceId = existing.uuid;
+        // Ensure icon is set on existing workspaces (backfill)
+        if (existing.icon !== AGENT_WORKSPACE_ICON) {
+          existing.icon = AGENT_WORKSPACE_ICON;
+          gZenWorkspaces.saveWorkspace(existing);
+        }
         log('Found workspace: ' + AGENT_WORKSPACE_NAME + ' (' + agentWorkspaceId + ')');
         return agentWorkspaceId;
       }
@@ -1042,7 +1048,7 @@
     // Create new workspace (dontChange=true to avoid UI blocking)
     try {
       const created = await gZenWorkspaces.createAndSaveWorkspace(
-        AGENT_WORKSPACE_NAME, undefined, true
+        AGENT_WORKSPACE_NAME, AGENT_WORKSPACE_ICON, true
       );
       agentWorkspaceId = created.uuid;
       log('Created workspace: ' + AGENT_WORKSPACE_NAME + ' (' + agentWorkspaceId + ')');
