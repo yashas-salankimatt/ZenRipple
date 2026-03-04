@@ -1,11 +1,11 @@
 ---
 name: zenripple
-description: Use this skill when an agent must install, configure, and operate ZenRipple through canonical MCP and MCPorter CLI, including multi-agent session isolation, sub-agent coordination, safe browser automation, and clean uninstall.
+description: Use this skill when an agent needs to control Zen Browser — navigate pages, click elements, fill forms, take screenshots, read page content, manage tabs, and perform any browser automation task. ZenRipple gives AI agents full browser control via MCP.
 ---
 
 # ZenRipple Skill
 
-This skill defines how to set up and operate `zenripple` — browser automation for Zen Browser via MCP and MCPorter CLI.
+ZenRipple gives AI agents full control of [Zen Browser](https://zen-browser.app/) — navigation, DOM interaction, screenshots, form filling, JavaScript execution, network monitoring, and 60+ other browser automation tools via MCP.
 
 All agent tabs live in a dedicated "ZenRipple" workspace inside Zen Browser. Each agent session is isolated: your tabs, events, and state are scoped to your session ID.
 

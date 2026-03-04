@@ -1,8 +1,55 @@
 # ZenRipple
 
-Browser automation server for [Zen Browser](https://zen-browser.app/) that enables Claude Code (and other AI agents) to control the browser via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
+Give your AI agent full control of [Zen Browser](https://zen-browser.app/). Navigate pages, click elements, fill forms, take screenshots, read page content, execute JavaScript, monitor network traffic, and more — 60+ browser automation tools exposed via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 
-Runs a WebSocket server inside Zen Browser with 60+ commands for navigation, DOM interaction, screenshots, console access, cookie/storage management, network monitoring, and more.
+## Quick Start (Recommended)
+
+Tell your AI agent (Claude Code, Codex, etc.) to load the ZenRipple skill:
+
+```
+Load the skill from https://raw.githubusercontent.com/yashas-salankimatt/ZenRipple/main/SKILL.md and set it up.
+```
+
+The skill's Preflight section will automatically clone the repo, install dependencies, configure the MCP server, install the browser agent, and verify connectivity. The agent handles everything — you just need to restart Zen Browser if prompted.
+
+## Prerequisites
+
+- [Zen Browser](https://zen-browser.app/) (Firefox-based)
+- [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) installed in the target profile
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) (Python package manager)
+- Node.js / npm (for MCPorter CLI)
+- `ffmpeg` in PATH (optional, for session replay video export)
+
+## Manual Install
+
+If you prefer to set things up yourself instead of using the skill:
+
+```bash
+git clone https://github.com/yashas-salankimatt/ZenRipple.git
+cd ZenRipple
+
+# Install browser agent into your Zen profile
+./install.sh
+
+# Set up Python dependencies
+cd mcp && uv sync && cd ..
+```
+
+Then add to your Claude Code project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "zenripple-browser": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/ZenRipple/mcp", "python", "/path/to/ZenRipple/mcp/zenripple_mcp_server.py"]
+    }
+  }
+}
+```
+
+Restart Zen Browser and start a new Claude Code session.
 
 ## Architecture
 
@@ -15,47 +62,11 @@ Claude Code / AI Agent
         |
     WebSocket (localhost:9876)
         |
-  Zen Browser Extension (browser/zenripple_agent.uc.js)
+  Zen Browser Agent (browser/zenripple_agent.uc.js)
     |--- JSWindowActors (content process DOM access)
     |--- XPCOM APIs (screenshots, cookies, network, downloads)
     |--- Zen Browser APIs (tabs, workspaces)
 ```
-
-## Prerequisites
-
-- [Zen Browser](https://zen-browser.app/) (Firefox-based)
-- [fx-autoconfig](https://github.com/MrOtherGuy/fx-autoconfig) installed in the target profile
-- Python 3.13+
-- [uv](https://docs.astral.sh/uv/) (Python package manager)
-- `ffmpeg` in PATH (optional, for session replay video export)
-
-## Quick Install
-
-```bash
-git clone https://github.com/yashas-salankimatt/zenripple.git
-cd zenripple
-
-# Install browser extension to your Zen profile
-./install.sh
-
-# Set up the MCP server
-cd mcp && uv sync && cd ..
-```
-
-Then add to your Claude Code project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "zenripple-browser": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/zenripple/mcp", "python", "/path/to/zenripple/mcp/zenripple_mcp_server.py"]
-    }
-  }
-}
-```
-
-Restart Zen Browser and start a new Claude Code session.
 
 ## MCPorter CLI Usage
 
@@ -72,14 +83,14 @@ npx -y mcporter call --stdio "uv run --project ./mcp python ./mcp/zenripple_mcp_
 
 ### Parallel Agent Isolation (Important)
 
-MCPorter itself does not assign ZenRipple sessions for you. To keep each top-level agent isolated, give each agent process its own `ZENRIPPLE_SESSION_ID`.
+MCPorter itself does not assign browser sessions for you. To keep each top-level agent isolated, give each agent process its own `ZENRIPPLE_SESSION_ID`.
 
 ```bash
 # In each top-level Claude/Codex terminal, once per agent run:
 export ZENRIPPLE_SESSION_ID="$(uv run --project ./mcp python ./mcp/zenripple_session.py new)"
 ```
 
-Then use normal MCPorter commands. Every call from that process (and its child sub-agents) will be scoped to the same ZenRipple session:
+Then use normal MCPorter commands. Every call from that process (and its child sub-agents) will be scoped to the same browser session:
 
 ```bash
 npx -y mcporter call zenripple.browser_create_tab url=https://www.wikipedia.org --output json

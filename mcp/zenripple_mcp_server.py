@@ -48,7 +48,8 @@ _GROUNDING_KEY_SYNCED = False  # Whether we've synced with browser prefs yet
 mcp = FastMCP(
     "zenripple-browser",
     instructions=(
-        "Browser control tools for Zen Browser via ZenRipple. "
+        "Full browser control for Zen Browser — navigate pages, click elements, fill forms, "
+        "take screenshots, read content, execute JavaScript, and more. "
         "All tab operations are scoped to the 'ZenRipple' workspace."
     ),
 )
@@ -129,13 +130,13 @@ async def get_ws():
                 except OSError:
                     raise ConnectionError(
                         f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
-                        "Make sure Zen Browser is running with the ZenRipple installed. "
+                        "Make sure Zen Browser is running with ZenRipple installed. "
                         "If you just installed, restart Zen Browser first."
                     ) from first_err
             elif isinstance(first_err, OSError):
                 raise ConnectionError(
                     f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
-                    "Make sure Zen Browser is running with the ZenRipple installed. "
+                    "Make sure Zen Browser is running with ZenRipple installed. "
                     "If you just installed, restart Zen Browser first."
                 ) from first_err
             else:
