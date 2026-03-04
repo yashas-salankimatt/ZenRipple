@@ -1,4 +1,4 @@
-# Zen AI Agent
+# ZenRipple
 
 Browser automation server for [Zen Browser](https://zen-browser.app/) that enables Claude Code (and other AI agents) to control the browser via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io/).
 
@@ -11,11 +11,11 @@ Claude Code / AI Agent
         |
     MCP Protocol (stdio)
         |
-  Python MCP Server (mcp/zenleap_mcp_server.py)
+  Python MCP Server (mcp/zenripple_mcp_server.py)
         |
     WebSocket (localhost:9876)
         |
-  Zen Browser Extension (browser/zenleap_agent.uc.js)
+  Zen Browser Extension (browser/zenripple_agent.uc.js)
     |--- JSWindowActors (content process DOM access)
     |--- XPCOM APIs (screenshots, cookies, network, downloads)
     |--- Zen Browser APIs (tabs, workspaces)
@@ -32,8 +32,8 @@ Claude Code / AI Agent
 ## Quick Install
 
 ```bash
-git clone https://github.com/yashas-salankimatt/zen-ai-agent.git
-cd zen-ai-agent
+git clone https://github.com/yashas-salankimatt/zenripple.git
+cd zenripple
 
 # Install browser extension to your Zen profile
 ./install.sh
@@ -47,9 +47,9 @@ Then add to your Claude Code project's `.mcp.json`:
 ```json
 {
   "mcpServers": {
-    "zenleap-browser": {
+    "zenripple-browser": {
       "command": "uv",
-      "args": ["run", "--project", "/path/to/zen-ai-agent/mcp", "python", "/path/to/zen-ai-agent/mcp/zenleap_mcp_server.py"]
+      "args": ["run", "--project", "/path/to/zenripple/mcp", "python", "/path/to/zenripple/mcp/zenripple_mcp_server.py"]
     }
   }
 }
@@ -63,32 +63,32 @@ Use [MCPorter](https://github.com/steipete/mcporter) as a CLI layer on top of th
 
 ```bash
 # List tools exposed by this MCP server
-npx -y mcporter list --stdio "uv run --project ./mcp python ./mcp/zenleap_mcp_server.py"
+npx -y mcporter list --stdio "uv run --project ./mcp python ./mcp/zenripple_mcp_server.py"
 
 # Call a tool from CLI
-npx -y mcporter call --stdio "uv run --project ./mcp python ./mcp/zenleap_mcp_server.py" \
+npx -y mcporter call --stdio "uv run --project ./mcp python ./mcp/zenripple_mcp_server.py" \
   "browser_create_tab(url='https://example.com')"
 ```
 
 ### Parallel Agent Isolation (Important)
 
-MCPorter itself does not assign ZenLeap sessions for you. To keep each top-level agent isolated, give each agent process its own `ZENLEAP_SESSION_ID`.
+MCPorter itself does not assign ZenRipple sessions for you. To keep each top-level agent isolated, give each agent process its own `ZENRIPPLE_SESSION_ID`.
 
 ```bash
 # In each top-level Claude/Codex terminal, once per agent run:
-export ZENLEAP_SESSION_ID="$(uv run --project ./mcp python ./mcp/zenleap_session.py new)"
+export ZENRIPPLE_SESSION_ID="$(uv run --project ./mcp python ./mcp/zenripple_session.py new)"
 ```
 
-Then use normal MCPorter commands. Every call from that process (and its child sub-agents) will be scoped to the same ZenLeap session:
+Then use normal MCPorter commands. Every call from that process (and its child sub-agents) will be scoped to the same ZenRipple session:
 
 ```bash
-npx -y mcporter call zenleap.browser_create_tab url=https://www.wikipedia.org --output json
-npx -y mcporter call zenleap.browser_list_tabs --output json
+npx -y mcporter call zenripple.browser_create_tab url=https://www.wikipedia.org --output json
+npx -y mcporter call zenripple.browser_list_tabs --output json
 ```
 
 Notes:
-- Different top-level agent instances should use different `ZENLEAP_SESSION_ID` values.
-- Parent + sub-agents should share the same `ZENLEAP_SESSION_ID` to collaborate in one tab/session scope.
+- Different top-level agent instances should use different `ZENRIPPLE_SESSION_ID` values.
+- Parent + sub-agents should share the same `ZENRIPPLE_SESSION_ID` to collaborate in one tab/session scope.
 - `browser_session_close` destroys that session; after closing, mint a new ID before more calls.
 
 Optional helper test for isolation:
@@ -237,7 +237,7 @@ Optional helper test for isolation:
 ### Session Replay (Video — Always-On)
 | Tool | Description |
 |------|-------------|
-| `browser_replay_start` | Backwards-compatible; auto-enabled when `ZENLEAP_SESSION_ID` is set |
+| `browser_replay_start` | Backwards-compatible; auto-enabled when `ZENRIPPLE_SESSION_ID` is set |
 | `browser_replay_mark_prompt` | Mark a new user prompt boundary (creates title card) |
 | `browser_replay_save_video` | Assemble frames into MP4 (scope: session/last_prompt/prompt) |
 | `browser_replay_status` | Check replay state, frame/prompt counts |
@@ -247,18 +247,18 @@ Optional helper test for isolation:
 
 The agent supports multiple concurrent AI sessions:
 
-- Each session gets its own set of tabs in a dedicated "Zen AI Agent" workspace
+- Each session gets its own set of tabs in a dedicated "ZenRipple" workspace
 - Multiple connections can share a session (parallel sub-agents)
 - Sessions are identified by UUID and preserved across reconnections
 - Stale sessions are automatically cleaned up after 30 minutes of inactivity
 
-Set `ZENLEAP_SESSION_ID` environment variable to pin to a specific session across MCP server restarts.
+Set `ZENRIPPLE_SESSION_ID` environment variable to pin to a specific session across MCP server restarts.
 
 ## Manual Installation
 
 If you prefer not to use the install script:
 
-1. Copy `browser/zenleap_agent.uc.js` to `<profile>/chrome/JS/`
+1. Copy `browser/zenripple_agent.uc.js` to `<profile>/chrome/JS/`
 2. Copy `browser/actors/*.sys.mjs` to `<profile>/chrome/JS/actors/`
 3. Clear startup cache and restart Zen Browser
 
@@ -270,7 +270,7 @@ Profile locations:
 
 ```bash
 # Unit tests (273 tests)
-PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenleap_mcp.py -v
+PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenripple_mcp.py -v
 
 # Benchmarks (requires running browser + Claude Agent SDK)
 cd bench && uv run python -m bench run --suite smoke
@@ -278,7 +278,7 @@ cd bench && uv run python -m bench run --suite smoke
 
 ## Troubleshooting
 
-**Agent not starting**: Check the browser console (Ctrl+Shift+J) for `[Zen AI Agent]` messages. Verify fx-autoconfig is installed.
+**Agent not starting**: Check the browser console (Ctrl+Shift+J) for `[ZenRipple]` messages. Verify fx-autoconfig is installed.
 
 **Port 9876 already in use**: Another instance may be running. Close all Zen Browser windows and try again.
 
@@ -293,9 +293,9 @@ cd bench && uv run python -m bench run --suite smoke
 ```
 
 Or manually remove:
-- `<profile>/chrome/JS/zenleap_agent.uc.js`
-- `<profile>/chrome/JS/actors/ZenLeapAgentChild.sys.mjs`
-- `<profile>/chrome/JS/actors/ZenLeapAgentParent.sys.mjs`
+- `<profile>/chrome/JS/zenripple_agent.uc.js`
+- `<profile>/chrome/JS/actors/ZenRippleAgentChild.sys.mjs`
+- `<profile>/chrome/JS/actors/ZenRippleAgentParent.sys.mjs`
 
 ## License
 

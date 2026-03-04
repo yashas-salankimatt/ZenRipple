@@ -1,4 +1,4 @@
-"""Scenario and suite definitions for ZenLeap AI benchmarks."""
+"""Scenario and suite definitions for ZenRipple AI benchmarks."""
 
 from __future__ import annotations
 

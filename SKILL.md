@@ -1,165 +1,151 @@
 ---
-name: zen-ai-agent
-description: Use this skill when an agent must install, configure, and operate Zen AI Agent through canonical MCP and MCPorter CLI, including multi-agent session isolation, sub-agent coordination, safe browser automation, and clean uninstall.
+name: zenripple
+description: Use this skill when an agent must install, configure, and operate ZenRipple through canonical MCP and MCPorter CLI, including multi-agent session isolation, sub-agent coordination, safe browser automation, and clean uninstall.
 ---
 
-# Zen AI Agent Skill
+# ZenRipple Skill
 
-This skill defines how to set up and operate `zen-ai-agent` — browser automation for Zen Browser via MCP and MCPorter CLI.
+This skill defines how to set up and operate `zenripple` — browser automation for Zen Browser via MCP and MCPorter CLI.
 
-All agent tabs live in a dedicated "Zen AI Agent" workspace inside Zen Browser. Each agent session is isolated: your tabs, events, and state are scoped to your session ID.
-
-## Zero-Touch Bootstrap
-
-If loaded from a raw URL on a fresh machine, clone first. If the repo already exists, pull updates.
-
-```bash
-REPO_URL="https://github.com/yashas-salankimatt/zen-ai-agent.git"
-REPO_DIR="${HOME}/zen-ai-agent"
-
-if [ -d "$REPO_DIR/.git" ]; then
-  git -C "$REPO_DIR" pull --ff-only
-else
-  git clone "$REPO_URL" "$REPO_DIR"
-fi
-
-cd "$REPO_DIR"
-REPO="$(pwd)"
-```
-
-**After pulling, always run the Setup checks below** to verify the installed browser agent is up to date with the repo. A `git pull` updates the source files but does NOT update the installed copies in the Zen profile — you need `./install.sh --yes` + browser restart for that.
-
-To persist locally (optional):
-
-```bash
-if [ -d "$HOME/.codex/skills" ]; then
-  SKILL_DEST="$HOME/.codex/skills/zen-ai-agent"
-elif [ -d "$HOME/.claude/skills" ]; then
-  SKILL_DEST="$HOME/.claude/skills/zen-ai-agent"
-else
-  SKILL_DEST="$HOME/.codex/skills/zen-ai-agent"
-fi
-
-mkdir -p "$SKILL_DEST"
-cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
-```
+All agent tabs live in a dedicated "ZenRipple" workspace inside Zen Browser. Each agent session is isolated: your tabs, events, and state are scoped to your session ID.
 
 ## Prerequisites
 
 - macOS or Linux with Zen Browser installed and run at least once.
 - **Python >= 3.13**, `uv`, `node`, `npm`/`npx` available.
-- Zen profile has `fx-autoconfig` (ZenLeap includes this).
+- Zen profile has `fx-autoconfig` (ZenRipple includes this).
 
-## Setup
+## Preflight (Run Every Time)
 
-**Before installing, check if Zen AI Agent is already set up.** Most of the time it is.
+**Run this single block before doing anything else.** It auto-clones, auto-pulls, auto-installs, and auto-configures. If everything is already up to date, it finishes in seconds and you move on. If something is stale or missing, it fixes it automatically. The only thing it cannot do for you is restart Zen Browser — it will tell you if that's needed.
 
 ```bash
-REPO="${REPO:-$HOME/zen-ai-agent}"
+REPO_URL="https://github.com/yashas-salankimatt/zenripple.git"
+REPO_DIR="${HOME}/zenripple"
+NEEDS_RESTART=0
 
-# 1. Pull latest code from remote
-if [ -d "$REPO/.git" ]; then
-  git -C "$REPO" fetch --quiet
-  LOCAL=$(git -C "$REPO" rev-parse HEAD)
-  REMOTE=$(git -C "$REPO" rev-parse @{u} 2>/dev/null)
-  if [ "$LOCAL" = "$REMOTE" ]; then
-    echo "Repo: UP TO DATE ($LOCAL)"
+# ── 1. Ensure repo exists and is current ──
+if [ -d "$REPO_DIR/.git" ]; then
+  git -C "$REPO_DIR" fetch --quiet 2>/dev/null
+  LOCAL=$(git -C "$REPO_DIR" rev-parse HEAD)
+  REMOTE=$(git -C "$REPO_DIR" rev-parse @{u} 2>/dev/null || echo "$LOCAL")
+  if [ "$LOCAL" != "$REMOTE" ]; then
+    if git -C "$REPO_DIR" pull --ff-only 2>/dev/null; then
+      echo "REPO: updated to $(git -C "$REPO_DIR" rev-parse --short HEAD)"
+    else
+      echo "REPO: WARNING — pull failed (local changes?). Run 'git -C $REPO_DIR status' to investigate."
+    fi
   else
-    echo "Repo: OUT OF DATE — pulling latest..."
-    git -C "$REPO" pull --ff-only
-    echo "Repo: UPDATED ($(git -C "$REPO" rev-parse --short HEAD))"
+    echo "REPO: up to date"
   fi
+else
+  git clone "$REPO_URL" "$REPO_DIR"
+  echo "REPO: cloned"
+fi
+REPO="$REPO_DIR"
+
+# ── 2. Ensure Python dependencies ──
+uv sync --project "$REPO/mcp" --quiet 2>/dev/null
+echo "DEPS: synced"
+
+# ── 3. Ensure MCPorter knows about zenripple ──
+if npx -y mcporter list --json 2>/dev/null | grep -q zenripple; then
+  echo "MCPORTER: configured"
+else
+  npx -y mcporter config add zenripple \
+    --stdio uv --arg run --arg --project --arg "$REPO/mcp" \
+    --arg python --arg "$REPO/mcp/zenripple_mcp_server.py" --scope home
+  echo "MCPORTER: configured (was missing — added)"
 fi
 
-# 2. Check if MCPorter already knows about zenleap
-npx -y mcporter list --json 2>/dev/null | grep -q zenleap && echo "MCPorter: OK" || echo "MCPorter: NOT CONFIGURED"
+# ── 4. Ensure browser agent is installed and matches repo ──
+# Use find instead of ls globs — zsh aborts ls if any glob has zero matches
+INSTALLED_UC=$(
+  find ~/Library/Application\ Support/zen/Profiles 2>/dev/null -path "*/chrome/JS/zenripple_agent.uc.js" -print -quit
+  find ~/Library/Application\ Support/zen/Profiles 2>/dev/null -path "*/sine-mods/zenripple/JS/zenripple_agent.uc.js" -print -quit
+  find ~/.zen 2>/dev/null -path "*/chrome/JS/zenripple_agent.uc.js" -print -quit
+)
+INSTALLED_UC=$(echo "$INSTALLED_UC" | head -1)
 
-# 3. Check if browser agent is installed (look for the uc.js in any profile)
-INSTALLED_UC=$(ls ~/Library/Application\ Support/zen/Profiles/*/chrome/JS/zenleap_agent.uc.js \
-   ~/Library/Application\ Support/zen/Profiles/*/chrome/sine-mods/zen-ai-agent/JS/zenleap_agent.uc.js \
-   ~/.zen/*/chrome/JS/zenleap_agent.uc.js 2>/dev/null | head -1)
-[ -n "$INSTALLED_UC" ] && echo "Browser agent: INSTALLED" || echo "Browser agent: NOT INSTALLED"
-
-# 4. Check if installed browser files match the repo (detects stale installs after git pull)
-if [ -n "$INSTALLED_UC" ] && [ -f "$REPO/browser/zenleap_agent.uc.js" ]; then
-  INSTALLED_DIR=$(dirname "$INSTALLED_UC")
+if [ -z "$INSTALLED_UC" ]; then
+  echo "BROWSER AGENT: not found — installing..."
+  "$REPO/install.sh" --yes
+  NEEDS_RESTART=1
+  echo "BROWSER AGENT: installed"
+else
   STALE=0
-  diff -q "$REPO/browser/zenleap_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1 || STALE=1
-  # Also check the actor file
-  INSTALLED_ACTOR=$(find "$(dirname "$INSTALLED_DIR")" -path "*/actors/ZenLeapAgentChild.sys.mjs" 2>/dev/null | head -1)
-  if [ -n "$INSTALLED_ACTOR" ] && [ -f "$REPO/browser/actors/ZenLeapAgentChild.sys.mjs" ]; then
-    diff -q "$REPO/browser/actors/ZenLeapAgentChild.sys.mjs" "$INSTALLED_ACTOR" >/dev/null 2>&1 || STALE=1
+  diff -q "$REPO/browser/zenripple_agent.uc.js" "$INSTALLED_UC" >/dev/null 2>&1 || STALE=1
+  INSTALLED_ACTOR=$(find "$(dirname "$(dirname "$INSTALLED_UC")")" -path "*/actors/ZenRippleAgentChild.sys.mjs" 2>/dev/null | head -1)
+  if [ -n "$INSTALLED_ACTOR" ] && [ -f "$REPO/browser/actors/ZenRippleAgentChild.sys.mjs" ]; then
+    diff -q "$REPO/browser/actors/ZenRippleAgentChild.sys.mjs" "$INSTALLED_ACTOR" >/dev/null 2>&1 || STALE=1
   fi
-  [ "$STALE" -eq 0 ] && echo "Browser agent: UP TO DATE" || echo "Browser agent: OUT OF DATE — run ./install.sh --yes and restart Zen Browser"
+  if [ "$STALE" -eq 1 ]; then
+    echo "BROWSER AGENT: out of date — reinstalling..."
+    "$REPO/install.sh" --yes
+    NEEDS_RESTART=1
+    echo "BROWSER AGENT: updated"
+  else
+    echo "BROWSER AGENT: up to date"
+  fi
 fi
 
-# 5. Quick smoke test — if this returns a pong, everything is working
-MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenleap.browser_ping --output json 2>/dev/null && echo "Live connection: OK"
+# ── 5. Ensure installed skill file matches repo ──
+SKILL_DEST=""
+if [ -d "$HOME/.claude/skills" ]; then
+  SKILL_DEST="$HOME/.claude/skills/zenripple"
+elif [ -d "$HOME/.codex/skills" ]; then
+  SKILL_DEST="$HOME/.codex/skills/zenripple"
+fi
+if [ -n "$SKILL_DEST" ]; then
+  mkdir -p "$SKILL_DEST"
+  if diff -q "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md" >/dev/null 2>&1; then
+    echo "SKILL: up to date"
+  else
+    cp "$REPO/SKILL.md" "$SKILL_DEST/SKILL.md"
+    echo "SKILL: updated"
+  fi
+fi
+
+# ── 6. Connectivity check or restart notice ──
+if [ "$NEEDS_RESTART" -eq 1 ]; then
+  echo ""
+  echo "ACTION REQUIRED: Restart Zen Browser to load the updated agent, then proceed."
+else
+  if MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenripple.browser_ping --output json 2>/dev/null | grep -q pong; then
+    echo "PING: connected — ready to use"
+  else
+    echo "PING: no connection — is Zen Browser running?"
+  fi
+fi
 ```
 
-**Only run the full install if the checks above fail.** If everything says OK/UP TO DATE, skip to Sessions. If the repo was updated or the browser agent is OUT OF DATE, re-run `./install.sh --yes` and restart Zen Browser.
-
-### Full Install (only if needed)
-
-1. Enter repo and install dependencies:
-
-```bash
-cd "${HOME}/zen-ai-agent"
-REPO="$(pwd)"
-uv sync --project ./mcp
-```
-
-2. Install browser agent into Zen profiles:
-
-```bash
-# Single profile:
-./install.sh --profile 1 --yes
-
-# All profiles (non-interactive):
-./install.sh --yes
-```
-
-3. Configure MCPorter globally:
-
-```bash
-npx -y mcporter config add zenleap \
-  --stdio uv \
-  --arg run \
-  --arg --project \
-  --arg "$REPO/mcp" \
-  --arg python \
-  --arg "$REPO/mcp/zenleap_mcp_server.py" \
-  --scope home
-```
-
-4. Verify:
-
-```bash
-npx -y mcporter list --json
-```
+**After preflight completes:**
+- If it says "ready to use" — skip to Sessions.
+- If it says "ACTION REQUIRED: Restart Zen Browser" — tell the user to restart, then re-run the ping check.
+- If it says "no connection" — Zen Browser may not be running or may need a restart.
 
 ## Sessions
 
-Session isolation is based on `ZENLEAP_SESSION_ID`. One top-level agent = one session. Sub-agents share the parent's session. Different agents must use different sessions.
+Session isolation is based on `ZENRIPPLE_SESSION_ID`. One top-level agent = one session. Sub-agents share the parent's session. Different agents must use different sessions.
 
 ```bash
 # Create a session
-export ZENLEAP_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenleap_session.py" new)"
+export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
 
 # Name the session (do this right after creating it)
 # The name appears as a sublabel under each tab title in Zen's sidebar,
 # so you can see which agent owns which tabs at a glance.
 # First check what names other sessions are using, then pick a unique name.
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_list_sessions --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_list_sessions --output json
 # ^ Check the "name" field on each session to avoid duplicates
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_set_session_name --args '{"name":"researcher"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
 # ^ Returns: {"name": "researcher", "other_session_names": ["coder", ...]}
 
 # Pass to sub-agents if env isn't inherited
-ZENLEAP_SESSION_ID="$ZENLEAP_SESSION_ID" <sub-agent-command>
+ZENRIPPLE_SESSION_ID="$ZENRIPPLE_SESSION_ID" <sub-agent-command>
 
 # Close when done
-npx -y mcporter call zenleap.browser_session_close --output json
+npx -y mcporter call zenripple.browser_session_close --output json
 ```
 
 ### Session Naming
@@ -179,7 +165,7 @@ browser_set_session_name(name="researcher")
 
 **MCPorter CLI:**
 ```bash
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_set_session_name --args '{"name":"researcher"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
 ```
 
 The name also appears in `browser_session_info` and `browser_list_sessions` responses.
@@ -217,26 +203,26 @@ The session name (set via `browser_set_session_name`) appears as a sublabel unde
 
 ```bash
 # First time — provide the key via env var:
-OPENROUTER_API_KEY="sk-or-v1-..." npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the Submit button"}'
+OPENROUTER_API_KEY="sk-or-v1-..." npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the Submit button"}'
 
 # Every time after — no env var needed, key is remembered:
-npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the Submit button"}'
+npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the Submit button"}'
 ```
 
 You can also read/write the stored key directly via `browser_eval_chrome` (the config commands are internal browser commands, not separate MCP tools):
 
 ```bash
 # Check if a key is stored:
-npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Services.prefs.getStringPref(\"zenleap.openrouter_api_key\", \"\")"}'
+npx -y mcporter call zenripple.browser_eval_chrome --args '{"expression": "Services.prefs.getStringPref(\"zenripple.openrouter_api_key\", \"\")"}'
 
 # Store a key manually:
-npx -y mcporter call zenleap.browser_eval_chrome --args '{"expression": "Services.prefs.setStringPref(\"zenleap.openrouter_api_key\", \"sk-or-v1-...\"); \"ok\""}'
+npx -y mcporter call zenripple.browser_eval_chrome --args '{"expression": "Services.prefs.setStringPref(\"zenripple.openrouter_api_key\", \"sk-or-v1-...\"); \"ok\""}'
 ```
 
 The grounding model, API URL, and coordinate mode are configurable via env vars, but the defaults work out of the box — you shouldn't need to change any of these:
-- `ZENLEAP_GROUNDING_MODEL` — default: `qwen/qwen3-vl-235b-a22b-instruct`
-- `ZENLEAP_GROUNDING_API_URL` — default: `https://openrouter.ai/api/v1/chat/completions`
-- `ZENLEAP_GROUNDING_COORD_MODE` — default: `norm1000` (matches Qwen3-VL). Set to `absolute` only if switching to a model that outputs raw pixel coordinates (e.g., Qwen2.5-VL, UI-TARS).
+- `ZENRIPPLE_GROUNDING_MODEL` — default: `qwen/qwen3-vl-235b-a22b-instruct`
+- `ZENRIPPLE_GROUNDING_API_URL` — default: `https://openrouter.ai/api/v1/chat/completions`
+- `ZENRIPPLE_GROUNDING_COORD_MODE` — default: `norm1000` (matches Qwen3-VL). Set to `absolute` only if switching to a model that outputs raw pixel coordinates (e.g., Qwen2.5-VL, UI-TARS).
 
 ---
 
@@ -250,15 +236,15 @@ Use `browser_get_dom` or `browser_get_elements_compact` to find the element's in
 
 ```bash
 # Get interactive elements
-npx -y mcporter call zenleap.browser_get_elements_compact --output json
+npx -y mcporter call zenripple.browser_get_elements_compact --output json
 # Click element at index 5
-npx -y mcporter call zenleap.browser_click --args '{"index": 5}'
+npx -y mcporter call zenripple.browser_click --args '{"index": 5}'
 ```
 
 Also try `browser_find_element_by_description` for fuzzy matching:
 
 ```bash
-npx -y mcporter call zenleap.browser_find_element_by_description --args '{"description": "login button"}'
+npx -y mcporter call zenripple.browser_find_element_by_description --args '{"description": "login button"}'
 ```
 
 DOM clicks are pixel-perfect and never miss. Use them whenever the target is an interactive element visible in the DOM.
@@ -268,7 +254,7 @@ DOM clicks are pixel-perfect and never miss. Use them whenever the target is an 
 If the element isn't in the DOM index list (e.g., canvas content, custom-rendered UI, elements inside complex frameworks), use `browser_grounded_click(description)`. This takes a screenshot, sends it to a VLM for coordinate prediction, and clicks.
 
 ```bash
-npx -y mcporter call zenleap.browser_grounded_click --args '{"description": "the circular target on the blue background"}'
+npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the circular target on the blue background"}'
 ```
 
 Grounded clicks are very accurate for medium-to-large targets (buttons, icons, headings, links) but can miss on very dense UIs like spreadsheet cells where rows are only ~11px tall. Requires an OpenRouter API key (see above).
@@ -278,7 +264,7 @@ Grounded clicks are very accurate for medium-to-large targets (buttons, icons, h
 Only use `browser_click_coordinates(x, y)` as a last resort when both DOM clicks and grounded clicks are unavailable. Coordinates are estimated from screenshots and are the least reliable method.
 
 ```bash
-npx -y mcporter call zenleap.browser_click_coordinates --args '{"x": 500, "y": 300}'
+npx -y mcporter call zenripple.browser_click_coordinates --args '{"x": 500, "y": 300}'
 ```
 
 If screenshot and viewport dimensions differ, coordinates are auto-scaled from screenshot-space to viewport-space. Take a fresh screenshot before clicking to ensure the dimension cache is current.
@@ -301,26 +287,26 @@ All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to
 
 ```bash
 # CORRECT — always use --args with JSON:
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_create_tab --args '{"url":"https://example.com"}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_navigate --args '{"url":"https://example.com"}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_wait_for_load --args '{"timeout":15}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_click --args '{"index":5}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenleap.browser_fill --args '{"index":3,"value":"hello"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_wait_for_load --args '{"timeout":15}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_click --args '{"index":5}' --output json
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_fill --args '{"index":3,"value":"hello"}' --output json
 
 # WRONG — do NOT use these formats:
-# npx -y mcporter call zenleap.browser_navigate "https://example.com"          # URL colon parsed as key:value
-# npx -y mcporter call zenleap.browser_navigate -- --url "https://example.com" # --url becomes literal text
+# npx -y mcporter call zenripple.browser_navigate "https://example.com"          # URL colon parsed as key:value
+# npx -y mcporter call zenripple.browser_navigate -- --url "https://example.com" # --url becomes literal text
 ```
 
 **Always set `MCPORTER_CALL_TIMEOUT=30000`** (or higher) as an env var — the default timeout is too low for page loads and screenshots.
 
-**Always export `ZENLEAP_SESSION_ID`** so every call uses the same browser session.
+**Always export `ZENRIPPLE_SESSION_ID`** so every call uses the same browser session.
 
 Recommended shell setup at the start of every session:
 ```bash
-export ZENLEAP_SESSION_ID="<your-session-id>"
+export ZENRIPPLE_SESSION_ID="<your-session-id>"
 alias mc='MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call'
-# Then: mc zenleap.browser_navigate --args '{"url":"https://example.com"}' --output json
+# Then: mc zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
 ```
 
 ### Opening & Navigating Pages
@@ -390,7 +376,7 @@ Your session's tabs are isolated from other agents. These tools only see tabs yo
 
 The workspace may contain tabs you didn't open — tabs opened by the user or abandoned by other agents. You can see all of them and claim the ones you want to work with.
 
-- `browser_list_workspace_tabs` — list ALL tabs in the "Zen AI Agent" workspace, regardless of who owns them. Each tab includes:
+- `browser_list_workspace_tabs` — list ALL tabs in the "ZenRipple" workspace, regardless of who owns them. Each tab includes:
   - `tab_id`, `title`, `url`
   - `ownership`: `"unclaimed"` (user-opened, no agent owns it), `"owned"` (active agent session), or `"stale"` (owner agent disconnected for 2+ minutes)
   - `is_mine`: `true` if you own this tab
@@ -443,8 +429,8 @@ browser_batch_navigate(urls="https://a.com,https://b.com", persist=true)
 
 **MCPorter CLI:**
 ```bash
-npx -y mcporter call zenleap.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
-npx -y mcporter call zenleap.browser_batch_navigate --args '{"urls":["https://a.com","https://b.com"],"persist":true}' --output json
+npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
+npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":["https://a.com","https://b.com"],"persist":true}' --output json
 ```
 
 **Checking persistence status:**
@@ -500,11 +486,11 @@ Record a sequence of browser actions and replay them later:
 
 ### Session Replay (Video)
 
-Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when `ZENLEAP_SESSION_ID` is set (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
+Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when `ZENRIPPLE_SESSION_ID` is set (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
 
 **Workflow:**
 
-1. Replay starts automatically when `ZENLEAP_SESSION_ID` is set. No need to call `browser_replay_start`.
+1. Replay starts automatically when `ZENRIPPLE_SESSION_ID` is set. No need to call `browser_replay_start`.
 2. Call `browser_replay_mark_prompt(text)` each time a new user prompt begins — this creates visual prompt-boundary markers in the video.
 3. Perform browser actions as normal — screenshots are captured automatically after every visual tool call (navigate, click, scroll, type, etc.).
 4. Call `browser_replay_save_video(output_path)` to assemble an MP4. Use `scope` to control what's included:
@@ -513,7 +499,7 @@ Automatically captures screenshots after every visual browser action, then stitc
    - `"prompt"` + `prompt_index=N` — frames from a specific prompt
 5. Optionally call `browser_replay_stop` to stop capturing. Frame data is preserved, so `save_video` still works after stopping.
 
-**Opt-out:** Set `ZENLEAP_NO_REPLAY=1` to disable automatic replay capture.
+**Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic replay capture.
 
 **Tools:**
 
@@ -543,7 +529,7 @@ Many tools accept a `frame_id` parameter to target content inside iframes:
 
 ## Shared Browser — Human-In-The-Loop Awareness
 
-**This is a shared browser.** A human user is actively using the same Zen Browser instance. The agent workspace tabs are visible to them, and they may interact with pages at any time. This is by design — Zen AI Agent is a human-in-the-loop system, not a headless automation tool.
+**This is a shared browser.** A human user is actively using the same Zen Browser instance. The agent workspace tabs are visible to them, and they may interact with pages at any time. This is by design — ZenRipple is a human-in-the-loop system, not a headless automation tool.
 
 ### Detecting User Activity
 
@@ -573,7 +559,7 @@ When escalating, provide: current URL, tab title, what the human needs to do, sc
 ## Validation / Smoke Tests
 
 ```bash
-PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenleap_mcp.py -q
+PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenripple_mcp.py -q
 uv run --project ./bench pytest bench/tests -q
 ./scripts/test_mcporter_parallel_sessions.sh  # expect PARALLEL_ISOLATION_TEST=PASS
 ```
@@ -581,18 +567,18 @@ uv run --project ./bench pytest bench/tests -q
 ## Uninstall / Cleanup
 
 ```bash
-REPO="${REPO:-$HOME/zen-ai-agent}"
+REPO="${REPO:-$HOME/zenripple}"
 cd "$REPO"
 
 # Remove from profiles
 ./install.sh --uninstall --yes
 
 # Remove MCPorter config
-npx -y mcporter --config ~/.mcporter/mcporter.json config remove zenleap
+npx -y mcporter --config ~/.mcporter/mcporter.json config remove zenripple
 
 # Close remaining sessions
-export ZENLEAP_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenleap_session.py" new)"
-npx -y mcporter call zenleap.browser_session_close --output json
+export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
+npx -y mcporter call zenripple.browser_session_close --output json
 ```
 
 ## Guardrails
@@ -600,7 +586,7 @@ npx -y mcporter call zenleap.browser_session_close --output json
 - **Name your session** immediately after creating it — call `browser_set_session_name` with a unique, descriptive name.
 - **Default to `persist=true`** when creating tabs. Only skip persist for throwaway scratch tabs the user will never need.
 - **Respect user activity.** If page state changed unexpectedly, the user may have acted. Evaluate whether it helps or blocks you, and adapt accordingly (see Shared Browser section above).
-- Do not reuse another active agent's `ZENLEAP_SESSION_ID`.
+- Do not reuse another active agent's `ZENRIPPLE_SESSION_ID`.
 - Do not claim actively-owned tabs — only unclaimed or stale ones.
 - Close your session (`browser_session_close`) when done to prevent stale resources.
 - Close tabs you no longer need (`browser_close_tab`).

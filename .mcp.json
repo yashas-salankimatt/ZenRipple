@@ -1,8 +1,8 @@
 {
   "mcpServers": {
-    "zenleap-browser": {
+    "zenripple-browser": {
       "command": "uv",
-      "args": ["run", "--project", "./mcp", "python", "./mcp/zenleap_mcp_server.py"]
+      "args": ["run", "--project", "./mcp", "python", "./mcp/zenripple_mcp_server.py"]
     }
   }
 }

@@ -1,4 +1,4 @@
-"""Tests for the ZenLeap MCP server.
+"""Tests for the ZenRipple MCP server.
 
 Covers message formatting, connection management, tool definitions,
 and error handling. Uses a mock WebSocket server to simulate the browser.
@@ -17,7 +17,7 @@ import pytest_asyncio
 
 from mcp.server.fastmcp.utilities.types import Image
 
-import zenleap_mcp_server as server
+import zenripple_mcp_server as server
 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -2121,11 +2121,11 @@ class TestGetWsSessionRouting:
 
     @pytest.mark.asyncio
     async def test_new_session_url(self):
-        """Without ZENLEAP_SESSION_ID, connects to /new."""
+        """Without ZENRIPPLE_SESSION_ID, connects to /new."""
         server._ws_connection = None
         server._session_id = None
         fake_ws = FakeWebSocket(
-            response_headers={"X-ZenLeap-Session": "abc-1234"}
+            response_headers={"X-ZenRipple-Session": "abc-1234"}
         )
         with patch.object(server, "SESSION_ID", ""), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
@@ -2143,11 +2143,11 @@ class TestGetWsSessionRouting:
 
     @pytest.mark.asyncio
     async def test_join_session_url(self):
-        """With ZENLEAP_SESSION_ID set, connects to /session/<id>."""
+        """With ZENRIPPLE_SESSION_ID set, connects to /session/<id>."""
         server._ws_connection = None
         server._session_id = None
         fake_ws = FakeWebSocket(
-            response_headers={"X-ZenLeap-Session": "existing-session"}
+            response_headers={"X-ZenRipple-Session": "existing-session"}
         )
         with patch.object(server, "SESSION_ID", "existing-session"), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
@@ -2165,7 +2165,7 @@ class TestGetWsSessionRouting:
 
     @pytest.mark.asyncio
     async def test_custom_ws_url(self):
-        """ZENLEAP_WS_URL is respected in URL construction."""
+        """ZENRIPPLE_WS_URL is respected in URL construction."""
         server._ws_connection = None
         server._session_id = None
         fake_ws = FakeWebSocket()
@@ -2184,11 +2184,11 @@ class TestGetWsSessionRouting:
 
     @pytest.mark.asyncio
     async def test_session_id_extracted_from_headers(self):
-        """X-ZenLeap-Session header is stored in _session_id."""
+        """X-ZenRipple-Session header is stored in _session_id."""
         server._ws_connection = None
         server._session_id = None
         fake_ws = FakeWebSocket(
-            response_headers={"X-ZenLeap-Session": "sess-xyz"}
+            response_headers={"X-ZenRipple-Session": "sess-xyz"}
         )
         with patch.object(server, "SESSION_ID", ""), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws):
@@ -2199,7 +2199,7 @@ class TestGetWsSessionRouting:
 
     @pytest.mark.asyncio
     async def test_session_id_none_when_no_header(self):
-        """When no X-ZenLeap-Session header, _session_id stays None."""
+        """When no X-ZenRipple-Session header, _session_id stays None."""
         server._ws_connection = None
         server._session_id = None
         fake_ws = FakeWebSocket(response_headers={})
@@ -2219,7 +2219,7 @@ class TestGetWsSessionRouting:
         server._session_id = "old-session"
 
         new_ws = FakeWebSocket(
-            response_headers={"X-ZenLeap-Session": "old-session"}
+            response_headers={"X-ZenRipple-Session": "old-session"}
         )
         with patch.object(server, "SESSION_ID", ""), \
              patch("websockets.connect", new_callable=AsyncMock, return_value=new_ws) as mock_connect:
@@ -2243,7 +2243,7 @@ class TestGetWsSessionRouting:
         server._session_id = "dead-session"
 
         new_ws = FakeWebSocket(
-            response_headers={"X-ZenLeap-Session": "fresh-session"}
+            response_headers={"X-ZenRipple-Session": "fresh-session"}
         )
         connect_calls = []
 
@@ -2290,7 +2290,7 @@ class TestSessionManagement:
     async def test_session_info(self):
         resp = {
             "session_id": "abc-1234",
-            "workspace_name": "Zen AI Agent",
+            "workspace_name": "ZenRipple",
             "workspace_id": "ws-uuid",
             "connection_id": "conn-1",
             "connection_count": 2,
@@ -2305,7 +2305,7 @@ class TestSessionManagement:
             result = await server.browser_session_info()
         data = json.loads(result)
         assert data["session_id"] == "abc-1234"
-        assert data["workspace_name"] == "Zen AI Agent"
+        assert data["workspace_name"] == "ZenRipple"
         assert data["connection_count"] == 2
         assert data["tab_count"] == 3
         assert data["claimed_tab_count"] == 1
@@ -2332,7 +2332,7 @@ class TestSessionManagement:
         resp = [
             {
                 "session_id": "abc-1234",
-                "workspace_name": "Zen AI Agent",
+                "workspace_name": "ZenRipple",
                 "connection_count": 1,
                 "tab_count": 2,
                 "color_index": 0,
@@ -2341,7 +2341,7 @@ class TestSessionManagement:
             },
             {
                 "session_id": "def-5678",
-                "workspace_name": "Zen AI Agent",
+                "workspace_name": "ZenRipple",
                 "connection_count": 3,
                 "tab_count": 5,
                 "color_index": 1,
@@ -2417,7 +2417,7 @@ class TestSessionNaming:
     async def test_session_info_includes_name(self):
         resp = {
             "session_id": "abc-1234",
-            "workspace_name": "Zen AI Agent",
+            "workspace_name": "ZenRipple",
             "workspace_id": "ws-uuid",
             "connection_id": "conn-1",
             "connection_count": 1,
@@ -2437,7 +2437,7 @@ class TestSessionNaming:
     async def test_session_info_name_null_when_unset(self):
         resp = {
             "session_id": "abc-1234",
-            "workspace_name": "Zen AI Agent",
+            "workspace_name": "ZenRipple",
             "workspace_id": "ws-uuid",
             "connection_id": "conn-1",
             "connection_count": 1,
@@ -2458,7 +2458,7 @@ class TestSessionNaming:
         resp = [
             {
                 "session_id": "abc-1234",
-                "workspace_name": "Zen AI Agent",
+                "workspace_name": "ZenRipple",
                 "connection_count": 1,
                 "tab_count": 2,
                 "color_index": 0,
@@ -2467,7 +2467,7 @@ class TestSessionNaming:
             },
             {
                 "session_id": "def-5678",
-                "workspace_name": "Zen AI Agent",
+                "workspace_name": "ZenRipple",
                 "connection_count": 1,
                 "tab_count": 1,
                 "color_index": 1,
@@ -3613,7 +3613,7 @@ class TestSessionReplay:
         server._session_id = "test456"
         result = await server.browser_replay_start()
         data = json.loads(result)
-        assert "zenleap_replay_test456" in data["dir"]
+        assert "zenripple_replay_test456" in data["dir"]
         assert server._replay_active is True
         # Cleanup
         import shutil
@@ -3983,7 +3983,7 @@ class TestSessionReplay:
     def test_disk_recovery(self, tmp_path):
         """_load_replay_state recovers seq/prompt counters from existing manifest."""
         server.SESSION_ID = "recovery-test"
-        replay_dir = str(tmp_path / "zenleap_replay_recovery-test")
+        replay_dir = str(tmp_path / "zenripple_replay_recovery-test")
         os.makedirs(replay_dir)
         manifest = {
             "session_id": "recovery-test",
@@ -4011,7 +4011,7 @@ class TestSessionReplay:
     def test_stopped_flag_prevents_init(self, tmp_path):
         """_load_replay_state returns False when manifest has stopped=True."""
         server.SESSION_ID = "stopped-test"
-        replay_dir = str(tmp_path / "zenleap_replay_stopped-test")
+        replay_dir = str(tmp_path / "zenripple_replay_stopped-test")
         os.makedirs(replay_dir)
         manifest = {
             "session_id": "stopped-test",
@@ -4031,7 +4031,7 @@ class TestSessionReplay:
     def test_corrupt_manifest_fresh_start(self, tmp_path):
         """_load_replay_state handles corrupt manifest by starting fresh."""
         server.SESSION_ID = "corrupt-test"
-        replay_dir = str(tmp_path / "zenleap_replay_corrupt-test")
+        replay_dir = str(tmp_path / "zenripple_replay_corrupt-test")
         os.makedirs(replay_dir)
         with open(os.path.join(replay_dir, "manifest.json"), "w") as f:
             f.write("{bad json!!!")
@@ -4173,7 +4173,7 @@ class TestSessionReplay:
 
         assert server._replay_active is True
         assert server._replay_seq == 1
-        replay_dir = os.path.join(str(tmp_path), "zenleap_replay_auto-capture-test")
+        replay_dir = os.path.join(str(tmp_path), "zenripple_replay_auto-capture-test")
         manifest_path = os.path.join(replay_dir, "manifest.json")
         assert os.path.exists(manifest_path)
         with open(manifest_path) as f:

@@ -1,5 +1,5 @@
 """End-to-end tests for Phase 10: Chrome eval, drag-and-drop, reflection.
-Requires Zen Browser running with ZenLeap Agent v1.0.0.
+Requires Zen Browser running with ZenRipple Agent v1.0.0.
 """
 
 import asyncio

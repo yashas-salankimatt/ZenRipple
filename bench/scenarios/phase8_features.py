@@ -29,8 +29,8 @@ PHASE8_SCENARIOS = [
             BrowserStateCheck("tab exists", verify_tab_exists),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_create_tab",
-            "mcp__zenleap-browser__browser_get_elements_compact",
+            "mcp__zenripple-browser__browser_create_tab",
+            "mcp__zenripple-browser__browser_get_elements_compact",
         ],
         max_turns=10,
         max_budget_usd=0.20,
@@ -50,8 +50,8 @@ PHASE8_SCENARIOS = [
             BrowserStateCheck("tab exists", verify_tab_exists),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_create_tab",
-            "mcp__zenleap-browser__browser_get_accessibility_tree",
+            "mcp__zenripple-browser__browser_create_tab",
+            "mcp__zenripple-browser__browser_get_accessibility_tree",
         ],
         max_turns=10,
         max_budget_usd=0.20,
@@ -72,8 +72,8 @@ PHASE8_SCENARIOS = [
             BrowserStateCheck("tab exists", verify_tab_exists),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_create_tab",
-            "mcp__zenleap-browser__browser_get_dom",
+            "mcp__zenripple-browser__browser_create_tab",
+            "mcp__zenripple-browser__browser_get_dom",
         ],
         max_turns=12,
         max_budget_usd=0.35,

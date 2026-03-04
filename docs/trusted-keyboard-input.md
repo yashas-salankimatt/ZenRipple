@@ -12,7 +12,7 @@ Previous approaches that failed:
 `nsITextInputProcessor` (TIP) — Gecko's input method API that produces `isTrusted: true` keyboard events through the full event pipeline, targeted at a specific content window.
 
 ## Implementation
-- **File**: `JS/actors/ZenLeapAgentChild.sys.mjs`
+- **File**: `JS/actors/ZenRippleAgentChild.sys.mjs`
 - **Methods**: `#getTextInputProcessor()`, `#typeText()`, `#pressKey()`
 - **Key insight**: TIP must be created in the content process actor and initialized with `beginInputTransactionForTests(this.contentWindow)` to target a specific tab
 

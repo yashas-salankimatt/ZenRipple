@@ -53,7 +53,7 @@ def print_result_detail(label: str, result: RunResult | Exception):
         print(f"\n  Tool Trace ({len(result.tool_call_trace)} calls):")
         print(f"  {'─' * 60}")
         for i, tc in enumerate(result.tool_call_trace, 1):
-            tool_short = tc["tool"].replace("mcp__zenleap-browser__browser_", "")
+            tool_short = tc["tool"].replace("mcp__zenripple-browser__browser_", "")
             inp = json.dumps(tc["input"], default=str)
             if len(inp) > 150:
                 inp = inp[:150] + "..."

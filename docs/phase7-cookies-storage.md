@@ -31,8 +31,8 @@ Delete a key or clear all storage. Omit key to clear everything.
 ```
 MCP tool → browser_command("set_cookie") → chrome handler
   → builds cookie string (name=value; path; Secure; etc.)
-  → actor.sendQuery("ZenLeapAgent:SetCookie", {cookie: str})
-  → ZenLeapAgentChild.#setCookie(str) → document.cookie = str
+  → actor.sendQuery("ZenRippleAgent:SetCookie", {cookie: str})
+  → ZenRippleAgentChild.#setCookie(str) → document.cookie = str
 ```
 
 ### Why document.cookie Instead of Services.cookies.add()
@@ -49,8 +49,8 @@ Storage methods run in the content process via the JSWindowActor:
 
 ```
 MCP tool → browser_command("get_storage") → chrome handler
-  → actor.sendQuery("ZenLeapAgent:GetStorage")
-  → ZenLeapAgentChild.#getStorage() → contentWindow.localStorage/sessionStorage
+  → actor.sendQuery("ZenRippleAgent:GetStorage")
+  → ZenRippleAgentChild.#getStorage() → contentWindow.localStorage/sessionStorage
 ```
 
 ## Key Gotchas

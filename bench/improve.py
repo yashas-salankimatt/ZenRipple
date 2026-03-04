@@ -144,7 +144,7 @@ class SelfImprover:
         if "connection_refused" in name:
             return (
                 "Browser WebSocket server not running or port conflict. "
-                "Check that Zen Browser is open and zenleap_agent.uc.js is loaded."
+                "Check that Zen Browser is open and zenripple_agent.uc.js is loaded."
             )
         if "element_index" in name or "no_element" in name:
             return (

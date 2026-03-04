@@ -57,7 +57,7 @@ Meta and read-only commands are excluded from recording to avoid noise:
 
 ## Architecture
 
-Recording happens in `#handleCommand()` in `zenleap_agent.uc.js`:
+Recording happens in `#handleCommand()` in `zenripple_agent.uc.js`:
 
 ```javascript
 // After successful handler execution:

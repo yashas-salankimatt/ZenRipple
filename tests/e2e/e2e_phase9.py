@@ -91,7 +91,7 @@ async def main():
         check("Actions were recorded", action_count > 0, f"{action_count} actions")
 
         # Save recording
-        rec_path = "/tmp/zenleap_e2e_recording.json"
+        rec_path = "/tmp/zenripple_e2e_recording.json"
         save = await cmd(ws, "record_save", {"file_path": rec_path})
         check("Record save succeeds", save.get("success"))
         check("Save reports action count", save.get("actions", 0) > 0)
@@ -154,7 +154,7 @@ async def main():
         await ws.close()
         # Clean up recording file
         try:
-            os.remove("/tmp/zenleap_e2e_recording.json")
+            os.remove("/tmp/zenripple_e2e_recording.json")
         except OSError:
             pass
 

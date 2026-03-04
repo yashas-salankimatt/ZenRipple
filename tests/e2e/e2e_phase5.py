@@ -48,7 +48,7 @@ async def main():
     check("pong received", r.get("pong") is True)
     check("version is 0.5.0", r.get("version") == "0.5.0", f"got {r.get('version')}")
 
-    # --- 2. Create tab (should go into ZenLeap AI workspace) ---
+    # --- 2. Create tab (should go into ZenRipple AI workspace) ---
     print("\n2. Create tab → example.com")
     r = await send_command(ws, "create_tab", {"url": "https://example.com"})
     tab1 = r.get("tab_id")
@@ -72,7 +72,7 @@ async def main():
     if our_tab:
         check("tab url correct", "example.com" in our_tab.get("url", ""), f"got {our_tab.get('url')}")
         check("tab is active", our_tab.get("active") is True)
-    # All tabs should be in ZenLeap AI workspace (no tabs from other workspaces)
+    # All tabs should be in ZenRipple AI workspace (no tabs from other workspaces)
     non_agent_urls = [t["url"] for t in r if "example.com" not in t["url"] and t["url"] != "about:blank"]
     check("no unrelated tabs leaked", len(non_agent_urls) == 0, f"non-agent: {non_agent_urls}")
 

@@ -1,4 +1,4 @@
-// ZenLeapAgentChild.sys.mjs — Content-process actor for DOM extraction and page content.
+// ZenRippleAgentChild.sys.mjs — Content-process actor for DOM extraction and page content.
 // Runs in the content process under Fission; communicates with parent via sendQuery/receiveMessage.
 
 const MAX_TEXT_LENGTH = 200000;  // 200K chars for page text
@@ -27,7 +27,7 @@ const SHIFT_MAP = {
 // nsITextInputProcessor flag: key is non-printable (Enter, Tab, Arrow, etc.)
 const TIP_KEY_NON_PRINTABLE = 0x02;
 
-export class ZenLeapAgentChild extends JSWindowActorChild {
+export class ZenRippleAgentChild extends JSWindowActorChild {
   #elementMap = new Map(); // index → WeakRef(element)
   #elementMeta = new Map(); // index → {tag, text, href, name, type, ariaLabel} for self-healing
   #previousDOM = null; // previous DOM snapshot for incremental diffing
@@ -44,65 +44,65 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
   receiveMessage(message) {
     const data = message.data || {};
     switch (message.name) {
-      case 'ZenLeapAgent:ExtractDOM':
+      case 'ZenRippleAgent:ExtractDOM':
         return this.#extractDOM(data);
-      case 'ZenLeapAgent:GetPageText':
+      case 'ZenRippleAgent:GetPageText':
         return this.#getPageText();
-      case 'ZenLeapAgent:GetPageHTML':
+      case 'ZenRippleAgent:GetPageHTML':
         return this.#getPageHTML();
-      case 'ZenLeapAgent:GetAccessibilityTree':
+      case 'ZenRippleAgent:GetAccessibilityTree':
         return this.#getAccessibilityTree();
-      case 'ZenLeapAgent:ClickElement':
+      case 'ZenRippleAgent:ClickElement':
         return this.#clickElement(data.index);
-      case 'ZenLeapAgent:FillField':
+      case 'ZenRippleAgent:FillField':
         return this.#fillField(data.index, data.value);
-      case 'ZenLeapAgent:SelectOption':
+      case 'ZenRippleAgent:SelectOption':
         return this.#selectOption(data.index, data.value);
-      case 'ZenLeapAgent:TypeText':
+      case 'ZenRippleAgent:TypeText':
         return this.#typeText(data.text);
-      case 'ZenLeapAgent:PressKey':
+      case 'ZenRippleAgent:PressKey':
         return this.#pressKey(data.key, data.modifiers || {});
-      case 'ZenLeapAgent:Scroll':
+      case 'ZenRippleAgent:Scroll':
         return this.#scroll(data.direction, data.amount);
-      case 'ZenLeapAgent:Hover':
+      case 'ZenRippleAgent:Hover':
         return this.#hover(data.index);
-      case 'ZenLeapAgent:ClickCoordinates':
+      case 'ZenRippleAgent:ClickCoordinates':
         return this.#clickCoordinates(data.x, data.y, data.color);
-      case 'ZenLeapAgent:GetViewportDimensions':
+      case 'ZenRippleAgent:GetViewportDimensions':
         return {
           width: this.contentWindow.innerWidth,
           height: this.contentWindow.innerHeight,
           devicePixelRatio: this.contentWindow.devicePixelRatio,
         };
-      case 'ZenLeapAgent:SetupConsoleCapture':
+      case 'ZenRippleAgent:SetupConsoleCapture':
         return this.#setupConsoleCapture();
-      case 'ZenLeapAgent:TeardownConsoleCapture':
+      case 'ZenRippleAgent:TeardownConsoleCapture':
         return this.#teardownConsoleCapture();
-      case 'ZenLeapAgent:GetConsoleLogs':
+      case 'ZenRippleAgent:GetConsoleLogs':
         return { logs: [...this.#consoleLogs] };
-      case 'ZenLeapAgent:GetConsoleErrors':
+      case 'ZenRippleAgent:GetConsoleErrors':
         return { errors: [...this.#consoleErrors] };
-      case 'ZenLeapAgent:EvalJS':
+      case 'ZenRippleAgent:EvalJS':
         return this.#evalInContent(data.expression);
-      case 'ZenLeapAgent:QuerySelector':
+      case 'ZenRippleAgent:QuerySelector':
         return this.#querySelector(data.selector);
-      case 'ZenLeapAgent:SearchText':
+      case 'ZenRippleAgent:SearchText':
         return this.#searchText(data.text);
-      case 'ZenLeapAgent:GetStorage':
+      case 'ZenRippleAgent:GetStorage':
         return this.#getStorage(data.storage_type, data.key);
-      case 'ZenLeapAgent:SetStorage':
+      case 'ZenRippleAgent:SetStorage':
         return this.#setStorage(data.storage_type, data.key, data.value);
-      case 'ZenLeapAgent:DeleteStorage':
+      case 'ZenRippleAgent:DeleteStorage':
         return this.#deleteStorage(data.storage_type, data.key);
-      case 'ZenLeapAgent:SetCookie':
+      case 'ZenRippleAgent:SetCookie':
         return this.#setCookie(data.cookie);
-      case 'ZenLeapAgent:GetContentCookies':
+      case 'ZenRippleAgent:GetContentCookies':
         return this.#getContentCookies();
-      case 'ZenLeapAgent:DragElement':
+      case 'ZenRippleAgent:DragElement':
         return this.#dragElement(data);
-      case 'ZenLeapAgent:DragCoordinates':
+      case 'ZenRippleAgent:DragCoordinates':
         return this.#dragCoordinates(data);
-      case 'ZenLeapAgent:FileUpload':
+      case 'ZenRippleAgent:FileUpload':
         return this.#fileUpload(data.index, data.base64, data.filename, data.mimeType);
       default:
         return { error: 'Unknown message: ' + message.name };
@@ -1043,7 +1043,7 @@ export class ZenLeapAgentChild extends JSWindowActorChild {
     this.#removeCursor();
     // Create cursor overlay: crosshair with ring
     const cursor = doc.createElement('div');
-    cursor.id = '__zenleap_cursor';
+    cursor.id = '__zenripple_cursor';
     // Use individual style properties (not cssText concatenation) to prevent CSS injection
     cursor.style.position = 'fixed';
     cursor.style.zIndex = '2147483647';

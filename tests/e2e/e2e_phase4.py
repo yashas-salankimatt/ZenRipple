@@ -74,8 +74,8 @@ async def main():
     check("got title", "Example" in str(r.get("result", "")), f"got {r.get('result')}")
 
     # --- 7. Eval that triggers console.log ---
-    print("\n7. Eval: console.log('zenleap-test-msg')")
-    r = await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.log('zenleap-test-msg'); 'logged'"})
+    print("\n7. Eval: console.log('zenripple-test-msg')")
+    r = await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.log('zenripple-test-msg'); 'logged'"})
     check("eval returned", r.get("result") == "logged", f"got {r.get('result')}")
 
     # --- 8. Get console logs ---
@@ -83,7 +83,7 @@ async def main():
     r = await send_command(ws, "console_get_logs", {"tab_id": tab_id})
     logs = r.get("logs", [])
     check("has logs", len(logs) > 0, f"got {len(logs)}")
-    found = any("zenleap-test-msg" in log.get("message", "") for log in logs)
+    found = any("zenripple-test-msg" in log.get("message", "") for log in logs)
     check("contains our message", found, f"logs: {[l.get('message') for l in logs]}")
     if logs:
         log = logs[-1]
@@ -93,19 +93,19 @@ async def main():
         print(f"    Last log: [{log.get('level')}] {log.get('message')}")
 
     # --- 9. Eval that triggers console.warn ---
-    print("\n9. Eval: console.warn('zenleap-warn')")
-    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.warn('zenleap-warn')"})
+    print("\n9. Eval: console.warn('zenripple-warn')")
+    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.warn('zenripple-warn')"})
     r = await send_command(ws, "console_get_logs", {"tab_id": tab_id})
     logs = r.get("logs", [])
-    warn_found = any(l.get("level") == "warn" and "zenleap-warn" in l.get("message", "") for l in logs)
+    warn_found = any(l.get("level") == "warn" and "zenripple-warn" in l.get("message", "") for l in logs)
     check("warn captured", warn_found)
 
     # --- 10. Eval that triggers console.error ---
-    print("\n10. Eval: console.error('zenleap-err')")
-    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.error('zenleap-err')"})
+    print("\n10. Eval: console.error('zenripple-err')")
+    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "console.error('zenripple-err')"})
     r = await send_command(ws, "console_get_errors", {"tab_id": tab_id})
     errors = r.get("errors", [])
-    err_found = any("zenleap-err" in e.get("message", "") for e in errors)
+    err_found = any("zenripple-err" in e.get("message", "") for e in errors)
     check("console.error captured in errors", err_found, f"errors: {[e.get('message') for e in errors]}")
 
     # --- 11. Eval with error ---
@@ -130,11 +130,11 @@ async def main():
 
     # --- 14. Trigger uncaught error via eval ---
     print("\n14. Eval: setTimeout throw (uncaught error)")
-    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "setTimeout(() => { throw new Error('zenleap-uncaught') }, 0)"})
+    await send_command(ws, "console_evaluate", {"tab_id": tab_id, "expression": "setTimeout(() => { throw new Error('zenripple-uncaught') }, 0)"})
     await send_command(ws, "wait", {"seconds": 1})
     r = await send_command(ws, "console_get_errors", {"tab_id": tab_id})
     errors = r.get("errors", [])
-    uncaught = any(e.get("type") == "uncaught_error" and "zenleap-uncaught" in e.get("message", "") for e in errors)
+    uncaught = any(e.get("type") == "uncaught_error" and "zenripple-uncaught" in e.get("message", "") for e in errors)
     check("uncaught error captured", uncaught, f"errors: {[e.get('type') + ': ' + e.get('message', '') for e in errors]}")
 
     # --- 15. Empty logs/errors before setup on new tab ---

@@ -1,4 +1,4 @@
-# Zen AI Agent — Architecture
+# ZenRipple — Architecture
 
 ## System Overview
 
@@ -10,7 +10,7 @@
                          | stdio (MCP protocol)
                          v
 +-------------------------------------------------------+
-|  Python MCP Server (zenleap_mcp_server.py)            |
+|  Python MCP Server (zenripple_mcp_server.py)            |
 |  - FastMCP framework                                  |
 |  - 55+ tool definitions                               |
 |  - WebSocket client to browser                        |
@@ -20,7 +20,7 @@
                          | JSON-RPC: {id, method, params}
                          v
 +-------------------------------------------------------+
-|  Browser Extension (zenleap_agent.uc.js)              |
+|  Browser Extension (zenripple_agent.uc.js)              |
 |  - RFC 6455 WebSocket server on port 9876             |
 |  - Multi-session model with tab ownership             |
 |  - 50+ command handlers                               |
@@ -31,16 +31,16 @@
                          v
 +-------------------------------------------------------+
 |  JSWindowActors (content process)                     |
-|  - ZenLeapAgentChild.sys.mjs (1,192 lines)           |
+|  - ZenRippleAgentChild.sys.mjs (1,192 lines)           |
 |    DOM extraction, interaction, console capture,      |
 |    file upload, keyboard input (nsITextInputProcessor)|
-|  - ZenLeapAgentParent.sys.mjs (minimal relay)        |
+|  - ZenRippleAgentParent.sys.mjs (minimal relay)        |
 +-------------------------------------------------------+
 ```
 
 ## Component Details
 
-### 1. MCP Server (`mcp/zenleap_mcp_server.py`)
+### 1. MCP Server (`mcp/zenripple_mcp_server.py`)
 
 **Role**: Bridge between MCP clients (Claude Code) and the browser.
 
@@ -55,7 +55,7 @@
 - `browser_command(method, params)` — send JSON-RPC command and await response
 - `text_result(data)` / `image_result(data)` — format results for MCP
 
-### 2. Browser Extension (`browser/zenleap_agent.uc.js`)
+### 2. Browser Extension (`browser/zenripple_agent.uc.js`)
 
 **Role**: WebSocket server + command dispatcher inside Zen Browser.
 
@@ -76,14 +76,14 @@ Loaded by fx-autoconfig as a `.uc.js` userscript in the browser's chrome context
 
 - **Tab Resolution**: `resolveTabScoped(tabId, sessionId)` filters by `data-agent-session-id` attribute. Traverses all workspaces via `gZenWorkspaces.allStoredTabs`. No fallback to `gBrowser.selectedTab` (prevents hijacking user tabs).
 
-- **Workspace**: Ensures a dedicated "Zen AI Agent" workspace exists. All session tabs are moved there.
+- **Workspace**: Ensures a dedicated "ZenRipple" workspace exists. All session tabs are moved there.
 
 ### 3. JSWindowActors
 
 **Role**: Cross-process content access (required under Fission process isolation).
 
-- **ZenLeapAgentChild** (content process): DOM indexing with self-healing selectors, trusted keyboard input via `nsITextInputProcessor`, form interaction, console capture via `Cu.exportFunction`, screenshot support, file upload via DataTransfer, accessibility tree traversal
-- **ZenLeapAgentParent** (chrome process): Minimal relay for `sendQuery`/`receiveMessage`
+- **ZenRippleAgentChild** (content process): DOM indexing with self-healing selectors, trusted keyboard input via `nsITextInputProcessor`, form interaction, console capture via `Cu.exportFunction`, screenshot support, file upload via DataTransfer, accessibility tree traversal
+- **ZenRippleAgentParent** (chrome process): Minimal relay for `sendQuery`/`receiveMessage`
 
 Registered via `resource://` URI scheme (not `file://` — Firefox doesn't trust it for actor modules).
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session bootstrap helper for Zen AI Agent + MCPorter workflows."""
+"""Session bootstrap helper for ZenRipple + MCPorter workflows."""
 
 import argparse
 import asyncio
@@ -9,7 +9,7 @@ import sys
 import websockets
 
 
-DEFAULT_WS_URL = os.environ.get("ZENLEAP_WS_URL", "ws://localhost:9876")
+DEFAULT_WS_URL = os.environ.get("ZENRIPPLE_WS_URL", "ws://localhost:9876")
 
 
 async def _create_session(ws_url: str) -> str:
@@ -20,43 +20,43 @@ async def _create_session(ws_url: str) -> str:
         elif hasattr(ws, "response_headers"):
             headers = ws.response_headers
 
-        session_id = headers.get("X-ZenLeap-Session") if headers else None
+        session_id = headers.get("X-ZenRipple-Session") if headers else None
         if not session_id:
-            raise RuntimeError("Missing X-ZenLeap-Session header from Zen AI Agent")
+            raise RuntimeError("Missing X-ZenRipple-Session header from ZenRipple")
         return session_id
 
 
 def _print_value(value: str, shell: bool) -> None:
     if shell:
-        print(f"export ZENLEAP_SESSION_ID={value}")
+        print(f"export ZENRIPPLE_SESSION_ID={value}")
     else:
         print(value)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Create or resolve ZenLeap session IDs for MCPorter/CLI use."
+        description="Create or resolve ZenRipple session IDs for MCPorter/CLI use."
     )
     parser.add_argument(
         "mode",
         choices=("new", "ensure"),
-        help="'new' creates a fresh browser session; 'ensure' reuses ZENLEAP_SESSION_ID if set.",
+        help="'new' creates a fresh browser session; 'ensure' reuses ZENRIPPLE_SESSION_ID if set.",
     )
     parser.add_argument(
         "--ws-url",
         default=DEFAULT_WS_URL,
-        help=f"ZenLeap websocket base URL (default: {DEFAULT_WS_URL})",
+        help=f"ZenRipple websocket base URL (default: {DEFAULT_WS_URL})",
     )
     parser.add_argument(
         "--shell",
         action="store_true",
-        help="Print in shell export format: export ZENLEAP_SESSION_ID=...",
+        help="Print in shell export format: export ZENRIPPLE_SESSION_ID=...",
     )
     args = parser.parse_args()
 
     try:
         if args.mode == "ensure":
-            existing = os.environ.get("ZENLEAP_SESSION_ID", "").strip()
+            existing = os.environ.get("ZENRIPPLE_SESSION_ID", "").strip()
             if existing:
                 _print_value(existing, args.shell)
                 return 0

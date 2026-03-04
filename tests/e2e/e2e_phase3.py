@@ -84,7 +84,7 @@ async def main():
     # --- 5. Fill text fields ---
     print("\n5. Fill fields")
     if "custname" in inputs:
-        r = await send_command(ws, "fill_field", {"tab_id": tab_id, "index": inputs["custname"], "value": "ZenLeap Test"})
+        r = await send_command(ws, "fill_field", {"tab_id": tab_id, "index": inputs["custname"], "value": "ZenRipple Test"})
         check("filled custname", r.get("success") is True)
     else:
         check("custname found", False, "no custname input found")
@@ -96,7 +96,7 @@ async def main():
         check("custtel found", False, "no custtel input found")
 
     if "custemail" in inputs:
-        r = await send_command(ws, "fill_field", {"tab_id": tab_id, "index": inputs["custemail"], "value": "test@zenleap.ai"})
+        r = await send_command(ws, "fill_field", {"tab_id": tab_id, "index": inputs["custemail"], "value": "test@zenripple.ai"})
         check("filled custemail", r.get("success") is True)
     else:
         check("custemail found", False, "no custemail input found")

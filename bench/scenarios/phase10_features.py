@@ -33,7 +33,7 @@ PHASE10_SCENARIOS = [
             BrowserStateCheck("browser alive", verify_browser_alive),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_eval_chrome",
+            "mcp__zenripple-browser__browser_eval_chrome",
         ],
         max_turns=5,
         max_budget_usd=0.15,
@@ -53,8 +53,8 @@ PHASE10_SCENARIOS = [
             BrowserStateCheck("tab exists", verify_tab_exists),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_create_tab",
-            "mcp__zenleap-browser__browser_drag_coordinates",
+            "mcp__zenripple-browser__browser_create_tab",
+            "mcp__zenripple-browser__browser_drag_coordinates",
         ],
         max_turns=10,
         max_budget_usd=0.25,
@@ -75,8 +75,8 @@ PHASE10_SCENARIOS = [
             BrowserStateCheck("tab exists", verify_tab_exists),
         ],
         expected_tools=[
-            "mcp__zenleap-browser__browser_create_tab",
-            "mcp__zenleap-browser__browser_reflect",
+            "mcp__zenripple-browser__browser_create_tab",
+            "mcp__zenripple-browser__browser_reflect",
         ],
         max_turns=10,
         max_budget_usd=0.30,

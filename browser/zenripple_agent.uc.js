@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name           Zen AI Agent - Browser Automation for Claude Code
+// @name           ZenRipple - Browser Automation for Claude Code
 // @description    WebSocket server exposing browser control via MCP for AI agents
 // @include        main
-// @author         Zen AI Agent
+// @author         ZenRipple
 // @version        1.0.0
 // ==/UserScript==
 
@@ -12,7 +12,7 @@
   const VERSION = '1.0.0';
   const AGENT_PORT = 9876;
   const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
-  const AGENT_WORKSPACE_NAME = 'Zen AI Agent';
+  const AGENT_WORKSPACE_NAME = 'ZenRipple';
 
   const logBuffer = [];
   const MAX_LOG_LINES = 200;
@@ -24,7 +24,7 @@
 
   function log(msg) {
     const line = new Date().toISOString() + ' ' + msg;
-    console.log('[Zen AI Agent] ' + msg);
+    console.log('[ZenRipple] ' + msg);
     logBuffer.push(line);
     if (logBuffer.length > MAX_LOG_LINES) logBuffer.shift();
   }
@@ -237,9 +237,9 @@
   // Uses CSS custom property --sh (session hue as R,G,B) set on each tab element.
   // data-agent-indicator="active"|"claimed" controls brightness (active = bright, claimed = dim).
   const AGENT_TAB_CSS = `
-/* === Zen AI Agent Tab Indicators === */
+/* === ZenRipple Tab Indicators === */
 
-@keyframes zenleap-wave-sweep {
+@keyframes zenripple-wave-sweep {
   0% {
     background-position: 200% 0;
   }
@@ -248,7 +248,7 @@
   }
 }
 
-@keyframes zenleap-dot-breathe {
+@keyframes zenripple-dot-breathe {
   0%, 100% {
     box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22)),
                 0 0 4px rgba(var(--sh),0.4);
@@ -272,7 +272,7 @@
   ) !important;
   background-size: 300% 100% !important;
   box-shadow: inset 3px 0 0 rgb(var(--sh)) !important;
-  animation: zenleap-wave-sweep 4s ease-in-out infinite !important;
+  animation: zenripple-wave-sweep 4s ease-in-out infinite !important;
 }
 
 .tabbrowser-tab[data-agent-indicator="active"] .tab-label {
@@ -318,7 +318,7 @@
   background: rgb(var(--sh));
   box-shadow: 0 0 0 1.5px var(--zen-dialog-background, light-dark(#f0f0f0, #1a1b22)),
               0 0 5px rgba(var(--sh),0.5);
-  animation: zenleap-dot-breathe 2.5s ease-in-out infinite;
+  animation: zenripple-dot-breathe 2.5s ease-in-out infinite;
 }
 
 .tabbrowser-tab[data-agent-indicator="claimed"] .tab-icon-image::after {
@@ -375,7 +375,7 @@
 
   // Use a browser-global to prevent multiple instances across windows.
   // fx-autoconfig loads .uc.js per-window; we only want one server.
-  const GLOBAL_KEY = '__zenleapAgentServer';
+  const GLOBAL_KEY = '__zenrippleAgentServer';
 
   let serverSocket = null;
 
@@ -622,8 +622,8 @@
         'Upgrade: websocket\r\n' +
         'Connection: Upgrade\r\n' +
         'Sec-WebSocket-Accept: ' + acceptKey + '\r\n' +
-        'X-ZenLeap-Session: ' + session.id + '\r\n' +
-        'X-ZenLeap-Connection: ' + this.connectionId + '\r\n\r\n';
+        'X-ZenRipple-Session: ' + session.id + '\r\n' +
+        'X-ZenRipple-Connection: ' + this.connectionId + '\r\n\r\n';
 
       this.#writeRaw(response);
       this.#handshakeComplete = true;
@@ -1183,7 +1183,7 @@
   }
 
   // Inject CSS styles for agent tab indicators.
-  const STYLE_ID = 'zenleap-agent-tab-styles';
+  const STYLE_ID = 'zenripple-agent-tab-styles';
   function injectAgentTabStyles() {
     if (document.getElementById(STYLE_ID)) return; // already injected
     const style = document.createElement('style');
@@ -1690,7 +1690,7 @@
       : browser.browsingContext?.currentWindowGlobal;
     if (!wg) throw new Error(frameId ? 'Frame not found: ' + frameId : 'Page not loaded (no currentWindowGlobal)');
     try {
-      return wg.getActor('ZenLeapAgent');
+      return wg.getActor('ZenRippleAgent');
     } catch (e) {
       const url = browser.currentURI?.spec || '?';
       log('getActor failed: ' + e + ' (url: ' + url + ')');
@@ -2118,7 +2118,7 @@
     get_viewport_dimensions: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetViewportDimensions', {});
+      return await actor.sendQuery('ZenRippleAgent:GetViewportDimensions', {});
     },
 
     get_page_info: async ({ tab_id }, ctx) => {
@@ -2143,7 +2143,7 @@
     get_dom: async ({ tab_id, frame_id, viewport_only, max_elements, incremental }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:ExtractDOM', {
+      return await actor.sendQuery('ZenRippleAgent:ExtractDOM', {
         viewport_only: !!viewport_only,
         max_elements: max_elements || 0,
         incremental: !!incremental,
@@ -2153,26 +2153,26 @@
     get_page_text: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetPageText');
+      return await actor.sendQuery('ZenRippleAgent:GetPageText');
     },
 
     get_page_html: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetPageHTML');
+      return await actor.sendQuery('ZenRippleAgent:GetPageHTML');
     },
 
     get_accessibility_tree: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetAccessibilityTree');
+      return await actor.sendQuery('ZenRippleAgent:GetAccessibilityTree');
     },
 
     // --- Interaction ---
     click_element: async ({ tab_id, frame_id, index }, ctx) => {
       if (index === undefined || index === null) throw new Error('index is required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:ClickElement', { index }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:ClickElement', { index }, null, frame_id);
     },
 
     click_coordinates: async ({ tab_id, frame_id, x, y, color }, ctx) => {
@@ -2180,76 +2180,76 @@
       const tab = ctx.resolveTab(tab_id);
       const data = { x, y };
       if (color) data.color = color;
-      return await actorInteraction(tab, 'ZenLeapAgent:ClickCoordinates', data, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:ClickCoordinates', data, null, frame_id);
     },
 
     fill_field: async ({ tab_id, frame_id, index, value }, ctx) => {
       if (index === undefined || index === null) throw new Error('index is required');
       if (value === undefined) throw new Error('value is required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:FillField', { index, value: String(value) }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:FillField', { index, value: String(value) }, null, frame_id);
     },
 
     select_option: async ({ tab_id, frame_id, index, value }, ctx) => {
       if (index === undefined || index === null) throw new Error('index is required');
       if (value === undefined) throw new Error('value is required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:SelectOption', { index, value: String(value) }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:SelectOption', { index, value: String(value) }, null, frame_id);
     },
 
     type_text: async ({ tab_id, frame_id, text }, ctx) => {
       if (!text) throw new Error('text is required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:TypeText', { text }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:TypeText', { text }, null, frame_id);
     },
 
     press_key: async ({ tab_id, frame_id, key, modifiers }, ctx) => {
       if (!key) throw new Error('key is required');
       const mods = modifiers || {};
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:PressKey', { key, modifiers: mods }, { success: true, key }, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:PressKey', { key, modifiers: mods }, { success: true, key }, frame_id);
     },
 
     scroll: async ({ tab_id, frame_id, direction, amount }, ctx) => {
       if (!direction) throw new Error('direction is required (up/down/left/right)');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:Scroll', { direction, amount: amount || 500 }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:Scroll', { direction, amount: amount || 500 }, null, frame_id);
     },
 
     hover: async ({ tab_id, frame_id, index }, ctx) => {
       if (index === undefined || index === null) throw new Error('index is required');
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:Hover', { index }, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:Hover', { index }, null, frame_id);
     },
 
     // --- Console / Eval ---
     console_setup: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:SetupConsoleCapture', {}, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:SetupConsoleCapture', {}, null, frame_id);
     },
 
     console_teardown: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
-      return await actorInteraction(tab, 'ZenLeapAgent:TeardownConsoleCapture', {}, null, frame_id);
+      return await actorInteraction(tab, 'ZenRippleAgent:TeardownConsoleCapture', {}, null, frame_id);
     },
 
     console_get_logs: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetConsoleLogs');
+      return await actor.sendQuery('ZenRippleAgent:GetConsoleLogs');
     },
 
     console_get_errors: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetConsoleErrors');
+      return await actor.sendQuery('ZenRippleAgent:GetConsoleErrors');
     },
 
     console_evaluate: async ({ tab_id, frame_id, expression }, ctx) => {
       if (!expression) throw new Error('expression is required');
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:EvalJS', { expression });
+      return await actor.sendQuery('ZenRippleAgent:EvalJS', { expression });
     },
 
     // --- Clipboard (global) ---
@@ -2299,7 +2299,7 @@
       while (Date.now() < deadline) {
         try {
           const actor = getActorForTab(tab, frame_id);
-          const result = await actor.sendQuery('ZenLeapAgent:QuerySelector', { selector });
+          const result = await actor.sendQuery('ZenRippleAgent:QuerySelector', { selector });
           if (result.found) return result;
         } catch (e) {
           // Actor might not be available yet during navigation
@@ -2317,7 +2317,7 @@
       while (Date.now() < deadline) {
         try {
           const actor = getActorForTab(tab, frame_id);
-          const result = await actor.sendQuery('ZenLeapAgent:SearchText', { text });
+          const result = await actor.sendQuery('ZenRippleAgent:SearchText', { text });
           if (result.found) return result;
         } catch (e) {
           // Actor might not be available yet during navigation
@@ -2403,7 +2403,7 @@
       }
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:SetCookie', { cookie: cookieStr });
+      return await actor.sendQuery('ZenRippleAgent:SetCookie', { cookie: cookieStr });
     },
 
     delete_cookies: async ({ tab_id, url, name }, ctx) => {
@@ -2438,21 +2438,21 @@
       if (!storage_type) throw new Error('storage_type is required (localStorage or sessionStorage)');
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:GetStorage', { storage_type, key });
+      return await actor.sendQuery('ZenRippleAgent:GetStorage', { storage_type, key });
     },
 
     set_storage: async ({ tab_id, frame_id, storage_type, key, value }, ctx) => {
       if (!storage_type || !key) throw new Error('storage_type and key are required');
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:SetStorage', { storage_type, key, value: String(value) });
+      return await actor.sendQuery('ZenRippleAgent:SetStorage', { storage_type, key, value: String(value) });
     },
 
     delete_storage: async ({ tab_id, frame_id, storage_type, key }, ctx) => {
       if (!storage_type) throw new Error('storage_type is required');
       const tab = ctx.resolveTab(tab_id);
       const actor = getActorForTab(tab, frame_id);
-      return await actor.sendQuery('ZenLeapAgent:DeleteStorage', { storage_type, key });
+      return await actor.sendQuery('ZenRippleAgent:DeleteStorage', { storage_type, key });
     },
 
     // --- Network Monitoring (Phase 7, global) ---
@@ -2678,7 +2678,7 @@
         let textPreview = '';
         try {
           const actor = getActorForTab(tab);
-          const page = await actor.sendQuery('ZenLeapAgent:GetPageText');
+          const page = await actor.sendQuery('ZenRippleAgent:GetPageText');
           textPreview = (page.text || '').substring(0, 500);
         } catch (e) {
           textPreview = '(unable to get text: ' + e.message + ')';
@@ -2769,10 +2769,10 @@
       return { success: true, replayed, total: actions.length, errors: errors.length > 0 ? errors : undefined };
     },
 
-    // --- Config (Firefox prefs under zenleap.*) ---
+    // --- Config (Firefox prefs under zenripple.*) ---
     get_config: async ({ key }) => {
       if (!key) throw new Error('key is required');
-      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
+      const prefKey = 'zenripple.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
       try {
         return { key, value: Services.prefs.getStringPref(prefKey, '') };
       } catch (e) {
@@ -2782,7 +2782,7 @@
 
     set_config: async ({ key, value }) => {
       if (!key) throw new Error('key is required');
-      const prefKey = 'zenleap.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
+      const prefKey = 'zenripple.' + key.replace(/[^a-zA-Z0-9_.\-]/g, '');
       Services.prefs.setStringPref(prefKey, String(value || ''));
       return { success: true, key };
     },
@@ -2817,7 +2817,7 @@
       if (targetIndex === undefined || targetIndex === null) throw new Error('targetIndex is required');
       const tab = ctx.resolveTab(tab_id);
       return await actorInteraction(
-        tab, 'ZenLeapAgent:DragElement',
+        tab, 'ZenRippleAgent:DragElement',
         { sourceIndex, targetIndex, steps: steps || 10 },
         null, frame_id
       );
@@ -2828,7 +2828,7 @@
       if (endX === undefined || endY === undefined) throw new Error('endX and endY are required');
       const tab = ctx.resolveTab(tab_id);
       return await actorInteraction(
-        tab, 'ZenLeapAgent:DragCoordinates',
+        tab, 'ZenRippleAgent:DragCoordinates',
         { startX, startY, endX, endY, steps: steps || 10 },
         null, frame_id
       );
@@ -2877,7 +2877,7 @@
       const tab = ctx.resolveTab(tab_id);
       try {
         return await actorInteraction(
-          tab, 'ZenLeapAgent:FileUpload',
+          tab, 'ZenRippleAgent:FileUpload',
           { index, base64, filename, mimeType }, null, frame_id
         );
       } finally {
@@ -3192,7 +3192,7 @@
   // ACTOR REGISTRATION
   // ============================================
 
-  const ACTOR_GLOBAL_KEY = '__zenleapActorsRegistered';
+  const ACTOR_GLOBAL_KEY = '__zenrippleActorsRegistered';
 
   function registerActors() {
     // Actors are browser-global — only register once across all windows
@@ -3211,13 +3211,13 @@
       const resProto = Services.io
         .getProtocolHandler('resource')
         .QueryInterface(Ci.nsIResProtocolHandler);
-      resProto.setSubstitution('zenleap-agent', Services.io.newFileURI(actorsDir));
-      log('Registered resource://zenleap-agent/ -> ' + actorsDir.path);
+      resProto.setSubstitution('zenripple-agent', Services.io.newFileURI(actorsDir));
+      log('Registered resource://zenripple-agent/ -> ' + actorsDir.path);
 
-      const parentURI = 'resource://zenleap-agent/ZenLeapAgentParent.sys.mjs';
-      const childURI = 'resource://zenleap-agent/ZenLeapAgentChild.sys.mjs';
+      const parentURI = 'resource://zenripple-agent/ZenRippleAgentParent.sys.mjs';
+      const childURI = 'resource://zenripple-agent/ZenRippleAgentChild.sys.mjs';
 
-      ChromeUtils.registerWindowActor('ZenLeapAgent', {
+      ChromeUtils.registerWindowActor('ZenRippleAgent', {
         parent: { esModuleURI: parentURI },
         child: { esModuleURI: childURI },
         allFrames: true,
@@ -3225,7 +3225,7 @@
       });
 
       globalThis[ACTOR_GLOBAL_KEY] = true;
-      log('JSWindowActor ZenLeapAgent registered');
+      log('JSWindowActor ZenRippleAgent registered');
     } catch (e) {
       if (String(e).includes('NotSupportedError') || String(e).includes('already been registered')) {
         // Already registered by another window — expected under fx-autoconfig
@@ -3245,7 +3245,7 @@
   const MAX_INIT_RETRIES = 20;
 
   function init() {
-    log('Initializing Zen AI Agent v' + VERSION + '...');
+    log('Initializing ZenRipple v' + VERSION + '...');
 
     if (!gBrowser || !gBrowser.tabs) {
       initRetries++;
@@ -3266,7 +3266,7 @@
     setupTabEventTracking();
     setupPopupBlockedTracking();
 
-    log('Zen AI Agent v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
+    log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
   }
 
   // Clean up on window close

@@ -3,8 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MCP_PROJECT="$ROOT_DIR/mcp"
-MCP_SERVER_PY="$MCP_PROJECT/zenleap_mcp_server.py"
-SESSION_HELPER_PY="$MCP_PROJECT/zenleap_session.py"
+MCP_SERVER_PY="$MCP_PROJECT/zenripple_mcp_server.py"
+SESSION_HELPER_PY="$MCP_PROJECT/zenripple_session.py"
 STDIO_CMD="uv run --project $MCP_PROJECT python $MCP_SERVER_PY"
 
 new_session_id() {
@@ -25,7 +25,7 @@ mcall() {
   shift
   npx -y mcporter call \
     --stdio "$STDIO_CMD" \
-    --env "ZENLEAP_SESSION_ID=$sid" \
+    --env "ZENRIPPLE_SESSION_ID=$sid" \
     "$@" \
     --output json
 }

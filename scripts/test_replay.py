@@ -54,17 +54,17 @@ async def call_tool(proc, tool_name, args=None, req_id=1):
 async def main():
     # Start the MCP server as a subprocess
     server_cmd = [
-        sys.executable, "-m", "zenleap_mcp_server"
+        sys.executable, "-m", "zenripple_mcp_server"
     ]
     env = os.environ.copy()
-    env["ZENLEAP_SESSION_ID"] = f"replay-test-{os.getpid()}"
+    env["ZENRIPPLE_SESSION_ID"] = f"replay-test-{os.getpid()}"
     env["PYTHONPATH"] = os.path.join(os.path.dirname(__file__), "..", "mcp")
 
     proc = await asyncio.create_subprocess_exec(
         "uv", "run", "--project",
         os.path.join(os.path.dirname(__file__), "..", "mcp"),
         "python",
-        os.path.join(os.path.dirname(__file__), "..", "mcp", "zenleap_mcp_server.py"),
+        os.path.join(os.path.dirname(__file__), "..", "mcp", "zenripple_mcp_server.py"),
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -234,21 +234,21 @@ async def main():
         print(f"  Status: {json.dumps(result, indent=2)}")
 
         # === STEP 9: Save full session video ===
-        output_path = "/tmp/zenleap_replay_test_session.mp4"
+        output_path = "/tmp/zenripple_replay_test_session.mp4"
         print(f"\n=== Step 9: Save full session video → {output_path} ===")
         result = await call_tool(proc, "browser_replay_save_video",
                                  {"output_path": output_path, "scope": "session"}, next_id())
         print(f"  Result: {json.dumps(result, indent=2)}")
 
         # === STEP 10: Save last prompt only ===
-        output_path2 = "/tmp/zenleap_replay_test_last_prompt.mp4"
+        output_path2 = "/tmp/zenripple_replay_test_last_prompt.mp4"
         print(f"\n=== Step 10: Save last prompt video → {output_path2} ===")
         result = await call_tool(proc, "browser_replay_save_video",
                                  {"output_path": output_path2, "scope": "last_prompt"}, next_id())
         print(f"  Result: {json.dumps(result, indent=2)}")
 
         # === STEP 11: Save prompt 0 only ===
-        output_path3 = "/tmp/zenleap_replay_test_prompt0.mp4"
+        output_path3 = "/tmp/zenripple_replay_test_prompt0.mp4"
         print(f"\n=== Step 11: Save prompt 0 video → {output_path3} ===")
         result = await call_tool(proc, "browser_replay_save_video",
                                  {"output_path": output_path3, "scope": "prompt", "prompt_index": 0}, next_id())

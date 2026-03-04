@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Zen AI Agent MCP Server
+ZenRipple MCP Server
 Exposes Zen Browser control tools to Claude Code via Model Context Protocol.
-Connects to the Zen AI Agent WebSocket server running in the browser.
+Connects to the ZenRipple WebSocket server running in the browser.
 """
 
 import asyncio
@@ -25,8 +25,8 @@ import websockets
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
 
-BROWSER_WS_URL = os.environ.get("ZENLEAP_WS_URL", "ws://localhost:9876")
-SESSION_ID = os.environ.get("ZENLEAP_SESSION_ID", "")
+BROWSER_WS_URL = os.environ.get("ZENRIPPLE_WS_URL", "ws://localhost:9876")
+SESSION_ID = os.environ.get("ZENRIPPLE_SESSION_ID", "")
 
 # Grounding VLM configuration for browser_grounded_click.
 # Uses an external VLM (default: Qwen2.5-VL-72B via OpenRouter) for accurate
@@ -35,28 +35,28 @@ SESSION_ID = os.environ.get("ZENLEAP_SESSION_ID", "")
 # prefs so the user only needs to provide it once.
 _GROUNDING_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 _GROUNDING_MODEL = os.environ.get(
-    "ZENLEAP_GROUNDING_MODEL", "qwen/qwen3-vl-235b-a22b-instruct"
+    "ZENRIPPLE_GROUNDING_MODEL", "qwen/qwen3-vl-235b-a22b-instruct"
 )
 _GROUNDING_API_URL = os.environ.get(
-    "ZENLEAP_GROUNDING_API_URL", "https://openrouter.ai/api/v1/chat/completions"
+    "ZENRIPPLE_GROUNDING_API_URL", "https://openrouter.ai/api/v1/chat/completions"
 )
 # Coordinate mode: "norm1000" for Qwen3-VL/Qwen3.5 (0-1000 normalized grid),
 # "absolute" for Qwen2.5-VL/UI-TARS (raw pixel coords).
-_GROUNDING_COORD_MODE = os.environ.get("ZENLEAP_GROUNDING_COORD_MODE", "norm1000")
+_GROUNDING_COORD_MODE = os.environ.get("ZENRIPPLE_GROUNDING_COORD_MODE", "norm1000")
 _GROUNDING_KEY_SYNCED = False  # Whether we've synced with browser prefs yet
 
 mcp = FastMCP(
-    "zenleap-browser",
+    "zenripple-browser",
     instructions=(
-        "Browser control tools for Zen Browser via Zen AI Agent. "
-        "All tab operations are scoped to the 'Zen AI Agent' workspace."
+        "Browser control tools for Zen Browser via ZenRipple. "
+        "All tab operations are scoped to the 'ZenRipple' workspace."
     ),
 )
 
 _ws_connection = None
 _ws_lock = asyncio.Lock()
 _ws_command_lock = asyncio.Lock()
-_session_id: str | None = None  # Populated from X-ZenLeap-Session after connect
+_session_id: str | None = None  # Populated from X-ZenRipple-Session after connect
 
 # Cache screenshot ↔ viewport dimensions for auto-scaling click coordinates.
 # Keyed by tab_id (empty string for default tab).
@@ -71,8 +71,8 @@ _replay_prompt_index: int = -1
 _replay_manifest: dict | None = None
 _replay_started_at: str | None = None
 
-# Opt-out: set ZENLEAP_NO_REPLAY=1 to disable automatic replay capture
-REPLAY_DISABLED = os.environ.get("ZENLEAP_NO_REPLAY", "").strip().lower() not in ("", "0", "false", "no")
+# Opt-out: set ZENRIPPLE_NO_REPLAY=1 to disable automatic replay capture
+REPLAY_DISABLED = os.environ.get("ZENRIPPLE_NO_REPLAY", "").strip().lower() not in ("", "0", "false", "no")
 
 
 def _sanitize_session_id(raw: str) -> str:
@@ -84,7 +84,7 @@ async def get_ws():
     """Get or create WebSocket connection to browser.
 
     Reconnection strategy:
-    1. If ZENLEAP_SESSION_ID env var is set, always join that session
+    1. If ZENRIPPLE_SESSION_ID env var is set, always join that session
     2. If we previously connected and have a saved _session_id, rejoin it
     3. Otherwise create a new session via /new
     This prevents tab loss when the WebSocket connection drops mid-operation.
@@ -129,13 +129,13 @@ async def get_ws():
                 except OSError:
                     raise ConnectionError(
                         f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
-                        "Make sure Zen Browser is running with the Zen AI Agent installed. "
+                        "Make sure Zen Browser is running with the ZenRipple installed. "
                         "If you just installed, restart Zen Browser first."
                     ) from first_err
             elif isinstance(first_err, OSError):
                 raise ConnectionError(
                     f"Could not connect to Zen Browser on {BROWSER_WS_URL}. "
-                    "Make sure Zen Browser is running with the Zen AI Agent installed. "
+                    "Make sure Zen Browser is running with the ZenRipple installed. "
                     "If you just installed, restart Zen Browser first."
                 ) from first_err
             else:
@@ -149,7 +149,7 @@ async def get_ws():
         elif hasattr(_ws_connection, "response_headers"):
             headers = _ws_connection.response_headers
         if headers:
-            _session_id = headers.get("X-ZenLeap-Session")
+            _session_id = headers.get("X-ZenRipple-Session")
 
         return _ws_connection
 
@@ -280,7 +280,7 @@ def _load_replay_state() -> bool:
         _replay_active = False
         return False
 
-    _replay_dir = os.path.join(tempfile.gettempdir(), f"zenleap_replay_{safe_id}")
+    _replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
     manifest_path = os.path.join(_replay_dir, "manifest.json")
 
     if os.path.exists(manifest_path):
@@ -396,7 +396,7 @@ def _flush_manifest() -> None:
             _do_flush()
     except Exception as exc:
         import sys
-        print(f"[zenleap] _flush_manifest error: {exc}", file=sys.stderr)
+        print(f"[zenripple] _flush_manifest error: {exc}", file=sys.stderr)
 
 
 def _overlay_frame_info(raw_bytes: bytes, method: str, timestamp: str) -> bytes:
@@ -577,7 +577,7 @@ async def _capture_replay_frame(method: str) -> None:
     except Exception as exc:
         # Never fail the tool because of replay capture, but log for diagnostics.
         import sys
-        print(f"[zenleap] replay capture failed ({method}): {exc}", file=sys.stderr)
+        print(f"[zenripple] replay capture failed ({method}): {exc}", file=sys.stderr)
 
 
 # ── Tab Management ──────────────────────────────────────────────
@@ -585,7 +585,7 @@ async def _capture_replay_frame(method: str) -> None:
 
 @mcp.tool()
 async def browser_create_tab(url: str = "about:blank", persist: bool = False) -> str:
-    """Create a new browser tab in the Zen AI Agent workspace and navigate to a URL.
+    """Create a new browser tab in the ZenRipple workspace and navigate to a URL.
     Set persist=true to keep the tab alive after session close (it will be
     released back to unclaimed instead of destroyed)."""
     result = text_result(await browser_command("create_tab", {"url": url, "persist": persist}))
@@ -607,7 +607,7 @@ async def browser_close_tab(tab_id: str = "") -> str:
 
 @mcp.tool()
 async def browser_switch_tab(tab_id: str) -> str:
-    """Switch to a different tab in the Zen AI Agent workspace."""
+    """Switch to a different tab in the ZenRipple workspace."""
     result = text_result(await browser_command("switch_tab", {"tab_id": tab_id}))
     await _capture_replay_frame("switch_tab")
     return _append_notifications(result)
@@ -615,7 +615,7 @@ async def browser_switch_tab(tab_id: str) -> str:
 
 @mcp.tool()
 async def browser_list_tabs() -> str:
-    """List all open tabs in the Zen AI Agent workspace with IDs, titles, and URLs."""
+    """List all open tabs in the ZenRipple workspace with IDs, titles, and URLs."""
     return text_result(await browser_command("list_tabs"))
 
 
@@ -1722,7 +1722,7 @@ async def browser_compare_tabs(tab_ids: str) -> str:
 @mcp.tool()
 async def browser_batch_navigate(urls: str, persist: bool = False) -> str:
     """Open multiple URLs in new tabs at once. Pass comma-separated URLs.
-    All tabs are created in the Zen AI Agent workspace.
+    All tabs are created in the ZenRipple workspace.
     Returns the tab IDs for all opened tabs.
     Set persist=true to keep all tabs alive after session close."""
     url_list = [u.strip() for u in urls.split(",") if u.strip()]
@@ -1837,7 +1837,7 @@ async def browser_record_replay(file_path: str, delay: float = 0.5) -> str:
 @mcp.tool()
 async def browser_replay_start(output_dir: str = "") -> str:
     """Start capturing screenshots after each visual browser action for session replay.
-    Replay is auto-enabled when ZENLEAP_SESSION_ID is set. This tool is kept for
+    Replay is auto-enabled when ZENRIPPLE_SESSION_ID is set. This tool is kept for
     backwards compatibility and can resume a stopped session."""
     global _replay_active, _replay_dir, _replay_seq, _replay_prompt_index
     global _replay_manifest, _replay_started_at, _replay_state_loaded
@@ -1858,7 +1858,7 @@ async def browser_replay_start(output_dir: str = "") -> str:
     if output_dir:
         _replay_dir = output_dir
     else:
-        _replay_dir = os.path.join(tempfile.gettempdir(), f"zenleap_replay_{session_id}")
+        _replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{session_id}")
 
     manifest_path = os.path.join(_replay_dir, "manifest.json")
 
@@ -2371,7 +2371,7 @@ async def browser_set_session_name(name: str) -> str:
 
 @mcp.tool()
 async def browser_list_workspace_tabs() -> str:
-    """List ALL tabs in the Zen AI Agent workspace, including user-opened tabs
+    """List ALL tabs in the ZenRipple workspace, including user-opened tabs
     and tabs from other agent sessions. Each tab shows its ownership status:
     'unclaimed' (user-opened, available to claim), 'owned' (active agent session),
     or 'stale' (owner session inactive for 2+ minutes, available to claim).

@@ -34,15 +34,15 @@ All selectors use `CSS.escape()` to prevent injection through attribute values.
 
 ### Transparent to MCP Layer
 
-Self-healing is entirely within the content actor (`ZenLeapAgentChild.sys.mjs`). The MCP server and command handlers see no difference — they just get a successful result instead of a "stale element" error.
+Self-healing is entirely within the content actor (`ZenRippleAgentChild.sys.mjs`). The MCP server and command handlers see no difference — they just get a successful result instead of a "stale element" error.
 
 ## Architecture
 
 ```
 MCP tool call (browser_click index=3)
-  → zenleap_agent.uc.js: click_element handler
-    → Actor sendQuery: ZenLeapAgent:ClickElement {index: 3}
-      → ZenLeapAgentChild: #getElement(3)
+  → zenripple_agent.uc.js: click_element handler
+    → Actor sendQuery: ZenRippleAgent:ClickElement {index: 3}
+      → ZenRippleAgentChild: #getElement(3)
         → WeakRef.deref() returns null (stale!)
         → #tryHealElement(meta) finds matching element
         → Updates WeakRef, returns healed element

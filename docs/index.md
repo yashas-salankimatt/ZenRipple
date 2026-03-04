@@ -1,12 +1,12 @@
-# ZenLeap AI — Feature Documentation Index
+# ZenRipple AI — Feature Documentation Index
 
-This directory contains detailed documentation for each feature implemented in the ZenLeap AI browser automation system.
+This directory contains detailed documentation for each feature implemented in the ZenRipple AI browser automation system.
 
 ## Architecture
 
-- **Browser Extension**: `JS/zenleap_agent.uc.js` — WebSocket server + command handlers (chrome process)
-- **Content Actor**: `JS/actors/ZenLeapAgentChild.sys.mjs` — DOM access + interaction (content process)
-- **MCP Server**: `mcp/zenleap_mcp_server.py` — Claude Code bridge (Python)
+- **Browser Extension**: `JS/zenripple_agent.uc.js` — WebSocket server + command handlers (chrome process)
+- **Content Actor**: `JS/actors/ZenRippleAgentChild.sys.mjs` — DOM access + interaction (content process)
+- **MCP Server**: `mcp/zenripple_mcp_server.py` — Claude Code bridge (Python)
 - **Benchmarks**: `bench/` — Scenario runner + metrics
 
 ## Feature Index

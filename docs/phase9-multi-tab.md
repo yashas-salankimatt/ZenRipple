@@ -13,7 +13,7 @@ Opens multiple URLs in new tabs simultaneously.
 **MCP Tool**: `browser_batch_navigate(urls: str)`
 
 - `urls`: comma-separated list of URLs to open
-- All tabs are created in the ZenLeap AI workspace
+- All tabs are created in the ZenRipple AI workspace
 - Returns tab IDs for all opened tabs
 
 **Example**:
@@ -40,12 +40,12 @@ browser_compare_tabs("panel-1-1, panel-1-2")
 
 ## Architecture
 
-Both commands are implemented in `zenleap_agent.uc.js` as command handlers:
+Both commands are implemented in `zenripple_agent.uc.js` as command handlers:
 
 - `batch_navigate`: Iterates through URLs, creates tabs via `gBrowser.addTab()`, moves to agent workspace
 - `compare_tabs`: Iterates through tab IDs, gets page text via actor's `GetPageText` message
 
-The MCP server (`zenleap_mcp_server.py`) accepts comma-separated strings and splits them into arrays before sending to the browser.
+The MCP server (`zenripple_mcp_server.py`) accepts comma-separated strings and splits them into arrays before sending to the browser.
 
 ## Use Cases
 

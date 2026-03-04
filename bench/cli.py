@@ -1,4 +1,4 @@
-"""CLI entry point for ZenLeap AI benchmarks."""
+"""CLI entry point for ZenRipple AI benchmarks."""
 
 from __future__ import annotations
 
@@ -120,7 +120,7 @@ async def cmd_run(args: argparse.Namespace):
                 print(f"  {'─' * 60}")
                 for i, tc in enumerate(result.tool_call_trace, 1):
                     tool_short = tc["tool"].replace(
-                        "mcp__zenleap-browser__browser_", ""
+                        "mcp__zenripple-browser__browser_", ""
                     )
                     inp = json.dumps(tc["input"], default=str)
                     if len(inp) > 120:
@@ -216,7 +216,7 @@ async def cmd_improve(args: argparse.Namespace):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="ZenLeap AI Benchmark Runner"
+        description="ZenRipple AI Benchmark Runner"
     )
     subparsers = parser.add_subparsers(dest="command")
 
