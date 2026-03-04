@@ -188,10 +188,60 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
                 raise Exception(
                     f"Response ID mismatch: expected {msg_id}, got {resp_id}"
                 )
+            # Extract piggybacked notifications (dialog/popup events) from any response
+            notifications = resp.get("_notifications")
+            if notifications:
+                _pending_notifications.extend(notifications)
+                # Cap to prevent unbounded growth if drain isn't called
+                if len(_pending_notifications) > 200:
+                    _pending_notifications[:] = _pending_notifications[-200:]
             if "error" in resp:
                 raise Exception(resp["error"].get("message", "Unknown browser error"))
             return resp.get("result", {})
     raise RuntimeError("browser_command: unreachable")
+
+
+# ── Proactive Notifications ───────────────────────────────────
+
+_pending_notifications: list[dict] = []
+
+
+def _drain_notifications() -> str:
+    """Drain accumulated notifications and format as human-readable text."""
+    global _pending_notifications
+    if not _pending_notifications:
+        return ""
+    notifs = _pending_notifications
+    _pending_notifications = []
+    parts = []
+    for n in notifs:
+        if n["type"] == "dialog_opened":
+            parts.append(
+                f'\n\n--- NOTIFICATION: A {n.get("dialog_type", "unknown")} dialog appeared: '
+                f'"{n.get("message", "")}" ---\n'
+                f'Use browser_handle_dialog(action="accept") or '
+                f'browser_handle_dialog(action="dismiss") to handle it.'
+            )
+        elif n["type"] == "popup_blocked":
+            urls = n.get("popup_urls") or []
+            url_str = ", ".join(urls)
+            count = n.get("blocked_count", 1)
+            parts.append(
+                f"\n\n--- NOTIFICATION: The browser blocked {count} popup(s)"
+                f'{" (" + url_str + ")" if url_str else ""} ---\n'
+                f"Use browser_allow_blocked_popup() to open them, or ignore."
+            )
+        else:
+            parts.append(
+                f'\n\n--- NOTIFICATION ({n.get("type", "unknown")}): '
+                f'{json.dumps(n, default=str)} ---'
+            )
+    return "".join(parts)
+
+
+def _append_notifications(result_text: str) -> str:
+    """Append any pending notifications to a tool result string."""
+    return result_text + _drain_notifications()
 
 
 def text_result(data) -> str:
@@ -540,7 +590,7 @@ async def browser_create_tab(url: str = "about:blank", persist: bool = False) ->
     released back to unclaimed instead of destroyed)."""
     result = text_result(await browser_command("create_tab", {"url": url, "persist": persist}))
     await _capture_replay_frame("create_tab")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -552,7 +602,7 @@ async def browser_close_tab(tab_id: str = "") -> str:
     )
     # Clean up cached screenshot dimensions for the closed tab
     _last_screenshot_dims.pop(tab_id or "", None)
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -560,7 +610,7 @@ async def browser_switch_tab(tab_id: str) -> str:
     """Switch to a different tab in the Zen AI Agent workspace."""
     result = text_result(await browser_command("switch_tab", {"tab_id": tab_id}))
     await _capture_replay_frame("switch_tab")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -579,7 +629,7 @@ async def browser_navigate(url: str, tab_id: str = "") -> str:
         await browser_command("navigate", {"url": url, "tab_id": tab_id or None})
     )
     await _capture_replay_frame("navigate")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -589,7 +639,7 @@ async def browser_go_back(tab_id: str = "") -> str:
         await browser_command("go_back", {"tab_id": tab_id or None})
     )
     await _capture_replay_frame("go_back")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -599,7 +649,7 @@ async def browser_go_forward(tab_id: str = "") -> str:
         await browser_command("go_forward", {"tab_id": tab_id or None})
     )
     await _capture_replay_frame("go_forward")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -609,7 +659,7 @@ async def browser_reload(tab_id: str = "") -> str:
         await browser_command("reload", {"tab_id": tab_id or None})
     )
     await _capture_replay_frame("reload")
-    return result
+    return _append_notifications(result)
 
 
 # ── Tab Events ──────────────────────────────────────────────────
@@ -643,7 +693,30 @@ async def browser_handle_dialog(action: str, text: str = "") -> str:
         params["text"] = text
     result = text_result(await browser_command("handle_dialog", params))
     await _capture_replay_frame("handle_dialog")
-    return result
+    return _append_notifications(result)
+
+
+# ── Popup Blocked ──────────────────────────────────────────────
+
+
+@mcp.tool()
+async def browser_get_popup_blocked_events() -> str:
+    """Get and drain the queue of popup-blocked events since the last call.
+    Returns events with type, tab_id, popup_url, and timestamp."""
+    return text_result(await browser_command("get_popup_blocked_events"))
+
+
+@mcp.tool()
+async def browser_allow_blocked_popup(tab_id: str = "", index: int = -1) -> str:
+    """Allow blocked popups for a tab, opening them as new tabs.
+    Call after receiving a popup_blocked notification.
+    Pass index to unblock a specific popup, or omit to unblock all."""
+    params: dict = {"tab_id": tab_id or None}
+    if index >= 0:
+        params["index"] = index
+    result = text_result(await browser_command("allow_blocked_popup", params))
+    await _capture_replay_frame("allow_blocked_popup")
+    return _append_notifications(result)
 
 
 # ── Navigation Status ───────────────────────────────────────────
@@ -717,6 +790,9 @@ async def browser_screenshot(tab_id: str = "") -> list:
         if sw != vw:
             info += f" | Scale factor: {vw / sw:.3f}"
         blocks.append(info)
+    notif_text = _drain_notifications()
+    if notif_text:
+        blocks.append(notif_text)
     return blocks
 
 
@@ -895,7 +971,7 @@ async def browser_click(index: int, tab_id: str = "", frame_id: int = 0) -> str:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("click_element", params))
     await _capture_replay_frame("click")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -919,7 +995,7 @@ async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
         params["frame_id"] = frame_id
     result = text_result(await browser_command("click_coordinates", params))
     await _capture_replay_frame("click_coordinates")
-    return result
+    return _append_notifications(result)
 
 
 def _parse_grounding_coordinates(
@@ -1144,7 +1220,7 @@ async def browser_grounded_click(
 
     await _capture_replay_frame("grounded_click")
 
-    return (
+    return _append_notifications(
         f"Grounded click: \"{description}\" → VLM predicted ({px},{py}), "
         f"clicked ({click_x},{click_y}). {click_result}"
     )
@@ -1159,7 +1235,7 @@ async def browser_fill(index: int, value: str, tab_id: str = "", frame_id: int =
         params["frame_id"] = frame_id
     result = text_result(await browser_command("fill_field", params))
     await _capture_replay_frame("fill")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1171,7 +1247,7 @@ async def browser_select_option(index: int, value: str, tab_id: str = "", frame_
         params["frame_id"] = frame_id
     result = text_result(await browser_command("select_option", params))
     await _capture_replay_frame("select_option")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1184,7 +1260,7 @@ async def browser_type(text: str, tab_id: str = "", frame_id: int = 0) -> str:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("type_text", params))
     await _capture_replay_frame("type")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1199,7 +1275,7 @@ async def browser_press_key(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("press_key", params))
     await _capture_replay_frame("press_key")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1213,7 +1289,7 @@ async def browser_scroll(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("scroll", params))
     await _capture_replay_frame("scroll")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1225,7 +1301,7 @@ async def browser_hover(index: int, tab_id: str = "", frame_id: int = 0) -> str:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("hover", params))
     await _capture_replay_frame("hover")
-    return result
+    return _append_notifications(result)
 
 
 # ── Console / Eval ─────────────────────────────────────────────
@@ -1309,10 +1385,12 @@ async def browser_console_eval(expression: str, tab_id: str = "", frame_id: int 
     if isinstance(result, dict):
         if "error" in result:
             stack = result.get("stack", "")
-            return f"Error: {result['error']}" + (f"\n{stack}" if stack else "")
+            return _append_notifications(
+                f"Error: {result['error']}" + (f"\n{stack}" if stack else "")
+            )
         if "result" in result:
-            return str(result["result"])
-    return text_result(result)
+            return _append_notifications(str(result["result"]))
+    return _append_notifications(text_result(result))
 
 
 # ── Clipboard ───────────────────────────────────────────────────
@@ -1354,7 +1432,7 @@ async def browser_wait_for_element(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("wait_for_element", params))
     await _capture_replay_frame("wait_for_element")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1369,7 +1447,7 @@ async def browser_wait_for_text(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("wait_for_text", params))
     await _capture_replay_frame("wait_for_text")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -1384,7 +1462,7 @@ async def browser_wait_for_load(tab_id: str = "", timeout: int = 15) -> str:
         )
     )
     await _capture_replay_frame("wait_for_load")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -2103,7 +2181,7 @@ async def browser_drag(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("drag_element", params))
     await _capture_replay_frame("drag")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()
@@ -2126,7 +2204,7 @@ async def browser_drag_coordinates(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("drag_coordinates", params))
     await _capture_replay_frame("drag_coordinates")
-    return result
+    return _append_notifications(result)
 
 
 # ── Chrome-Context Eval (Phase 10) ─────────────────────────────
@@ -2142,8 +2220,12 @@ async def browser_eval_chrome(expression: str) -> str:
     result = await browser_command("eval_chrome", {"expression": expression})
     if "error" in result:
         stack = result.get("stack", "")
-        return f"Error: {result['error']}" + (f"\n{stack}" if stack else "")
-    return json.dumps(result.get("result"), indent=2, default=str)
+        return _append_notifications(
+            f"Error: {result['error']}" + (f"\n{stack}" if stack else "")
+        )
+    return _append_notifications(
+        json.dumps(result.get("result"), indent=2, default=str)
+    )
 
 
 # ── Reflection (Phase 10) ─────────────────────────────────────
@@ -2209,6 +2291,9 @@ async def browser_reflect(goal: str = "", tab_id: str = "") -> list:
         summary += f"\n\n--- Partial failures ---\n" + "\n".join(errors)
     blocks.append(summary)
 
+    notif_text = _drain_notifications()
+    if notif_text:
+        blocks.append(notif_text)
     return blocks
 
 
@@ -2231,7 +2316,7 @@ async def browser_file_upload(
         params["frame_id"] = frame_id
     result = text_result(await browser_command("file_upload", params))
     await _capture_replay_frame("file_upload")
-    return result
+    return _append_notifications(result)
 
 
 @mcp.tool()

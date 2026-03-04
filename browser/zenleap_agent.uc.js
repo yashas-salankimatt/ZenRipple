@@ -41,6 +41,13 @@
       this.claimedTabs = new Set();     // Tabs claimed from other sessions/user — exempt from auto-cleanup
       this.tabEvents = [];              // max 200, per-session
       this.tabEventIndex = 0;           // monotonic
+      this.dialogEvents = [];           // max 50, per-session — all dialog appearances
+      this.dialogEventIndex = 0;        // monotonic
+      this._pendingDialogs = [];        // consumable queue for handle_dialog (max 20)
+      this.popupBlockedEvents = [];     // max 50, per-session
+      this.popupBlockedEventIndex = 0;  // monotonic
+      this.notifDialogCursor = 0;      // session-level cursor for notification piggybacking
+      this.notifPopupCursor = 0;       // session-level cursor for notification piggybacking
       this.recordingActive = false;
       this.recordedActions = [];
       this.createdAt = Date.now();
@@ -52,6 +59,25 @@
       event._index = this.tabEventIndex++;
       this.tabEvents.push(event);
       if (this.tabEvents.length > 200) this.tabEvents.shift();
+    }
+
+    pushDialogEvent(event) {
+      event._index = this.dialogEventIndex++;
+      this.dialogEvents.push(event);
+      if (this.dialogEvents.length > 50) {
+        const old = this.dialogEvents.shift();
+        // Only clean up WeakRef if the dialog isn't still in _pendingDialogs
+        // (it could still be awaiting handle_dialog)
+        if (!this._pendingDialogs.includes(old)) {
+          dialogWindowRefs.delete(old);
+        }
+      }
+    }
+
+    pushPopupBlockedEvent(event) {
+      event._index = this.popupBlockedEventIndex++;
+      this.popupBlockedEvents.push(event);
+      if (this.popupBlockedEvents.length > 50) this.popupBlockedEvents.shift();
     }
 
     touch() {
@@ -67,6 +93,28 @@
   const connectionToSession = new Map(); // connId -> sessionId
 
   let nextConnectionId = 1;
+
+  // Drain pending notifications from a session, advancing its cursors.
+  function collectSessionNotifications(session) {
+    const notifications = [];
+    for (const d of session.dialogEvents) {
+      if (d._index >= session.notifDialogCursor) {
+        notifications.push({ type: 'dialog_opened', dialog_type: d.type, message: d.message, tab_id: d.tab_id });
+      }
+    }
+    if (session.dialogEvents.length > 0) {
+      session.notifDialogCursor = session.dialogEventIndex;
+    }
+    for (const p of session.popupBlockedEvents) {
+      if (p._index >= session.notifPopupCursor) {
+        notifications.push({ type: 'popup_blocked', blocked_count: p.blocked_count, popup_urls: p.popup_urls, tab_id: p.tab_id });
+      }
+    }
+    if (session.popupBlockedEvents.length > 0) {
+      session.notifPopupCursor = session.popupBlockedEventIndex;
+    }
+    return notifications;
+  }
 
   function createSession() {
     const id = crypto.randomUUID();
@@ -123,6 +171,10 @@
         interceptRules.splice(i, 1);
       }
     }
+
+    // Clean up dialogWindowRefs for this session's dialogs
+    for (const d of session.dialogEvents) dialogWindowRefs.delete(d);
+    for (const d of session._pendingDialogs) dialogWindowRefs.delete(d);
 
     if (session.staleTimer) {
       clearTimeout(session.staleTimer);
@@ -249,12 +301,16 @@
       try { gBrowser.tabContainer.removeEventListener('TabClose', _tabCloseListener); } catch (e) {}
       _tabCloseListener = null;
     }
+    if (_popupBlockedListener) {
+      try { gBrowser.removeEventListener('DOMUpdateBlockedPopups', _popupBlockedListener); } catch (e) {}
+      _popupBlockedListener = null;
+    }
     // Clear global state that outlives sessions
     interceptRules.length = 0;
     interceptNextId = 1;
     networkLog.length = 0;
     networkMonitorActive = false;
-    pendingDialogs.length = 0;
+    unownedDialogs.length = 0;
     dialogWindowRefs.clear();
     globalThis[GLOBAL_KEY] = false;
   }
@@ -278,7 +334,9 @@
     connectionId;
     sessionId = null;
     currentAgentTab = null;
-    tabEventCursor = 0;  // index into session's tabEvents
+    tabEventCursor = 0;           // index into session's tabEvents
+    dialogEventCursor = 0;        // index into session's dialogEvents
+    popupBlockedEventCursor = 0;  // index into session's popupBlockedEvents
 
     constructor(transport) {
       this.connectionId = 'conn-' + (nextConnectionId++);
@@ -665,14 +723,33 @@
 
       try {
         log('Handling: ' + msg.method + ' [' + this.connectionId + ']');
+
         // Timeout protection — 120s to accommodate downloads and large file uploads
         // Clear the timer when handler completes to prevent accumulation
         let timeoutId;
+        let dialogCheckInterval;
         const result = await Promise.race([
-          handler(msg.params || {}, ctx).finally(() => clearTimeout(timeoutId)),
+          handler(msg.params || {}, ctx).finally(() => {
+            clearTimeout(timeoutId);
+            clearInterval(dialogCheckInterval);
+          }),
           new Promise((_, reject) => {
             timeoutId = setTimeout(() => reject(new Error('Command timed out after 120s')), 120000);
-          })
+          }),
+          // Dialog-aware early return: if a dialog appears while a command is running
+          // (e.g. confirm() blocks the content process during a click), resolve early
+          // instead of hanging until the 120s timeout.
+          new Promise((resolve) => {
+            const startDialogIdx = session.dialogEventIndex;
+            dialogCheckInterval = setInterval(() => {
+              if (session.dialogEventIndex > startDialogIdx) {
+                resolve({
+                  success: true,
+                  note: 'A dialog appeared during this command — the command may not have completed. Handle the dialog first.',
+                });
+              }
+            }, 250);
+          }),
         ]);
         log('Completed: ' + msg.method);
 
@@ -695,13 +772,23 @@
           }
         }
 
-        return { id: msg.id, result };
+        // Collect notifications: all events since the session's last notification cursor.
+        // Uses session-level cursors (not per-connection) so notifications survive
+        // MCPorter's stateless per-call connection model.
+        const notifications = collectSessionNotifications(session);
+        const response = { id: msg.id, result };
+        if (notifications.length > 0) response._notifications = notifications;
+        return response;
       } catch (e) {
         log('Error in ' + msg.method + ': ' + e);
-        return {
+        // Even on error, collect pending notifications so the agent knows about dialogs/popups
+        const notifications = collectSessionNotifications(session);
+        const errResponse = {
           id: msg.id,
           error: { code: -1, message: e.message }
         };
+        if (notifications.length > 0) errResponse._notifications = notifications;
+        return errResponse;
       }
     }
   }
@@ -964,11 +1051,80 @@
   }
 
   // ============================================
-  // DIALOG HANDLING
+  // POPUP-BLOCKED TRACKING
+  // ============================================
+  // Firefox/Zen fires DOMUpdateBlockedPopups on gBrowser (not DOMPopupBlocked on window).
+  // The browser element exposes browser.popupAndRedirectBlocker with:
+  //   .getBlockedPopupCount()     → number of blocked popups
+  //   .getBlockedPopups()         → async, returns [{browsingContext, innerWindowId, popupWindowURISpec}, ...]
+  //   .unblockPopup(index)        → allow a specific blocked popup
+
+  let _popupBlockedListener = null;
+
+  function setupPopupBlockedTracking() {
+    try {
+      _popupBlockedListener = async (event) => {
+        try {
+          const browser = event.originalTarget;
+          const tab = gBrowser.getTabForBrowser(browser);
+          if (!tab) return;
+          const sessionId = tab.getAttribute('data-agent-session-id');
+          const session = sessionId ? sessions.get(sessionId) : null;
+          if (!session) return;
+
+          const blocker = browser.popupAndRedirectBlocker;
+          if (!blocker) return;
+
+          const count = blocker.getBlockedPopupCount();
+          if (count === 0) return;
+
+          // Get details of blocked popups
+          let popupUrls = [];
+          try {
+            const popups = await blocker.getBlockedPopups();
+            popupUrls = popups.map(p => p.popupWindowURISpec || '');
+          } catch (e) {
+            // getBlockedPopups() can fail if the browsing context is gone
+          }
+
+          session.pushPopupBlockedEvent({
+            type: 'popup_blocked',
+            tab_id: tab.getAttribute('data-agent-tab-id') || tab.linkedPanel,
+            blocked_count: count,
+            popup_urls: popupUrls,
+            timestamp: new Date().toISOString(),
+          });
+          log('Popup blocked [session ' + sessionId.substring(0, 8) + ']: ' +
+            count + ' popup(s) — ' + (popupUrls.join(', ') || 'unknown URLs'));
+        } catch (e) {
+          log('Popup-blocked handler error: ' + e);
+        }
+      };
+      gBrowser.addEventListener('DOMUpdateBlockedPopups', _popupBlockedListener);
+      log('Popup-blocked tracking active (DOMUpdateBlockedPopups on gBrowser)');
+    } catch (e) {
+      log('Failed to setup popup-blocked tracking: ' + e);
+    }
+  }
+
+  // ============================================
+  // DIALOG HANDLING (per-session with global fallback)
   // ============================================
 
-  const pendingDialogs = [];
-  const dialogWindowRefs = new Map(); // dialog object → WeakRef(window)
+  // Global fallback for dialogs that can't be attributed to a session
+  const unownedDialogs = [];
+  // Global WeakRef map for handle_dialog — keyed by dialogInfo object
+  const dialogWindowRefs = new Map();
+
+  // Helper to safely read from nsIWritablePropertyBag2 or plain object
+  function bagGet(bag, key, fallback) {
+    // Try property bag .get() first (nsIPropertyBag2 in Firefox/Zen)
+    if (typeof bag.get === 'function') {
+      try { return bag.get(key) ?? fallback; } catch (e) { return fallback; }
+    }
+    // Fall back to direct property access (plain objects in tests)
+    return bag[key] ?? fallback;
+  }
 
   const dialogObserver = {
     observe(subject, topic, data) {
@@ -978,19 +1134,49 @@
         const args = dialogWin.arguments?.[0];
         if (!args) return;
         const dialogInfo = {
-          type: args.promptType || 'unknown', // alertCheck, confirmCheck, prompt
-          message: args.text || '',
-          default_value: args.value || '',
+          type: bagGet(args, 'promptType', 'unknown'), // alertCheck, confirmCheck, prompt
+          message: bagGet(args, 'text', ''),
+          default_value: bagGet(args, 'value', ''),
           timestamp: new Date().toISOString(),
         };
-        // Use WeakRef to avoid retaining dialog window in memory
-        dialogWindowRefs.set(dialogInfo, new WeakRef(dialogWin));
-        pendingDialogs.push(dialogInfo);
-        if (pendingDialogs.length > 20) {
-          const old = pendingDialogs.shift();
-          dialogWindowRefs.delete(old);
+
+        // Attribute dialog to a session via owningBrowsingContext → tab → session
+        let ownerSession = null;
+        const bc = bagGet(args, 'owningBrowsingContext', null)
+          || bagGet(args, 'browsingContext', null);
+        if (bc) {
+          const browser = bc.top?.embedderElement;
+          const tab = browser ? gBrowser.getTabForBrowser(browser) : null;
+          const sessionId = tab?.getAttribute('data-agent-session-id');
+          ownerSession = sessionId ? sessions.get(sessionId) : null;
+          if (tab) {
+            dialogInfo.tab_id = tab.getAttribute('data-agent-tab-id') || tab.linkedPanel;
+          }
         }
-        log('Dialog captured: ' + dialogInfo.type + ' — ' + dialogInfo.message.substring(0, 80));
+
+        // Store WeakRef for later accept/dismiss
+        dialogWindowRefs.set(dialogInfo, new WeakRef(dialogWin));
+
+        if (ownerSession) {
+          // Per-session storage
+          ownerSession.pushDialogEvent(dialogInfo);
+          ownerSession._pendingDialogs.push(dialogInfo);
+          if (ownerSession._pendingDialogs.length > 20) {
+            const old = ownerSession._pendingDialogs.shift();
+            dialogWindowRefs.delete(old);
+          }
+        } else {
+          // Global fallback for unattributed dialogs
+          unownedDialogs.push(dialogInfo);
+          if (unownedDialogs.length > 20) {
+            const old = unownedDialogs.shift();
+            dialogWindowRefs.delete(old);
+          }
+        }
+
+        log('Dialog captured: ' + dialogInfo.type +
+          (ownerSession ? ' [session ' + ownerSession.id.substring(0, 8) + ']' : ' [unowned]') +
+          ' — ' + dialogInfo.message.substring(0, 80));
       } catch (e) {
         log('Dialog observer error: ' + e);
       }
@@ -1087,7 +1273,7 @@
   // Commands to exclude from recording (meta/debug commands)
   const RECORDING_EXCLUDE = new Set([
     'ping', 'get_agent_logs', 'record_start', 'record_stop',
-    'record_save', 'record_replay', 'get_tab_events', 'get_dialogs',
+    'record_save', 'record_replay', 'get_tab_events', 'get_dialogs', 'get_popup_blocked_events',
     'list_tabs', 'list_workspace_tabs', 'claim_tab', 'get_page_info', 'get_navigation_status',
     'network_get_log', 'intercept_list_rules', 'eval_chrome',
     'get_config', 'set_config',
@@ -1466,20 +1652,34 @@
       return events.map(({ _index, ...rest }) => rest);
     },
 
-    // --- Dialogs (global — browser-wide) ---
-    get_dialogs: async () => {
-      return pendingDialogs.map(d => ({
+    // --- Dialogs (per-session with unowned fallback) ---
+    get_dialogs: async (params, ctx) => {
+      // Merge session-owned + unowned dialogs for this session's view
+      const sessionDialogs = ctx.session._pendingDialogs;
+      const all = [...sessionDialogs, ...unownedDialogs];
+      return all.map(d => ({
         type: d.type,
         message: d.message,
         default_value: d.default_value,
         timestamp: d.timestamp,
+        tab_id: d.tab_id,
       }));
     },
 
-    handle_dialog: async ({ action, text }) => {
+    handle_dialog: async ({ action, text }, ctx) => {
       if (!action) throw new Error('action is required (accept or dismiss)');
-      if (pendingDialogs.length === 0) throw new Error('No pending dialogs');
-      const dialog = pendingDialogs.shift();
+      // Try session-owned dialogs first, then unowned
+      let dialog;
+      let source;
+      if (ctx.session._pendingDialogs.length > 0) {
+        dialog = ctx.session._pendingDialogs.shift();
+        source = 'session';
+      } else if (unownedDialogs.length > 0) {
+        dialog = unownedDialogs.shift();
+        source = 'unowned';
+      } else {
+        throw new Error('No pending dialogs');
+      }
       const dialogWin = dialogWindowRefs.get(dialog)?.deref();
       dialogWindowRefs.delete(dialog);
       if (!dialogWin || dialogWin.closed) {
@@ -1497,10 +1697,114 @@
         } else {
           ui.cancelDialog();
         }
-        return { success: true, action, type: dialog.type };
+        return { success: true, action, type: dialog.type, source };
       } catch (e) {
         return { success: false, error: e.message };
       }
+    },
+
+    // --- Popup Blocked Events (drain-on-read, per-connection cursor) ---
+    get_popup_blocked_events: async (params, ctx) => {
+      const events = ctx.session.popupBlockedEvents.filter(
+        e => e._index >= ctx.connection.popupBlockedEventCursor
+      );
+      if (events.length > 0) {
+        ctx.connection.popupBlockedEventCursor = events[events.length - 1]._index + 1;
+      }
+      return events.map(({ _index, ...rest }) => rest);
+    },
+
+    allow_blocked_popup: async ({ tab_id, index }, ctx) => {
+      const tab = ctx.resolveTab(tab_id);
+      if (!tab) throw new Error('Tab not found');
+      const browser = tab.linkedBrowser;
+      const blocker = browser.popupAndRedirectBlocker;
+      if (!blocker) throw new Error('Popup blocker API not available');
+      const count = blocker.getBlockedPopupCount();
+      if (count === 0) throw new Error('No blocked popups for this tab');
+      if (index !== undefined && index !== null && (index < 0 || index >= count)) {
+        throw new Error('Popup index out of range: ' + index + ' (have ' + count + ' blocked popups)');
+      }
+      // Get blocked popups list for detail
+      let popups = [];
+      try { popups = await blocker.getBlockedPopups(); } catch (e) {}
+
+      // Tab creation from unblockPopup/unblockAllPopups is async —
+      // the _tabOpenListener handles workspace moves and session stamping.
+      // We listen for TabOpen to collect opened tab IDs for the response.
+      const expectedCount = (index !== undefined && index !== null) ? 1 : count;
+      const newTabs = [];
+      const tabsReady = new Promise((resolve) => {
+        const onTabOpen = (event) => {
+          newTabs.push(event.target);
+          if (newTabs.length >= expectedCount) {
+            gBrowser.tabContainer.removeEventListener('TabOpen', onTabOpen);
+            resolve();
+          }
+        };
+        gBrowser.tabContainer.addEventListener('TabOpen', onTabOpen);
+        // Timeout: don't wait forever if some popups don't create tabs
+        setTimeout(() => {
+          gBrowser.tabContainer.removeEventListener('TabOpen', onTabOpen);
+          resolve();
+        }, 3000);
+      });
+
+      // Unblock specific popup by index, or all
+      if (index !== undefined && index !== null) {
+        blocker.unblockPopup(index);
+      } else {
+        blocker.unblockAllPopups();
+      }
+
+      // Wait for tab(s) to appear asynchronously
+      await tabsReady;
+
+      // Collect opened tab IDs — the _tabOpenListener already handled
+      // workspace moves and session stamping via browsingContext.opener.
+      // As a safety net, stamp any unstamped tabs ourselves.
+      const wsId = agentWorkspaceId || await ensureAgentWorkspace();
+      const openedTabIds = [];
+      for (const newTab of newTabs) {
+        if (newTab.getAttribute('data-agent-session-id')) {
+          openedTabIds.push(newTab.getAttribute('data-agent-tab-id') || newTab.linkedPanel);
+          continue;
+        }
+        // Verify this tab was opened by our tab (avoid capturing unrelated tabs)
+        const openerBC = newTab.linkedBrowser?.browsingContext?.opener;
+        const openerBrowser = openerBC?.top?.embedderElement;
+        if (!openerBrowser || openerBrowser !== tab.linkedBrowser) continue;
+        // Safety net: stamp and move if _tabOpenListener didn't catch it
+        const stableId = newTab.linkedPanel || ('agent-tab-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6));
+        newTab.setAttribute('data-agent-tab-id', stableId);
+        newTab.setAttribute('data-agent-session-id', ctx.session.id);
+        ctx.session.agentTabs.add(newTab);
+        if (wsId && gZenWorkspaces) {
+          gZenWorkspaces.moveTabToWorkspace(newTab, wsId);
+        }
+        openedTabIds.push(stableId);
+        ctx.session.pushTabEvent({
+          type: 'tab_opened',
+          tab_id: stableId,
+          opener_tab_id: tab.getAttribute('data-agent-tab-id') || tab.linkedPanel,
+          is_agent_tab: true,
+          source: 'unblocked_popup',
+          timestamp: new Date().toISOString(),
+        });
+        log('Unblocked popup moved to agent workspace (safety net): ' + stableId);
+      }
+
+      const result = {
+        success: true,
+        unblocked: (index !== undefined && index !== null) ? 1 : count,
+        opened_tab_ids: openedTabIds,
+      };
+      if (index !== undefined && index !== null) {
+        result.popup_url = popups[index]?.popupWindowURISpec || '';
+      } else {
+        result.popup_urls = popups.map(p => p.popupWindowURISpec || '');
+      }
+      return result;
     },
 
     // --- Navigation Status ---
@@ -2611,6 +2915,7 @@
     setupNavTracking();
     setupDialogObserver();
     setupTabEventTracking();
+    setupPopupBlockedTracking();
 
     log('Zen AI Agent v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
   }

@@ -4077,3 +4077,259 @@ class TestSanitizeSessionId:
 
     def test_strips_spaces_and_slashes(self):
         assert server._sanitize_session_id("my session/with spaces") == "mysessionwithspaces"
+
+
+# ── Proactive Notifications ───────────────────────────────────
+
+
+class TestNotifications:
+    def setup_method(self):
+        server._pending_notifications.clear()
+
+    def teardown_method(self):
+        server._pending_notifications.clear()
+
+    def test_drain_empty(self):
+        assert server._drain_notifications() == ""
+
+    def test_drain_dialog_notification(self):
+        server._pending_notifications.append({
+            "type": "dialog_opened",
+            "dialog_type": "confirmCheck",
+            "message": "Delete this item?",
+            "tab_id": "tab-1",
+        })
+        result = server._drain_notifications()
+        assert "NOTIFICATION" in result
+        assert "confirmCheck" in result
+        assert "Delete this item?" in result
+        assert "browser_handle_dialog" in result
+        # Drain clears the list
+        assert server._pending_notifications == []
+
+    def test_drain_popup_blocked_notification(self):
+        server._pending_notifications.append({
+            "type": "popup_blocked",
+            "blocked_count": 1,
+            "popup_urls": ["https://example.com/popup"],
+            "tab_id": "tab-1",
+        })
+        result = server._drain_notifications()
+        assert "NOTIFICATION" in result
+        assert "popup" in result.lower()
+        assert "https://example.com/popup" in result
+        assert "browser_allow_blocked_popup" in result
+
+    def test_drain_clears_notifications(self):
+        server._pending_notifications.extend([
+            {"type": "dialog_opened", "dialog_type": "alert", "message": "hi", "tab_id": "t"},
+            {"type": "popup_blocked", "blocked_count": 1, "popup_urls": [], "tab_id": "t"},
+        ])
+        server._drain_notifications()
+        assert len(server._pending_notifications) == 0
+        # Second drain returns nothing
+        assert server._drain_notifications() == ""
+
+    def test_append_notifications_empty(self):
+        result = server._append_notifications("click succeeded")
+        assert result == "click succeeded"
+
+    def test_append_notifications_with_dialog(self):
+        server._pending_notifications.append({
+            "type": "dialog_opened",
+            "dialog_type": "alertCheck",
+            "message": "Warning!",
+            "tab_id": "tab-1",
+        })
+        result = server._append_notifications('{"success": true}')
+        assert result.startswith('{"success": true}')
+        assert "NOTIFICATION" in result
+        assert "Warning!" in result
+
+    @pytest.mark.asyncio
+    async def test_notifications_extracted_from_response(self):
+        """browser_command() should extract _notifications from the response."""
+        notifications = [{"type": "dialog_opened", "dialog_type": "alert", "message": "test", "tab_id": "t1"}]
+        fake_ws = FakeWebSocket(responses=[{
+            "id": "x",
+            "result": {"success": True},
+            "_notifications": notifications,
+        }])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_command("click_element", {"index": 0})
+        assert len(server._pending_notifications) == 1
+        assert server._pending_notifications[0]["type"] == "dialog_opened"
+
+    @pytest.mark.asyncio
+    async def test_no_notifications_when_absent(self):
+        """No _notifications key → nothing accumulated."""
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": {"success": True}}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_command("click_element", {"index": 0})
+        assert len(server._pending_notifications) == 0
+
+    @pytest.mark.asyncio
+    async def test_click_appends_dialog_notification(self):
+        """browser_click should include dialog notification in return value."""
+        notifications = [{"type": "dialog_opened", "dialog_type": "confirmCheck",
+                          "message": "Disconnect Gmail?", "tab_id": "t1"}]
+        fake_ws = FakeWebSocket(responses=[{
+            "id": "x",
+            "result": {"success": True},
+            "_notifications": notifications,
+        }])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_click(index=5)
+        assert "Disconnect Gmail?" in result
+        assert "browser_handle_dialog" in result
+
+    @pytest.mark.asyncio
+    async def test_click_appends_popup_blocked_notification(self):
+        """browser_click should include popup-blocked notification in return value."""
+        notifications = [{"type": "popup_blocked", "blocked_count": 1, "popup_urls": ["https://ads.example.com"], "tab_id": "t1"}]
+        fake_ws = FakeWebSocket(responses=[{
+            "id": "x",
+            "result": {"success": True},
+            "_notifications": notifications,
+        }])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_click(index=3)
+        assert "popup" in result.lower()
+        assert "https://ads.example.com" in result
+        assert "browser_allow_blocked_popup" in result
+
+
+class TestPopupBlockedTools:
+    @pytest.mark.asyncio
+    async def test_get_popup_blocked_events_empty(self):
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": []}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_popup_blocked_events()
+        assert json.loads(result) == []
+
+    @pytest.mark.asyncio
+    async def test_get_popup_blocked_events_with_data(self):
+        events = [{"type": "popup_blocked", "tab_id": "t1",
+                    "blocked_count": 2, "popup_urls": ["https://example.com", "https://other.com"],
+                    "timestamp": "2026-03-03T00:00:00Z"}]
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": events}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_get_popup_blocked_events()
+        data = json.loads(result)
+        assert len(data) == 1
+        assert data[0]["blocked_count"] == 2
+        assert "https://example.com" in data[0]["popup_urls"]
+
+    @pytest.mark.asyncio
+    async def test_allow_blocked_popup(self):
+        resp = {"success": True, "unblocked": 2, "opened_tab_ids": ["tab-1", "tab-2"],
+                "popup_urls": ["https://a.com", "https://b.com"]}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_allow_blocked_popup()
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["unblocked"] == 2
+        assert data["opened_tab_ids"] == ["tab-1", "tab-2"]
+
+    @pytest.mark.asyncio
+    async def test_allow_blocked_popup_sends_tab_id(self):
+        resp = {"success": True, "unblocked": 1}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_allow_blocked_popup(tab_id="my-tab")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "my-tab"
+
+    @pytest.mark.asyncio
+    async def test_allow_blocked_popup_sends_index(self):
+        """index parameter is forwarded to the browser command."""
+        resp = {"success": True, "unblocked": 1, "popup_url": "https://a.com",
+                "opened_tab_ids": ["tab-99"]}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_allow_blocked_popup(tab_id="t", index=2)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["index"] == 2
+        assert msg["params"]["tab_id"] == "t"
+
+    @pytest.mark.asyncio
+    async def test_allow_blocked_popup_no_index_omitted(self):
+        """When index is -1 (default), it is NOT sent to the browser."""
+        resp = {"success": True, "unblocked": 1}
+        fake_ws = FakeWebSocket(responses=[{"id": "x", "result": resp}])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_allow_blocked_popup()
+        msg = json.loads(fake_ws.sent[0])
+        assert "index" not in msg["params"]
+
+
+class TestNotificationsOnError:
+    """Notifications are extracted even when browser_command raises."""
+
+    def setup_method(self):
+        server._pending_notifications.clear()
+
+    def teardown_method(self):
+        server._pending_notifications.clear()
+
+    @pytest.mark.asyncio
+    async def test_notifications_extracted_from_error_response(self):
+        notifications = [{"type": "dialog_opened", "dialog_type": "alert",
+                          "message": "oops", "tab_id": "t1"}]
+        fake_ws = FakeWebSocket(responses=[{
+            "id": "x",
+            "error": {"message": "Element not found"},
+            "_notifications": notifications,
+        }])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            with pytest.raises(Exception, match="Element not found"):
+                await server.browser_command("click_element", {"index": 999})
+        assert len(server._pending_notifications) == 1
+        assert server._pending_notifications[0]["type"] == "dialog_opened"
+        assert server._pending_notifications[0]["message"] == "oops"
+
+    @pytest.mark.asyncio
+    async def test_notifications_accumulate_across_commands(self):
+        """Multiple browser_command calls accumulate notifications until drained."""
+        for i in range(3):
+            notif = [{"type": "dialog_opened", "dialog_type": "alert",
+                      "message": f"msg{i}", "tab_id": "t"}]
+            fake_ws = FakeWebSocket(responses=[{
+                "id": "x", "result": {"success": True},
+                "_notifications": notif,
+            }])
+            with patch.object(server, "get_ws", return_value=fake_ws):
+                await server.browser_command("ping", {})
+        assert len(server._pending_notifications) == 3
+        text = server._drain_notifications()
+        assert "msg0" in text
+        assert "msg1" in text
+        assert "msg2" in text
+        assert len(server._pending_notifications) == 0
+
+    @pytest.mark.asyncio
+    async def test_notification_cap_at_200(self):
+        """Notifications are capped at 200, keeping the newest."""
+        notifications = [{"type": "dialog_opened", "dialog_type": "alert",
+                          "message": f"n{i}", "tab_id": "t"} for i in range(250)]
+        fake_ws = FakeWebSocket(responses=[{
+            "id": "x", "result": {"ok": True},
+            "_notifications": notifications,
+        }])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_command("ping", {})
+        assert len(server._pending_notifications) == 200
+        # Keeps the newest 200 (n50..n249)
+        assert server._pending_notifications[0]["message"] == "n50"
+        assert server._pending_notifications[-1]["message"] == "n249"
+
+    def test_drain_unknown_notification_type(self):
+        """Unknown notification types are included, not silently dropped."""
+        server._pending_notifications.append({
+            "type": "something_new", "data": "whatever", "tab_id": "t"
+        })
+        result = server._drain_notifications()
+        assert len(server._pending_notifications) == 0
+        assert "something_new" in result
+        assert "whatever" in result
