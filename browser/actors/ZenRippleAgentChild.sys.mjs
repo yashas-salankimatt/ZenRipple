@@ -104,6 +104,10 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
         return this.#dragCoordinates(data);
       case 'ZenRippleAgent:FileUpload':
         return this.#fileUpload(data.index, data.base64, data.filename, data.mimeType);
+      case 'ZenRippleAgent:HoverCoordinates':
+        return this.#hoverCoordinates(data.x, data.y, data.color);
+      case 'ZenRippleAgent:ScrollAtPoint':
+        return this.#scrollAtPoint(data.x, data.y, data.direction, data.amount);
       case 'ZenRippleAgent:ShowCursor':
         this.#showCursor(data.x, data.y, data.color);
         return { success: true };
@@ -799,6 +803,133 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
     return result;
   }
 
+  // --- Hover at Coordinates ---
+
+  #hoverCoordinates(x, y, color) {
+    const win = this.contentWindow;
+    if (!win) throw new Error('No content window');
+    const numX = Number(x);
+    const numY = Number(y);
+    if (!Number.isFinite(numX) || !Number.isFinite(numY)) {
+      throw new Error('Invalid coordinates');
+    }
+    // Show a visual cursor so the hover position is visible in screenshots (12s timeout)
+    this.#showCursor(numX, numY, color || 'lime', 12000);
+    // Use windowUtils for native-level mouse events (trusted, doesn't steal user's mouse)
+    const utils = win.windowUtils;
+    if (utils?.sendMouseEvent) {
+      utils.sendMouseEvent('mousemove', numX, numY, 0, 0, 0);
+    } else {
+      // Fallback: dispatch synthetic events on the element at the point
+      const doc = win.document;
+      const el = doc?.elementFromPoint(numX, numY);
+      if (el) {
+        const opts = { bubbles: true, clientX: numX, clientY: numY };
+        el.dispatchEvent(new win.MouseEvent('mouseenter', opts));
+        el.dispatchEvent(new win.MouseEvent('mouseover', opts));
+        el.dispatchEvent(new win.MouseEvent('mousemove', opts));
+      }
+    }
+    const doc = win.document;
+    const el = doc?.elementFromPoint(numX, numY);
+    const result = {
+      success: true,
+      x: numX,
+      y: numY,
+      tag: el?.tagName?.toLowerCase() || 'unknown',
+      text: el ? this.#getVisibleText(el).substring(0, 100) : '',
+    };
+    // If we hit an iframe, include its rect and browsingContext ID so the
+    // chrome-side handler can auto-route the hover into the iframe.
+    if (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+      const rect = el.getBoundingClientRect();
+      result.iframe_rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      try {
+        result.iframe_bc_id = el.browsingContext?.id ?? null;
+      } catch (e) {
+        result.iframe_bc_id = null;
+      }
+    }
+    return result;
+  }
+
+  // --- Scroll at Point ---
+
+  #scrollAtPoint(x, y, direction, amount) {
+    const win = this.contentWindow;
+    if (!win) throw new Error('No content window');
+    const numX = Number(x);
+    const numY = Number(y);
+    if (!Number.isFinite(numX) || !Number.isFinite(numY)) {
+      throw new Error('Invalid coordinates');
+    }
+    const px = amount || 500;
+    // Map direction to wheel event deltaX/deltaY
+    let deltaX = 0;
+    let deltaY = 0;
+    switch (direction) {
+      case 'up':    deltaY = -px; break;
+      case 'down':  deltaY = px; break;
+      case 'left':  deltaX = -px; break;
+      case 'right': deltaX = px; break;
+      default: throw new Error('Invalid direction: ' + direction + ' (use up/down/left/right)');
+    }
+    // Use windowUtils.sendWheelEvent for native-level trusted wheel events
+    // that respect the element under the cursor (scrolls dropdowns, iframes, etc.)
+    const utils = win.windowUtils;
+    if (utils?.sendWheelEvent) {
+      // sendWheelEvent(x, y, deltaX, deltaY, deltaZ, deltaMode,
+      //   modifiers, lineOrPageDeltaX, lineOrPageDeltaY, options)
+      // deltaMode 0 = DOM_DELTA_PIXEL
+      utils.sendWheelEvent(
+        numX, numY,
+        deltaX, deltaY, 0,  // deltaX, deltaY, deltaZ
+        0,                   // deltaMode: DOM_DELTA_PIXEL
+        0,                   // modifiers: none
+        0, 0,                // lineOrPageDeltaX/Y: 0 (using pixel mode)
+        0                    // options: 0 (default behavior)
+      );
+    } else {
+      // Fallback: dispatch synthetic WheelEvent on the element at the point
+      const doc = win.document;
+      const el = doc?.elementFromPoint(numX, numY) || doc?.documentElement;
+      if (el) {
+        el.dispatchEvent(new win.WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          clientX: numX,
+          clientY: numY,
+          deltaX,
+          deltaY,
+          deltaMode: 0, // DOM_DELTA_PIXEL
+        }));
+      }
+    }
+    const doc = win.document;
+    const el = doc?.elementFromPoint(numX, numY);
+    const result = {
+      success: true,
+      x: numX,
+      y: numY,
+      direction,
+      amount: px,
+      scrollX: Math.round(win.scrollX),
+      scrollY: Math.round(win.scrollY),
+      tag: el?.tagName?.toLowerCase() || 'unknown',
+    };
+    // If we hit an iframe, include its rect and browsingContext ID
+    if (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+      const rect = el.getBoundingClientRect();
+      result.iframe_rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      try {
+        result.iframe_bc_id = el.browsingContext?.id ?? null;
+      } catch (e) {
+        result.iframe_bc_id = null;
+      }
+    }
+    return result;
+  }
+
   // --- Drag-and-Drop ---
 
   #performDrag(startX, startY, endX, endY, steps = 10) {
@@ -1036,7 +1167,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
 
   // --- Virtual Cursor ---
 
-  #showCursor(x, y, color) {
+  #showCursor(x, y, color, timeoutMs = 60000) {
     const doc = this.contentWindow?.document;
     if (!doc) return;
     // Validate inputs are finite numbers
@@ -1096,7 +1227,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
     cursor.appendChild(vLine);
     doc.documentElement.appendChild(cursor);
     this.#cursorOverlay = cursor;
-    // Auto-remove after 60 seconds (or when cursor moves)
+    // Auto-remove after timeoutMs (default 60s for clicks, 12s for hover)
     const win = this.contentWindow;
     if (win && this.#cursorTimeoutId) {
       try { win.clearTimeout(this.#cursorTimeoutId); } catch (e) {}
@@ -1106,7 +1237,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       this.#cursorTimeoutId = win.setTimeout(() => {
         this.#cursorTimeoutId = null;
         this.#removeCursor();
-      }, 60000);
+      }, timeoutMs);
     }
   }
 
