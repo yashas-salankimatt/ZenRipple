@@ -2249,7 +2249,7 @@
       const result = await actorInteraction(tab, 'ZenRippleAgent:ClickCoordinates', data, null, frame_id);
       // Auto-route: if the click hit an iframe, forward into the iframe's
       // content process with adjusted coordinates.
-      if (result && result.tag === 'iframe' && result.iframe_bc_id && result.iframe_rect) {
+      if (result && (result.tag === 'iframe' || result.tag === 'frame') && result.iframe_bc_id && result.iframe_rect) {
         const iframeX = x - result.iframe_rect.x;
         const iframeY = y - result.iframe_rect.y;
         // Only route if coordinates are within the iframe bounds

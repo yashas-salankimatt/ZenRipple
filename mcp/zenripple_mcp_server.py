@@ -1111,7 +1111,8 @@ async def _ensure_grounding_key() -> str:
 
 @mcp.tool()
 async def browser_grounded_click(
-    description: str, tab_id: str = "", frame_id: int = 0
+    description: str, tab_id: str = "",
+    frame_id: int = 0,  # Kept for backwards compat; ignored — click_native auto-routes into iframes
 ) -> str:
     """Click on a page element described in natural language using VLM grounding.
 

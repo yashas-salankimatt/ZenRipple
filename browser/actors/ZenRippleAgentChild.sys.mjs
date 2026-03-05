@@ -791,7 +791,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       const rect = el.getBoundingClientRect();
       result.iframe_rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
       try {
-        result.iframe_bc_id = el.browsingContext?.id || null;
+        result.iframe_bc_id = el.browsingContext?.id ?? null;
       } catch (e) {
         result.iframe_bc_id = null;
       }
