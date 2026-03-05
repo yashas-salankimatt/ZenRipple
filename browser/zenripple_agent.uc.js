@@ -4262,7 +4262,14 @@
       case 'drag_coordinates':
         return (a.start_x || 0) + ',' + (a.start_y || 0) + ' \u2192 ' + (a.end_x || 0) + ',' + (a.end_y || 0);
       case 'click_coordinates':
+      case 'hover_coordinates':
         return (a.x || 0) + ',' + (a.y || 0);
+      case 'grounded_hover':
+        return trunc(a.description, 50);
+      case 'scroll_at_point':
+        return (a.direction || 'down') + ' @' + (a.x || 0) + ',' + (a.y || 0);
+      case 'grounded_scroll':
+        return trunc((a.direction || 'down') + ' ' + (a.description || ''), 50);
       case 'reflect':
         return trunc(a.query, 50);
       case 'record_replay':

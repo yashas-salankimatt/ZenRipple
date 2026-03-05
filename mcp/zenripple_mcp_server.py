@@ -1393,7 +1393,6 @@ async def browser_hover_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("hover_coordinates", params))
-    await _capture_replay_frame("hover_coordinates")
     return _append_notifications(result)
 
 
@@ -1511,7 +1510,7 @@ async def browser_grounded_hover(
         "tab_id": tab_id or None, "x": hover_x, "y": hover_y,
     }))
 
-    await _capture_replay_frame("grounded_hover")
+
 
     return _append_notifications(
         f"Grounded hover: \"{description}\" -> VLM predicted ({px},{py}), "
@@ -1549,7 +1548,6 @@ async def browser_scroll_at_point(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("scroll_at_point", params))
-    await _capture_replay_frame("scroll_at_point")
     return _append_notifications(result)
 
 
@@ -1671,7 +1669,7 @@ async def browser_grounded_scroll(
         "direction": direction, "amount": amount,
     }))
 
-    await _capture_replay_frame("grounded_scroll")
+
 
     return _append_notifications(
         f"Grounded scroll: \"{description}\" -> VLM predicted ({px},{py}), "

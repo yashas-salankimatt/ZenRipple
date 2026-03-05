@@ -404,8 +404,12 @@ The general pattern: call `browser_get_dom` (or `browser_get_elements_compact`) 
 - `browser_select_option(index, value)` — select a dropdown option by value or visible text.
 - `browser_type(text)` — type character-by-character into the focused element. Click an element first to focus it.
 - `browser_press_key(key)` — press a key (Enter, Tab, Escape, ArrowDown, etc.) with optional `ctrl`/`shift`/`alt`/`meta` modifiers.
-- `browser_scroll(direction, amount)` — scroll up/down/left/right by pixel amount (default: 500px down).
-- `browser_hover(index)` — hover over an element to reveal tooltips or dropdown menus.
+- `browser_scroll(direction, amount)` — scroll the page up/down/left/right by pixel amount (default: 500px down).
+- `browser_scroll_at_point(x, y, direction, amount)` — scroll a specific element at the given coordinates. Use for overflow containers, dropdowns, or scrollable panels that aren't the main page. Auto-routes into iframes.
+- `browser_grounded_scroll(description, direction, amount)` — scroll at an element described in natural language. Uses VLM grounding to find the coordinates, then scrolls there.
+- `browser_hover(index)` — hover over an element by DOM index to reveal tooltips or dropdown menus.
+- `browser_hover_coordinates(x, y)` — hover at exact pixel coordinates. Use for targets not in the DOM index. Shows a cursor overlay. Auto-routes into iframes.
+- `browser_grounded_hover(description)` — hover at an element described in natural language. Uses VLM grounding to find the coordinates, then hovers. Useful for revealing tooltips, sub-menus, or hover-dependent UI.
 - `browser_drag(source_index, target_index)` — drag one element to another.
 - `browser_drag_coordinates(start_x, start_y, end_x, end_y)` — drag between coordinates.
 - `browser_file_upload(file_path, index)` — upload a file to an `<input type="file">` element.

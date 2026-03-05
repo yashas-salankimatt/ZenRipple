@@ -238,14 +238,14 @@ class TestToolDefinitions:
         assert msg["params"]["persist"] is True
 
     @pytest.mark.asyncio
-    async def test_create_tab_no_persist_by_default(self):
+    async def test_create_tab_persist_by_default(self):
         fake_ws = FakeWebSocket(
-            responses=[{"id": "x", "result": {"tab_id": "panel1", "url": "https://example.com", "persist": False}}]
+            responses=[{"id": "x", "result": {"tab_id": "panel1", "url": "https://example.com", "persist": True}}]
         )
         with patch.object(server, "get_ws", return_value=fake_ws):
             result = await server.browser_create_tab("https://example.com")
         msg = json.loads(fake_ws.sent[0])
-        assert msg["params"]["persist"] is False
+        assert msg["params"]["persist"] is True
 
     @pytest.mark.asyncio
     async def test_close_tab_default(self):
