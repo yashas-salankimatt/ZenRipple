@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 import tempfile
 import time
@@ -91,6 +92,11 @@ _replay_dir: str | None = None
 
 # Opt-out: set ZENRIPPLE_NO_REPLAY=1 to disable automatic tool call logging
 REPLAY_DISABLED = os.environ.get("ZENRIPPLE_NO_REPLAY", "").strip().lower() not in ("", "0", "false", "no")
+
+# Max replay sessions to keep on disk (oldest pruned at startup)
+REPLAY_KEEP = int(os.environ.get("ZENRIPPLE_REPLAY_KEEP", "50"))
+
+_replay_pruned: bool = False  # Have we run pruning this process?
 
 
 def _sanitize_session_id(raw: str) -> str:
@@ -301,6 +307,72 @@ _PRE_SCREENSHOT_TOOLS = frozenset({
 })
 
 
+def _prune_old_replays(current_dir: str | None) -> None:
+    """Delete oldest replay directories when count exceeds REPLAY_KEEP.
+
+    Reads each directory's manifest.json for started_at to sort by age.
+    Skips the current session directory. Runs once per process.
+    """
+    global _replay_pruned
+    if _replay_pruned or REPLAY_KEEP <= 0:
+        return
+    _replay_pruned = True
+
+    tmp = tempfile.gettempdir()
+    prefix = "zenripple_replay_"
+    try:
+        candidates = [
+            os.path.join(tmp, d)
+            for d in os.listdir(tmp)
+            if d.startswith(prefix) and os.path.isdir(os.path.join(tmp, d))
+        ]
+    except OSError:
+        return
+
+    if len(candidates) <= REPLAY_KEEP:
+        return
+
+    # Read started_at from each manifest; fall back to dir mtime
+    dated: list[tuple[str, str]] = []
+    for d in candidates:
+        manifest = os.path.join(d, "manifest.json")
+        ts = ""
+        try:
+            with open(manifest, "r") as f:
+                ts = json.load(f).get("started_at", "")
+        except Exception:
+            pass
+        if not ts:
+            try:
+                ts = datetime.fromtimestamp(
+                    os.path.getmtime(d), tz=timezone.utc
+                ).isoformat()
+            except OSError:
+                ts = ""
+        dated.append((ts, d))
+
+    # Sort oldest first
+    dated.sort(key=lambda x: x[0])
+
+    # Remove oldest, keeping REPLAY_KEEP. Never remove current session dir.
+    # Exclude current dir from candidates so REPLAY_KEEP is honored exactly.
+    norm_current = os.path.normpath(current_dir) if current_dir else None
+    removable = [(ts, d) for ts, d in dated if not norm_current or os.path.normpath(d) != norm_current]
+    to_remove = len(removable) - (REPLAY_KEEP - (1 if norm_current else 0))
+    removed = 0
+    for ts, d in removable:
+        if removed >= to_remove:
+            break
+        try:
+            shutil.rmtree(d)
+            removed += 1
+        except Exception as exc:
+            print(f"[zenripple] prune error for {d}: {exc}", file=sys.stderr)
+
+    if removed:
+        print(f"[zenripple] pruned {removed} old replay dir(s)", file=sys.stderr)
+
+
 def _load_replay_state() -> bool:
     """Initialize replay state from disk. Returns True if logging is active.
 
@@ -365,6 +437,7 @@ def _load_replay_state() -> bool:
         print(f"[zenripple] manifest init error: {exc}", file=sys.stderr)
 
     _replay_active = True
+    _prune_old_replays(_replay_dir)
     return True
 
 
@@ -581,7 +654,7 @@ mcp.tool = _logging_tool_wrapper
 
 
 @mcp.tool()
-async def browser_create_tab(url: str = "about:blank", persist: bool = False) -> str:
+async def browser_create_tab(url: str = "about:blank", persist: bool = True) -> str:
     """Create a new browser tab in the ZenRipple workspace and navigate to a URL.
     Set persist=true to keep the tab alive after session close (it will be
     released back to unclaimed instead of destroyed)."""
