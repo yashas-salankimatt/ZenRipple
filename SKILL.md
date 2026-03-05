@@ -514,30 +514,30 @@ Record a sequence of browser actions and replay them later:
 - `browser_record_save(file_path)` — save the recording to a JSON file.
 - `browser_record_replay(file_path, delay)` — replay a recording with optional delay between actions (default 0.5s).
 
-### Session Replay (Video)
+### Session Replay (Tool Call Log)
 
-Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
+Automatically logs every tool call with a screenshot, arguments, and result. **Always-on by default** — auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk (JSONL + JPEG files), not in memory.
 
-**Workflow:**
+**How it works:**
 
-1. Replay starts automatically when a session is active. No need to call `browser_replay_start`.
-2. Call `browser_replay_mark_prompt(text)` each time a new user prompt begins — this creates visual prompt-boundary markers in the video.
-3. Perform browser actions as normal — screenshots are captured automatically after every visual tool call (navigate, click, scroll, type, etc.).
-4. Call `browser_replay_save_video(output_path)` to assemble an MP4. Use `scope` to control what's included:
-   - `"session"` (default) — all frames from the entire session
-   - `"last_prompt"` — only frames from the most recent prompt
-   - `"prompt"` + `prompt_index=N` — frames from a specific prompt
-5. Optionally call `browser_replay_stop` to stop capturing. Frame data is preserved, so `save_video` still works after stopping.
+Every tool call is automatically logged to `$TMPDIR/zenripple_replay_{session_id}/tool_log.jsonl`. Each log entry contains the tool name, arguments, result, timestamp, duration, and a reference to a JPEG screenshot captured at the time of the call. Screenshots are saved as individual JPEG files in the same directory.
 
-**Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic replay capture.
+**Viewing the replay:**
+
+Press **Ctrl+Shift+E** while focused on a ZenRipple-claimed tab in Zen Browser. This opens a three-panel modal:
+- **Left (50%):** Screenshot viewer — shows the screenshot from the selected tool call.
+- **Center (25%):** Tool call details — tool name, duration, timestamp, arguments, and result JSON.
+- **Right (25%):** Tool call list — most recent first, with timestamps, navigable with arrow keys or j/k (vim).
+
+**Playback:** Press **Space** to play/pause auto-advance through entries. Use **[** / **]** to change speed (0.5×, 1×, 2×, 4×). A progress bar in the footer shows current position and supports click-to-seek.
+
+The shortcut only activates on tabs owned by a ZenRipple session. Press Ctrl+Shift+E again or Esc to close.
+
+**Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic tool call logging.
 
 **Tools:**
 
-- `browser_replay_start(output_dir?)` — backwards-compatible; can resume a stopped session. Not required for normal use.
-- `browser_replay_mark_prompt(text)` — mark the start of a new user prompt. Creates a title card frame in the video.
-- `browser_replay_save_video(output_path, scope?, prompt_index?)` — assemble frames into an MP4 using ffmpeg. Frame durations are computed from real timestamps.
-- `browser_replay_status` — check if replay is active, frame count, prompt count, and storage directory.
-- `browser_replay_stop` — stop capturing. Frame data is preserved for later `save_video` calls.
+- `browser_replay_status` — check if replay logging is active, tool call count, and storage directory.
 
 ### Clipboard
 

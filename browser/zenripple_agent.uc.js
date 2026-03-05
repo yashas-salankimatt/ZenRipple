@@ -3384,6 +3384,1037 @@
   }
 
   // ============================================
+  // SESSION REPLAY VIEWER (Ctrl+Shift+E)
+  // ============================================
+
+  const REPLAY_MODAL_ID = 'zenripple-replay-modal';
+  const REPLAY_STYLE_ID = 'zenripple-replay-styles';
+
+  const REPLAY_VIEWER_CSS = `
+/* === ZenRipple Session Replay Viewer === */
+
+@keyframes zenripple-modal-enter {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes zr-play-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes zr-progress-glow {
+  0% { box-shadow: 0 0 4px var(--zr-accent); }
+  100% { box-shadow: 0 0 8px var(--zr-accent), 0 0 2px var(--zr-accent); }
+}
+
+#zenripple-replay-modal {
+  --zr-bg-surface: var(--zl-bg-surface, #1e1e2e);
+  --zr-bg-raised: var(--zl-bg-raised, #2a2a3e);
+  --zr-bg-elevated: var(--zl-bg-elevated, #363650);
+  --zr-bg-hover: var(--zl-bg-hover, rgba(255,255,255,0.04));
+  --zr-text-primary: var(--zl-text-primary, #e0e0e6);
+  --zr-text-secondary: var(--zl-text-secondary, #a0a0b0);
+  --zr-text-muted: var(--zl-text-muted, #6b6b80);
+  --zr-accent: var(--zl-accent, #7aa2f7);
+  --zr-accent-dim: var(--zl-accent-dim, rgba(122,162,247,0.1));
+  --zr-accent-20: var(--zl-accent-20, rgba(122,162,247,0.2));
+  --zr-border-subtle: var(--zl-border-subtle, rgba(255,255,255,0.08));
+  --zr-border-default: var(--zl-border-default, rgba(255,255,255,0.12));
+  --zr-border-strong: var(--zl-border-strong, rgba(255,255,255,0.18));
+  --zr-r-xl: var(--zl-r-xl, 20px);
+  --zr-r-md: var(--zl-r-md, 10px);
+  --zr-r-sm: var(--zl-r-sm, 6px);
+  --zr-font-mono: var(--zl-font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
+  --zr-font-ui: var(--zl-font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  --zr-shadow-modal: var(--zl-shadow-modal, 0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06));
+  --zr-success: var(--zl-success, #a6e3a1);
+  --zr-error: var(--zl-error, #f38ba8);
+
+  position: fixed;
+  inset: 0;
+  z-index: 100005;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--zr-font-ui);
+  color: var(--zr-text-primary);
+}
+
+#zenripple-replay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(14px);
+}
+
+#zenripple-replay-container {
+  position: relative;
+  width: 96%;
+  max-width: 1800px;
+  height: 88vh;
+  max-height: 980px;
+  background: var(--zr-bg-surface);
+  border-radius: var(--zr-r-xl);
+  box-shadow: var(--zr-shadow-modal);
+  border: 1px solid var(--zr-border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: zenripple-modal-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── Header ── */
+.zenripple-replay-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+  letter-spacing: 0.02em;
+}
+
+.zenripple-replay-session-badge {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  padding: 2px 8px;
+  border-radius: var(--zr-r-sm);
+  letter-spacing: 0.02em;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zenripple-replay-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 16px;
+  line-height: 1;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+}
+
+.zenripple-replay-close:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+/* ── Main Content (3-panel) ── */
+.zenripple-replay-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left: Screenshot viewer */
+.zenripple-replay-screenshot {
+  flex: 0 0 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--zr-bg-raised);
+  border-right: 1px solid var(--zr-border-subtle);
+  position: relative;
+  overflow: hidden;
+}
+
+.zenripple-replay-screenshot img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--zr-r-md);
+  border: 1px solid var(--zr-border-default);
+}
+
+.zenripple-replay-no-screenshot {
+  color: var(--zr-text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Center: Tool call details */
+.zenripple-replay-details {
+  flex: 0 0 25%;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--zr-border-subtle);
+  overflow: hidden;
+}
+
+.zenripple-replay-detail-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.zenripple-replay-tool-name {
+  font-family: var(--zr-font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--zr-accent);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.zenripple-replay-meta {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.zenripple-replay-meta-item {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  background: var(--zr-bg-elevated);
+  padding: 2px 7px;
+  border-radius: var(--zr-r-sm);
+  letter-spacing: 0.02em;
+}
+
+.zenripple-replay-meta-item.error {
+  color: var(--zr-error);
+  background: rgba(243,139,168,0.1);
+}
+
+.zenripple-replay-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  margin: 12px 0 6px 0;
+}
+
+.zenripple-replay-json {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.zenripple-replay-json.zr-result-json {
+  max-height: 400px;
+}
+
+.zenripple-replay-json .zr-key { color: #89b4fa; }
+.zenripple-replay-json .zr-str { color: #a6e3a1; }
+.zenripple-replay-json .zr-num { color: #fab387; }
+.zenripple-replay-json .zr-bool { color: #cba6f7; }
+.zenripple-replay-json .zr-null { color: #6b6b80; }
+
+/* Right: Tool call list */
+.zenripple-replay-list {
+  flex: 0 0 25%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.zenripple-replay-list-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+
+.zenripple-replay-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  min-height: 28px;
+}
+
+.zenripple-replay-entry:hover {
+  background: var(--zr-bg-hover);
+}
+
+.zenripple-replay-entry.selected {
+  background: var(--zr-accent-dim);
+}
+
+.zenripple-replay-entry.selected .zenripple-replay-entry-name {
+  color: var(--zr-accent);
+}
+
+.zenripple-replay-entry-seq {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.zenripple-replay-entry-name {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--zr-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+
+.zenripple-replay-entry-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--zr-success);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-entry-dot.error {
+  background: var(--zr-error);
+}
+
+.zenripple-replay-entry-time {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Footer / Transport Bar ── */
+.zenripple-replay-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 20px;
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zenripple-replay-transport-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+  transition: all 0.12s;
+  font-size: 12px;
+  padding: 0;
+}
+
+.zenripple-replay-transport-btn:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+.zenripple-replay-transport-btn.active {
+  color: var(--zr-accent);
+}
+
+.zenripple-replay-transport-btn.active:hover {
+  background: var(--zr-accent-dim);
+}
+
+.zenripple-replay-speed {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 28px;
+  text-align: center;
+  transition: color 0.15s;
+}
+
+.zenripple-replay-speed.highlight {
+  color: var(--zr-accent);
+}
+
+/* Progress bar */
+.zenripple-replay-progress {
+  flex: 1;
+  height: 3px;
+  background: var(--zr-bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  margin: 0 4px;
+}
+
+.zenripple-replay-progress-fill {
+  height: 100%;
+  background: var(--zr-accent);
+  border-radius: 2px;
+  transition: width 0.15s ease-out;
+  min-width: 0;
+}
+
+.zenripple-replay-progress:hover .zenripple-replay-progress-fill {
+  height: 5px;
+  margin-top: -1px;
+}
+
+.zenripple-replay-hint {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.zenripple-replay-kbd {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  background: var(--zr-bg-elevated);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--zr-text-secondary);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.zenripple-replay-count {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Empty state ── */
+.zenripple-replay-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--zr-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ── Scrollbar styling ── */
+#zenripple-replay-modal ::-webkit-scrollbar { width: 6px; }
+#zenripple-replay-modal ::-webkit-scrollbar-track { background: transparent; }
+#zenripple-replay-modal ::-webkit-scrollbar-thumb {
+  background: var(--zr-border-strong);
+  border-radius: 3px;
+}
+#zenripple-replay-modal ::-webkit-scrollbar-thumb:hover {
+  background: var(--zr-accent-20);
+}
+`;
+
+  // ── Replay viewer state ──
+  let _replayModal = null;
+  let _replayEntries = [];
+  let _replaySelectedIdx = -1;
+  let _replaySessionId = null;
+  let _replayReplayDir = null;
+  let _selectGeneration = 0;
+  let _currentScreenshotBlobURL = null;
+  let _replayLoading = false;
+
+  // Playback state
+  let _playbackTimer = null;
+  let _playbackPlaying = false;
+  let _playbackSpeedIdx = 1;  // index into PLAYBACK_SPEEDS
+  const PLAYBACK_SPEEDS = [0.5, 1, 2, 4];
+  const PLAYBACK_BASE_MS = 2000;  // interval at 1x
+
+  function injectReplayStyles() {
+    if (document.getElementById(REPLAY_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = REPLAY_STYLE_ID;
+    style.textContent = REPLAY_VIEWER_CSS;
+    document.head.appendChild(style);
+  }
+
+  function syntaxHighlightJSON(jsonStr) {
+    if (typeof jsonStr !== 'string') return '';
+    const escaped = jsonStr
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped.replace(
+      /("(?:\\.|[^"\\])*")\s*:/g,
+      '<span class="zr-key">$1</span>:'
+    ).replace(
+      /:\s*("(?:\\.|[^"\\])*")/g,
+      ': <span class="zr-str">$1</span>'
+    ).replace(
+      /:\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)/g,
+      ': <span class="zr-num">$1</span>'
+    ).replace(
+      /:\s*(true|false)/g,
+      ': <span class="zr-bool">$1</span>'
+    ).replace(
+      /:\s*(null)/g,
+      ': <span class="zr-null">$1</span>'
+    );
+  }
+
+  function formatJSON(value) {
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return JSON.stringify(parsed, null, 2);
+      } catch (_) {
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      return JSON.stringify(value, null, 2);
+    }
+    return String(value ?? '');
+  }
+
+  function extractTime(timestamp) {
+    if (!timestamp) return '';
+    const match = timestamp.match(/T(\d{2}:\d{2}:\d{2})/);
+    return match ? match[1] : '';
+  }
+
+  function escapeHTML(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function stripToolPrefix(name) {
+    return (name || '').replace(/^browser_/, '');
+  }
+
+  async function loadReplayData(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const logPath = PathUtils.join(replayDir, 'tool_log.jsonl');
+
+    let entries = [];
+    try {
+      const content = await IOUtils.readUTF8(logPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch (_) {}
+      }
+      entries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    } catch (e) {
+      log('Replay viewer: no tool_log.jsonl found for session ' + sessionId);
+    }
+    return { entries, replayDir };
+  }
+
+  async function loadScreenshot(replayDir, filename) {
+    if (!filename) return null;
+    if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null;
+    const filepath = PathUtils.join(replayDir, filename);
+    try {
+      const bytes = await IOUtils.read(filepath);
+      const blob = new Blob([bytes], { type: 'image/jpeg' });
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ── Playback engine ──
+
+  function _playbackInterval() {
+    return PLAYBACK_BASE_MS / PLAYBACK_SPEEDS[_playbackSpeedIdx];
+  }
+
+  function _stopPlayback() {
+    if (_playbackTimer) {
+      clearInterval(_playbackTimer);
+      _playbackTimer = null;
+    }
+    _playbackPlaying = false;
+    _updateTransportUI();
+  }
+
+  function _startPlayback() {
+    _stopPlayback();
+    _playbackPlaying = true;
+    _updateTransportUI();
+    _playbackTimer = setInterval(() => {
+      if (!_replayModal || _replayEntries.length === 0) {
+        _stopPlayback();
+        return;
+      }
+      // Advance with wraparound
+      let next = _replaySelectedIdx + 1;
+      if (next >= _replayEntries.length) next = 0;
+      selectReplayEntry(next, _replayReplayDir);
+    }, _playbackInterval());
+  }
+
+  function _togglePlayback() {
+    if (_playbackPlaying) {
+      _stopPlayback();
+    } else {
+      _startPlayback();
+    }
+  }
+
+  function _setPlaybackSpeed(idx) {
+    _playbackSpeedIdx = Math.max(0, Math.min(PLAYBACK_SPEEDS.length - 1, idx));
+    _updateTransportUI();
+    if (_playbackPlaying) {
+      // Restart timer with new speed
+      _startPlayback();
+    }
+  }
+
+  function _updateTransportUI() {
+    if (!_replayModal) return;
+
+    // Play/pause button
+    const playBtn = _replayModal.querySelector('#zr-play-btn');
+    if (playBtn) {
+      playBtn.innerHTML = _playbackPlaying ? '&#x23F8;' : '&#x25B6;';
+      playBtn.classList.toggle('active', _playbackPlaying);
+      playBtn.title = _playbackPlaying ? 'Pause (Space)' : 'Play (Space)';
+    }
+
+    // Speed display
+    const speedEl = _replayModal.querySelector('#zr-speed');
+    if (speedEl) {
+      const s = PLAYBACK_SPEEDS[_playbackSpeedIdx];
+      speedEl.textContent = s + 'x';
+      speedEl.classList.toggle('highlight', s !== 1);
+    }
+
+    // Progress bar
+    _updateProgressBar();
+  }
+
+  function _updateProgressBar() {
+    if (!_replayModal) return;
+    const fill = _replayModal.querySelector('#zr-progress-fill');
+    if (fill && _replayEntries.length > 0) {
+      const pct = ((_replaySelectedIdx + 1) / _replayEntries.length) * 100;
+      fill.style.width = pct + '%';
+    } else if (fill) {
+      fill.style.width = '0%';
+    }
+  }
+
+  // ── Modal builder ──
+
+  function buildReplayModal(sessionId, session, entries, replayDir) {
+    const modal = document.createElement('div');
+    modal.id = REPLAY_MODAL_ID;
+    modal.dataset.sessionId = sessionId;
+
+    const sessionLabel = escapeHTML((session && session.name) || sessionId.slice(0, 12));
+    const hasEntries = entries.length > 0;
+
+    modal.innerHTML = `
+      <div id="zenripple-replay-backdrop"></div>
+      <div id="zenripple-replay-container">
+        <div class="zenripple-replay-header">
+          <span class="zenripple-replay-title">Session Replay</span>
+          <span class="zenripple-replay-session-badge">${sessionLabel}</span>
+          <div class="zenripple-replay-close" title="Close (Esc)">&#x2715;</div>
+        </div>
+        ${hasEntries ? `
+        <div class="zenripple-replay-body">
+          <div class="zenripple-replay-screenshot" id="zenripple-replay-ss">
+            <span class="zenripple-replay-no-screenshot">Select a tool call</span>
+          </div>
+          <div class="zenripple-replay-details">
+            <div class="zenripple-replay-detail-scroll" id="zenripple-replay-detail">
+              <div class="zenripple-replay-tool-name" id="zenripple-replay-tname">\u2014</div>
+              <div class="zenripple-replay-meta" id="zenripple-replay-meta"></div>
+              <div class="zenripple-replay-section-label">Arguments</div>
+              <div class="zenripple-replay-json" id="zenripple-replay-args">\u2014</div>
+              <div class="zenripple-replay-section-label">Result</div>
+              <div class="zenripple-replay-json zr-result-json" id="zenripple-replay-result">\u2014</div>
+            </div>
+          </div>
+          <div class="zenripple-replay-list">
+            <div class="zenripple-replay-list-header">Tool Calls (${entries.length})</div>
+            <div class="zenripple-replay-list-scroll" id="zenripple-replay-entries"></div>
+          </div>
+        </div>
+        ` : `
+        <div class="zenripple-replay-empty">No tool calls recorded for this session yet.</div>
+        `}
+        <div class="zenripple-replay-footer">
+          <div class="zenripple-replay-transport">
+            <div class="zenripple-replay-transport-btn" id="zr-play-btn" title="Play (Space)">&#x25B6;</div>
+            <div class="zenripple-replay-transport-btn" id="zr-slower-btn" title="Slower ([)">&#x2BC7;</div>
+            <span class="zenripple-replay-speed" id="zr-speed">1x</span>
+            <div class="zenripple-replay-transport-btn" id="zr-faster-btn" title="Faster (])">&#x2BC8;</div>
+          </div>
+          <div class="zenripple-replay-progress" id="zr-progress">
+            <div class="zenripple-replay-progress-fill" id="zr-progress-fill"></div>
+          </div>
+          <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">j</span><span class="zenripple-replay-kbd">k</span>
+            nav
+          </span>
+          <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">Esc</span>
+            close
+          </span>
+          <span class="zenripple-replay-count" id="zenripple-replay-count">
+            ${entries.length} call${entries.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+      </div>
+    `;
+
+    // Build the entry list — reversed (most recent at top)
+    if (hasEntries) {
+      const listContainer = modal.querySelector('#zenripple-replay-entries');
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        const el = document.createElement('div');
+        el.className = 'zenripple-replay-entry';
+        el.dataset.idx = String(i);
+        el.innerHTML = `
+          <span class="zenripple-replay-entry-seq">${escapeHTML(entry.seq ?? i)}</span>
+          <span class="zenripple-replay-entry-dot${entry.error ? ' error' : ''}"></span>
+          <span class="zenripple-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+          <span class="zenripple-replay-entry-time">${escapeHTML(extractTime(entry.timestamp))}</span>
+        `;
+        el.addEventListener('click', () => {
+          _stopPlayback();
+          selectReplayEntry(i, replayDir);
+        });
+        listContainer.appendChild(el);
+      }
+    }
+
+    // Close handlers
+    modal.querySelector('#zenripple-replay-backdrop').addEventListener('click', closeReplayModal);
+    modal.querySelector('.zenripple-replay-close').addEventListener('click', closeReplayModal);
+
+    // Transport button handlers
+    const playBtn = modal.querySelector('#zr-play-btn');
+    if (playBtn) playBtn.addEventListener('click', _togglePlayback);
+    const slowerBtn = modal.querySelector('#zr-slower-btn');
+    if (slowerBtn) slowerBtn.addEventListener('click', () => _setPlaybackSpeed(_playbackSpeedIdx - 1));
+    const fasterBtn = modal.querySelector('#zr-faster-btn');
+    if (fasterBtn) fasterBtn.addEventListener('click', () => _setPlaybackSpeed(_playbackSpeedIdx + 1));
+
+    // Progress bar click-to-seek
+    const progressBar = modal.querySelector('#zr-progress');
+    if (progressBar && hasEntries) {
+      progressBar.addEventListener('click', (ev) => {
+        const rect = progressBar.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+        const idx = Math.round(pct * (entries.length - 1));
+        _stopPlayback();
+        selectReplayEntry(idx, replayDir);
+      });
+    }
+
+    return modal;
+  }
+
+  async function selectReplayEntry(idx, replayDir) {
+    if (idx < 0 || idx >= _replayEntries.length) return;
+    _replaySelectedIdx = idx;
+    const generation = ++_selectGeneration;
+    const entry = _replayEntries[idx];
+
+    // Update list selection — entries are rendered reversed in DOM
+    const entryEls = _replayModal.querySelectorAll('.zenripple-replay-entry');
+    for (const el of entryEls) {
+      el.classList.toggle('selected', parseInt(el.dataset.idx, 10) === idx);
+    }
+
+    // Scroll selected entry into view
+    for (const el of entryEls) {
+      if (parseInt(el.dataset.idx, 10) === idx) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        break;
+      }
+    }
+
+    // Update tool name
+    const tname = _replayModal.querySelector('#zenripple-replay-tname');
+    if (tname) tname.textContent = entry.tool || '\u2014';
+
+    // Update meta badges — show timestamp, duration, and seq
+    const meta = _replayModal.querySelector('#zenripple-replay-meta');
+    if (meta) {
+      const durationStr = entry.duration_ms != null ? escapeHTML(Math.round(entry.duration_ms) + 'ms') : '\u2014';
+      const timeStr = escapeHTML(extractTime(entry.timestamp)) || '\u2014';
+      const seqStr = escapeHTML('#' + (entry.seq ?? idx));
+      meta.innerHTML = `
+        <span class="zenripple-replay-meta-item">${seqStr}</span>
+        <span class="zenripple-replay-meta-item">${timeStr}</span>
+        <span class="zenripple-replay-meta-item">${durationStr}</span>
+        ${entry.error ? '<span class="zenripple-replay-meta-item error">ERROR</span>' : ''}
+      `;
+    }
+
+    // Update args
+    const argsEl = _replayModal.querySelector('#zenripple-replay-args');
+    if (argsEl) {
+      const formatted = formatJSON(entry.args);
+      argsEl.innerHTML = syntaxHighlightJSON(formatted);
+    }
+
+    // Update result
+    const resultEl = _replayModal.querySelector('#zenripple-replay-result');
+    if (resultEl) {
+      const formatted = formatJSON(entry.result);
+      resultEl.innerHTML = syntaxHighlightJSON(formatted);
+    }
+
+    // Update progress bar
+    _updateProgressBar();
+
+    // Revoke previous screenshot blob URL before loading new one
+    if (_currentScreenshotBlobURL) {
+      try { URL.revokeObjectURL(_currentScreenshotBlobURL); } catch (_) {}
+      _currentScreenshotBlobURL = null;
+    }
+
+    // Load screenshot
+    const ssContainer = _replayModal.querySelector('#zenripple-replay-ss');
+    if (ssContainer) {
+      if (entry.screenshot) {
+        const url = await loadScreenshot(replayDir, entry.screenshot);
+        if (generation !== _selectGeneration) return;
+        if (url) {
+          _currentScreenshotBlobURL = url;
+          ssContainer.innerHTML = '<img src="' + url + '" alt="Screenshot" />';
+        } else {
+          ssContainer.innerHTML = '<span class="zenripple-replay-no-screenshot">Screenshot unavailable</span>';
+        }
+      } else {
+        ssContainer.innerHTML = '<span class="zenripple-replay-no-screenshot">No screenshot for this call</span>';
+      }
+    }
+  }
+
+  function _navigateReplay(direction) {
+    // direction: 1 = next (newer), -1 = previous (older)
+    if (_replayEntries.length === 0) return;
+    let newIdx = _replaySelectedIdx + direction;
+    if (newIdx < 0) newIdx = 0;
+    if (newIdx >= _replayEntries.length) newIdx = _replayEntries.length - 1;
+    if (newIdx !== _replaySelectedIdx) {
+      selectReplayEntry(newIdx, _replayReplayDir);
+    }
+  }
+
+  function handleReplayKeydown(e) {
+    if (!_replayModal) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      closeReplayModal();
+      return;
+    }
+
+    // Navigation: ArrowDown/j = next (newer), ArrowUp/k = previous (older)
+    if (e.key === 'ArrowDown' || e.key === 'j') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      _navigateReplay(1);
+      return;
+    }
+    if (e.key === 'ArrowUp' || e.key === 'k') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      _navigateReplay(-1);
+      return;
+    }
+
+    // Playback: Space = play/pause
+    if (e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      _togglePlayback();
+      return;
+    }
+
+    // Speed: [ = slower, ] = faster
+    if (e.key === '[') {
+      e.preventDefault();
+      e.stopPropagation();
+      _setPlaybackSpeed(_playbackSpeedIdx - 1);
+      return;
+    }
+    if (e.key === ']') {
+      e.preventDefault();
+      e.stopPropagation();
+      _setPlaybackSpeed(_playbackSpeedIdx + 1);
+      return;
+    }
+
+    // Home/End: jump to first/last
+    if (e.key === 'Home' || e.key === 'g') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      if (_replayEntries.length > 0) selectReplayEntry(0, _replayReplayDir);
+      return;
+    }
+    if (e.key === 'End' || e.key === 'G') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      if (_replayEntries.length > 0) selectReplayEntry(_replayEntries.length - 1, _replayReplayDir);
+      return;
+    }
+  }
+
+  async function openReplayModal(sessionId, session) {
+    if (_replayLoading) return;
+    _replayLoading = true;
+
+    try {
+      closeReplayModal();
+
+      _replaySessionId = sessionId;
+      injectReplayStyles();
+
+      const { entries, replayDir } = await loadReplayData(sessionId);
+      _replayEntries = entries;
+      _replaySelectedIdx = -1;
+      _replayReplayDir = replayDir;
+
+      // Reset playback state
+      _playbackPlaying = false;
+      _playbackSpeedIdx = 1;
+      _playbackTimer = null;
+
+      _replayModal = buildReplayModal(sessionId, session, entries, replayDir);
+      document.documentElement.appendChild(_replayModal);
+
+      window.addEventListener('keydown', handleReplayKeydown, true);
+
+      // Auto-select the most recent entry
+      if (entries.length > 0) {
+        selectReplayEntry(entries.length - 1, replayDir);
+      }
+
+      log('Replay viewer opened for session ' + sessionId + ' (' + entries.length + ' entries)');
+    } catch (err) {
+      log('Error opening replay modal: ' + err);
+    } finally {
+      _replayLoading = false;
+    }
+  }
+
+  function closeReplayModal() {
+    if (!_replayModal) return;
+
+    _stopPlayback();
+    window.removeEventListener('keydown', handleReplayKeydown, true);
+
+    if (_currentScreenshotBlobURL) {
+      try { URL.revokeObjectURL(_currentScreenshotBlobURL); } catch (_) {}
+      _currentScreenshotBlobURL = null;
+    }
+
+    _replayModal.remove();
+    _replayModal = null;
+    _replayEntries = [];
+    _replaySelectedIdx = -1;
+    _replaySessionId = null;
+    _replayReplayDir = null;
+    _replayLoading = false;
+
+    log('Replay viewer closed');
+  }
+
+  function handleReplayShortcut(e) {
+    // Ctrl+Shift+E on all platforms
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyE') {
+      e.preventDefault();
+      e.stopPropagation();
+
+      const currentTab = gBrowser.selectedTab;
+      if (!currentTab) return;
+
+      const sessionId = currentTab.getAttribute('data-agent-session-id');
+      if (!sessionId) return;
+
+      if (_replayModal) {
+        if (_replaySessionId === sessionId) {
+          closeReplayModal();
+          return;
+        }
+        closeReplayModal();
+      }
+
+      const session = sessions.get(sessionId);
+      openReplayModal(sessionId, session || null).catch(err => log('Replay modal error: ' + err));
+    }
+  }
+
+  function setupReplayShortcut() {
+    window.addEventListener('keydown', handleReplayShortcut, true);
+    log('Replay viewer shortcut registered (Ctrl+Shift+E)');
+  }
+
+  // ============================================
   // INITIALIZATION
   // ============================================
 
@@ -3411,6 +4442,7 @@
     setupDialogObserver();
     setupTabEventTracking();
     setupPopupBlockedTracking();
+    setupReplayShortcut();
 
     log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
   }
