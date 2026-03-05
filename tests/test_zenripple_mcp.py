@@ -3932,7 +3932,7 @@ class TestParseGroundingCoordinatesNorm1000:
 
 
 class TestSessionReplay:
-    """Tests for session replay (screenshot capture + video assembly)."""
+    """Tests for session replay (tool call logging with screenshots)."""
 
     @pytest.fixture(autouse=True)
     def reset_replay_state(self):
@@ -3940,16 +3940,9 @@ class TestSessionReplay:
         server._replay_state_loaded = False
         server._replay_active = False
         server._replay_dir = None
-        server._replay_seq = 0
-        server._replay_prompt_index = -1
-        server._replay_manifest = None
-        server._replay_started_at = None
         orig_session = server._session_id
         orig_session_id = server.SESSION_ID
         orig_replay_disabled = server.REPLAY_DISABLED
-        # Default: disable auto-init so existing tests behave as before.
-        # Set _replay_state_loaded = True to prevent _load_replay_state() from
-        # auto-starting replay when tests set _session_id manually.
         server.SESSION_ID = ""
         server._session_id = None
         server._replay_state_loaded = True
@@ -3958,390 +3951,16 @@ class TestSessionReplay:
         server._replay_state_loaded = False
         server._replay_active = False
         server._replay_dir = None
-        server._replay_seq = 0
-        server._replay_prompt_index = -1
-        server._replay_manifest = None
-        server._replay_started_at = None
         server._session_id = orig_session
         server.SESSION_ID = orig_session_id
         server.REPLAY_DISABLED = orig_replay_disabled
 
-    # ── browser_replay_start ─────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_replay_start(self, tmp_path):
-        """Start creates directory and manifest."""
-        # Don't set _session_id — let browser_replay_start create an anon session.
-        # (With auto-session, setting _session_id would trigger auto-init.)
-        result = await server.browser_replay_start(str(tmp_path / "replay"))
-        data = json.loads(result)
-        assert data["status"] == "started"
-        assert data["session_id"].startswith("anon_")
-        manifest_path = os.path.join(data["dir"], "manifest.json")
-        assert os.path.exists(manifest_path)
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        assert manifest["session_id"].startswith("anon_")
-        assert manifest["frames"] == []
-        assert manifest["prompts"] == []
-
-    @pytest.mark.asyncio
-    async def test_replay_start_already_active(self, tmp_path):
-        """Double start returns already_active."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        result = await server.browser_replay_start(str(tmp_path / "replay"))
-        data = json.loads(result)
-        assert data["status"] == "already_active"
-        assert data["frames"] == 0
-
-    @pytest.mark.asyncio
-    async def test_replay_start_default_dir(self):
-        """Start without output_dir uses /tmp with session id."""
-        server._session_id = "test456"
-        result = await server.browser_replay_start()
-        data = json.loads(result)
-        assert "zenripple_replay_test456" in data["dir"]
-        assert server._replay_active is True
-        # Cleanup
-        import shutil
-        shutil.rmtree(data["dir"], ignore_errors=True)
-
-    # ── _capture_replay_frame ────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_capture_frame_when_inactive(self):
-        """No-op when replay is not active."""
-        # Should not raise and should not call browser_command
-        with patch.object(server, "browser_command", new_callable=AsyncMock) as mock_cmd:
-            await server._capture_replay_frame("navigate")
-            mock_cmd.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_capture_frame(self, tmp_path):
-        """Captures screenshot and writes frame file + updates manifest."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"status": "complete"}},  # wait_for_load (navigate is a nav method)
-            {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            await server._capture_replay_frame("navigate")
-
-        assert server._replay_seq == 1
-        assert len(server._replay_manifest["frames"]) == 1
-        frame = server._replay_manifest["frames"][0]
-        assert frame["method"] == "navigate"
-        assert frame["seq"] == 0
-        assert frame["prompt_index"] is None
-        frame_file = os.path.join(str(tmp_path / "replay"), "00000_navigate.jpg")
-        assert os.path.exists(frame_file)
-
-    @pytest.mark.asyncio
-    async def test_capture_frame_with_prompt(self, tmp_path):
-        """Captured frame has correct prompt_index after mark_prompt."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        await server.browser_replay_mark_prompt("Test prompt")
-
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            await server._capture_replay_frame("click")
-
-        frame = server._replay_manifest["frames"][-1]
-        assert frame["prompt_index"] == 0
-
-    @pytest.mark.asyncio
-    async def test_capture_frame_screenshot_failure(self, tmp_path):
-        """Empty screenshot image does not add a frame."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"image": ""}},
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            # Use a non-navigation method to test the empty-image path directly
-            # (navigation methods would consume the response for wait_for_load)
-            await server._capture_replay_frame("click")
-
-        assert server._replay_seq == 0  # no frame added
-
-    @pytest.mark.asyncio
-    async def test_capture_frame_exception_swallowed(self, tmp_path):
-        """Exceptions in capture are swallowed."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-
-        with patch.object(server, "browser_command", side_effect=Exception("boom")):
-            await server._capture_replay_frame("navigate")  # should not raise
-
-        assert server._replay_seq == 0
-
-    # ── browser_replay_mark_prompt ───────────────────────
-
-    @pytest.mark.asyncio
-    async def test_mark_prompt_not_active(self):
-        """Error when replay not active."""
-        result = await server.browser_replay_mark_prompt("hello")
-        assert "Error" in result
-
-    @pytest.mark.asyncio
-    async def test_mark_prompt(self, tmp_path):
-        """Marks prompt and updates manifest."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        result = await server.browser_replay_mark_prompt("Find protein shakes")
-        data = json.loads(result)
-        assert data["status"] == "prompt_marked"
-        assert data["prompt_index"] == 0
-        assert data["text"] == "Find protein shakes"
-        assert len(server._replay_manifest["prompts"]) == 1
-        assert server._replay_manifest["prompts"][0]["text"] == "Find protein shakes"
-
-    @pytest.mark.asyncio
-    async def test_mark_multiple_prompts(self, tmp_path):
-        """Multiple prompts increment index correctly."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        await server.browser_replay_mark_prompt("First")
-        result = await server.browser_replay_mark_prompt("Second")
-        data = json.loads(result)
-        assert data["prompt_index"] == 1
-        assert len(server._replay_manifest["prompts"]) == 2
-
-    # ── browser_replay_status ────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_status_not_active(self):
-        result = await server.browser_replay_status()
-        data = json.loads(result)
-        assert data["active"] is False
-
-    @pytest.mark.asyncio
-    async def test_status_active(self, tmp_path):
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        result = await server.browser_replay_status()
-        data = json.loads(result)
-        assert data["active"] is True
-        assert data["frame_count"] == 0
-        assert data["prompt_count"] == 0
-
-    # ── browser_replay_stop ──────────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_stop(self, tmp_path):
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        result = await server.browser_replay_stop()
-        data = json.loads(result)
-        assert data["status"] == "stopped"
-        assert server._replay_active is False
-        # Manifest and dir preserved
-        assert server._replay_dir is not None
-        assert server._replay_manifest is not None
-
-    @pytest.mark.asyncio
-    async def test_stop_not_active(self):
-        result = await server.browser_replay_stop()
-        data = json.loads(result)
-        assert data["status"] == "not_active"
-
-    # ── browser_replay_save_video ────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_save_video_no_data(self):
-        """Error when no replay data."""
-        result = await server.browser_replay_save_video("/tmp/out.mp4")
-        assert "Error" in result and "no replay data" in result
-
-    @pytest.mark.asyncio
-    async def test_save_video_no_frames(self, tmp_path):
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        result = await server.browser_replay_save_video(str(tmp_path / "out.mp4"))
-        assert "Error" in result and "no frames" in result
-
-    @pytest.mark.asyncio
-    async def test_save_video_no_ffmpeg(self, tmp_path):
-        """Error when ffmpeg not found."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        # Manually add a frame to manifest
-        ts = server.datetime.now(server.timezone.utc).isoformat()
-        frame_path = os.path.join(str(tmp_path / "replay"), "00000_test.jpg")
-        with open(frame_path, "wb") as f:
-            f.write(_TINY_PNG)
-        server._replay_manifest["frames"].append({
-            "seq": 0, "file": "00000_test.jpg", "method": "test",
-            "timestamp": ts, "prompt_index": None,
-        })
-        server._replay_seq = 1
-        server._flush_manifest()
-
-        with patch("shutil.which", return_value=None):
-            result = await server.browser_replay_save_video(str(tmp_path / "out.mp4"))
-        assert "ffmpeg not found" in result
-
-    @pytest.mark.asyncio
-    async def test_save_video_scope_prompt(self, tmp_path):
-        """Scope='prompt' filters frames correctly."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        ts = server.datetime.now(server.timezone.utc).isoformat()
-        server._replay_manifest["prompts"] = [
-            {"index": 0, "text": "first", "timestamp": ts},
-            {"index": 1, "text": "second", "timestamp": ts},
-        ]
-        for i, pi in enumerate([0, 0, 1]):
-            fname = f"f{i}.jpg"
-            with open(os.path.join(str(tmp_path / "replay"), fname), "wb") as f:
-                f.write(_TINY_PNG)
-            server._replay_manifest["frames"].append({
-                "seq": i, "file": fname, "method": "test",
-                "timestamp": ts, "prompt_index": pi,
-            })
-        server._flush_manifest()
-
-        # Will fail at ffmpeg, but validates frame filtering happened
-        with patch("shutil.which", return_value=None):
-            result = await server.browser_replay_save_video(
-                str(tmp_path / "out.mp4"), scope="prompt", prompt_index=0
-            )
-        assert "ffmpeg not found" in result
-
-    @pytest.mark.asyncio
-    async def test_save_video_scope_last_prompt_no_prompts(self, tmp_path):
-        """Error when scope=last_prompt but no prompts marked."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        server._replay_manifest["frames"].append({
-            "seq": 0, "file": "f.jpg", "method": "test",
-            "timestamp": "2026-01-01T00:00:00+00:00", "prompt_index": None,
-        })
-        server._flush_manifest()
-        result = await server.browser_replay_save_video(
-            str(tmp_path / "out.mp4"), scope="last_prompt"
-        )
-        assert "no prompts marked" in result
-
-    @pytest.mark.asyncio
-    async def test_save_video_after_stop(self, tmp_path):
-        """save_video works even after stop (data is preserved)."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-        ts = server.datetime.now(server.timezone.utc).isoformat()
-        fname = "00000_test.jpg"
-        with open(os.path.join(str(tmp_path / "replay"), fname), "wb") as f:
-            f.write(_TINY_PNG)
-        server._replay_manifest["frames"].append({
-            "seq": 0, "file": fname, "method": "test",
-            "timestamp": ts, "prompt_index": None,
-        })
-        server._flush_manifest()
-        await server.browser_replay_stop()
-
-        with patch("shutil.which", return_value=None):
-            result = await server.browser_replay_save_video(str(tmp_path / "out.mp4"))
-        assert "ffmpeg not found" in result  # got past the "no data" checks
-
-    # ── Visual tool integration ──────────────────────────
-
-    @pytest.mark.asyncio
-    async def test_navigate_captures_frame(self, tmp_path):
-        """browser_navigate calls _capture_replay_frame when replay is active."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"url": "https://example.com"}},  # navigate
-            {"id": "x", "result": {"status": "complete"}},  # wait_for_load (navigate is a nav method)
-            {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},  # screenshot
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            await server.browser_navigate("https://example.com")
-
-        assert server._replay_seq == 1
-        assert server._replay_manifest["frames"][0]["method"] == "navigate"
-
-    @pytest.mark.asyncio
-    async def test_close_tab_captures_before_close(self, tmp_path):
-        """browser_close_tab captures frame BEFORE closing."""
-        server._session_id = "test123"
-        await server.browser_replay_start(str(tmp_path / "replay"))
-
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},  # screenshot
-            {"id": "x", "result": {"success": True}},  # close_tab
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            await server.browser_close_tab()
-
-        assert server._replay_seq == 1
-        # Verify screenshot was called first, close_tab second
-        msg0 = json.loads(fake_ws.sent[0])
-        msg1 = json.loads(fake_ws.sent[1])
-        assert msg0["method"] == "screenshot"
-        assert msg1["method"] == "close_tab"
-
-    @pytest.mark.asyncio
-    async def test_no_capture_when_inactive(self, tmp_path):
-        """Visual tools don't capture when replay is inactive."""
-        fake_ws = FakeWebSocket(responses=[
-            {"id": "x", "result": {"url": "https://example.com"}},
-        ])
-        with patch.object(server, "get_ws", return_value=fake_ws):
-            await server.browser_navigate("https://example.com")
-
-        # Only 1 message sent (navigate), no screenshot
-        assert len(fake_ws.sent) == 1
-
-    # ── Helper functions ─────────────────────────────────
-
-    def test_overlay_frame_info_no_pillow(self):
-        """Returns raw bytes if Pillow not available."""
-        raw = b"test image data"
-        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
-            result = server._overlay_frame_info(raw, "click", "2026-01-01T12:00:00")
-        # Should return original bytes (Pillow import fails)
-        assert isinstance(result, bytes)
-
-    def test_create_title_card_no_pillow(self):
-        """Returns None if Pillow not available."""
-        with patch.dict("sys.modules", {"PIL": None, "PIL.Image": None}):
-            result = server._create_title_card("Test prompt")
-        # May return None or bytes depending on import caching
-        assert result is None or isinstance(result, bytes)
-
-    def test_flush_manifest(self, tmp_path):
-        """Manifest is written to disk."""
-        server._replay_dir = str(tmp_path)
-        server._replay_manifest = {"test": True}
-        server._flush_manifest()
-        manifest_path = os.path.join(str(tmp_path), "manifest.json")
-        assert os.path.exists(manifest_path)
-        with open(manifest_path) as f:
-            data = json.load(f)
-        assert data == {"test": True}
-
-    def test_flush_manifest_no_dir(self):
-        """No-op when replay dir is None."""
-        server._replay_dir = None
-        server._replay_manifest = {"test": True}
-        server._flush_manifest()  # Should not raise
-
-    # ── Auto-init / disk-first tests ────────────────────
+    # ── _load_replay_state ───────────────────────────────
 
     def test_auto_init_from_session_id(self, tmp_path):
         """_load_replay_state auto-creates dir + manifest when SESSION_ID is set."""
         server.SESSION_ID = "auto-test-123"
-        server._replay_state_loaded = False  # Allow auto-init
-        # Point replay dir to tmp_path to avoid polluting /tmp
+        server._replay_state_loaded = False
         with patch("tempfile.gettempdir", return_value=str(tmp_path)):
             result = server._load_replay_state()
         assert result is True
@@ -4352,13 +3971,13 @@ class TestSessionReplay:
         with open(manifest_path) as f:
             manifest = json.load(f)
         assert manifest["session_id"] == "auto-test-123"
-        assert manifest["frames"] == []
+        assert manifest["next_seq"] == 0
 
     def test_no_init_without_session_id(self):
         """_load_replay_state returns False when SESSION_ID is empty."""
         server.SESSION_ID = ""
         server._session_id = None
-        server._replay_state_loaded = False  # Allow auto-init check
+        server._replay_state_loaded = False
         result = server._load_replay_state()
         assert result is False
         assert server._replay_active is False
@@ -4367,64 +3986,227 @@ class TestSessionReplay:
         """_load_replay_state returns False when REPLAY_DISABLED is True."""
         server.SESSION_ID = "test-123"
         server.REPLAY_DISABLED = True
-        server._replay_state_loaded = False  # Allow auto-init check
+        server._replay_state_loaded = False
         result = server._load_replay_state()
         assert result is False
         assert server._replay_active is False
 
-    def test_disk_recovery(self, tmp_path):
-        """_load_replay_state recovers seq/prompt counters from existing manifest."""
-        server._replay_state_loaded = False  # Allow auto-init
-        server.SESSION_ID = "recovery-test"
-        replay_dir = str(tmp_path / "zenripple_replay_recovery-test")
-        os.makedirs(replay_dir)
-        manifest = {
-            "session_id": "recovery-test",
-            "started_at": "2026-01-01T00:00:00+00:00",
-            "prompts": [
-                {"index": 0, "text": "first", "timestamp": "2026-01-01T00:00:00+00:00"},
-                {"index": 1, "text": "second", "timestamp": "2026-01-01T00:01:00+00:00"},
-            ],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": "2026-01-01T00:00:01+00:00", "prompt_index": 0},
-                {"seq": 1, "file": "f1.jpg", "method": "click", "timestamp": "2026-01-01T00:00:02+00:00", "prompt_index": 0},
-                {"seq": 2, "file": "f2.jpg", "method": "scroll", "timestamp": "2026-01-01T00:01:01+00:00", "prompt_index": 1},
-            ],
-        }
-        with open(os.path.join(replay_dir, "manifest.json"), "w") as f:
-            json.dump(manifest, f)
-
-        with patch("tempfile.gettempdir", return_value=str(tmp_path)):
-            result = server._load_replay_state()
+    def test_load_replay_state_fast_path(self):
+        """Once loaded, _load_replay_state returns cached value."""
+        server.SESSION_ID = "fast-test"
+        server._replay_state_loaded = True
+        server._replay_active = True
+        result = server._load_replay_state()
         assert result is True
-        assert server._replay_seq == 3  # max(0,1,2) + 1
-        assert server._replay_prompt_index == 1  # max(0,1)
-        assert server._replay_active is True
 
-    def test_stopped_flag_prevents_init(self, tmp_path):
-        """_load_replay_state returns False when manifest has stopped=True."""
-        server._replay_state_loaded = False  # Allow auto-init
-        server.SESSION_ID = "stopped-test"
-        replay_dir = str(tmp_path / "zenripple_replay_stopped-test")
-        os.makedirs(replay_dir)
-        manifest = {
-            "session_id": "stopped-test",
-            "started_at": "2026-01-01T00:00:00+00:00",
-            "stopped": True,
-            "prompts": [],
-            "frames": [{"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": "2026-01-01T00:00:01+00:00", "prompt_index": None}],
-        }
-        with open(os.path.join(replay_dir, "manifest.json"), "w") as f:
-            json.dump(manifest, f)
+    # ── _claim_next_seq ─────────────────────────────────
 
+    def test_claim_seq_increments(self, tmp_path):
+        """_claim_next_seq returns sequential numbers and updates manifest."""
+        server._replay_dir = str(tmp_path)
+        manifest_path = os.path.join(str(tmp_path), "manifest.json")
+        with open(manifest_path, "w") as f:
+            json.dump({"next_seq": 0}, f)
+
+        seq0 = server._claim_next_seq()
+        seq1 = server._claim_next_seq()
+        seq2 = server._claim_next_seq()
+        assert seq0 == 0
+        assert seq1 == 1
+        assert seq2 == 2
+
+        with open(manifest_path) as f:
+            data = json.load(f)
+        assert data["next_seq"] == 3
+
+    def test_claim_seq_no_dir(self):
+        """Returns -1 when replay dir is None."""
+        server._replay_dir = None
+        assert server._claim_next_seq() == -1
+
+    # ── _serialize_for_log ──────────────────────────────
+
+    def test_serialize_string(self):
+        assert server._serialize_for_log("hello") == "hello"
+
+    def test_serialize_dict(self):
+        result = server._serialize_for_log({"url": "https://example.com", "tab_id": ""})
+        assert result == {"url": "https://example.com", "tab_id": ""}
+
+    def test_serialize_list_with_image(self):
+        from mcp.server.fastmcp.utilities.types import Image
+        items = [Image(data=b"test", format="jpeg"), "some text"]
+        result = server._serialize_for_log(items)
+        assert result == ["[Image data]", "some text"]
+
+    # ── _append_log_entry ────────────────────────────────
+
+    def test_append_log_entry(self, tmp_path):
+        """Appends a JSON line to tool_log.jsonl."""
+        server._replay_dir = str(tmp_path)
+        entry = {"seq": 0, "tool": "browser_ping", "args": {}, "result": "ok"}
+        server._append_log_entry(entry)
+
+        log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
+        assert os.path.exists(log_path)
+        with open(log_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 1
+        parsed = json.loads(lines[0])
+        assert parsed["tool"] == "browser_ping"
+
+    def test_append_multiple_entries(self, tmp_path):
+        """Multiple appends create multiple lines."""
+        server._replay_dir = str(tmp_path)
+        for i in range(3):
+            server._append_log_entry({"seq": i, "tool": f"tool_{i}"})
+
+        log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
+        with open(log_path) as f:
+            lines = f.readlines()
+        assert len(lines) == 3
+
+    def test_append_no_dir(self):
+        """No-op when replay dir is None."""
+        server._replay_dir = None
+        server._append_log_entry({"seq": 0})  # Should not raise
+
+    # ── _log_tool_call ──────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_log_tool_call_when_inactive(self):
+        """No-op when replay is not active."""
+        with patch.object(server, "browser_command", new_callable=AsyncMock) as mock_cmd:
+            await server._log_tool_call("browser_ping", {}, "ok", "2026-01-01T00:00:00Z", 10.0)
+            mock_cmd.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_log_tool_call_captures_screenshot(self, tmp_path):
+        """Logs tool call with screenshot to JSONL and disk."""
+        server._replay_dir = str(tmp_path)
+        server._replay_active = True
+        # Create manifest for seq claiming
+        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
+            json.dump({"session_id": "test", "next_seq": 0}, f)
+
+        fake_ws = FakeWebSocket(responses=[
+            {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},
+        ])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server._log_tool_call(
+                "browser_click", {"index": 5}, '{"status":"ok"}',
+                "2026-01-01T12:00:00Z", 150.5
+            )
+
+        # Check JSONL entry
+        log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
+        with open(log_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["tool"] == "browser_click"
+        assert entry["args"] == {"index": 5}
+        assert entry["duration_ms"] == 150.5
+        assert entry["seq"] == 0
+        assert entry["screenshot"] == "00000_browser_click.jpg"
+        assert entry["error"] is False
+
+        # Check screenshot file
+        ss_path = os.path.join(str(tmp_path), "00000_browser_click.jpg")
+        assert os.path.exists(ss_path)
+
+    @pytest.mark.asyncio
+    async def test_log_tool_call_screenshot_failure(self, tmp_path):
+        """Screenshot failure doesn't prevent logging the tool call."""
+        server._replay_dir = str(tmp_path)
+        server._replay_active = True
+        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
+            json.dump({"session_id": "test", "next_seq": 0}, f)
+
+        with patch.object(server, "browser_command", side_effect=Exception("no tab")):
+            await server._log_tool_call(
+                "browser_ping", {}, '{"status":"ok"}',
+                "2026-01-01T12:00:00Z", 5.0
+            )
+
+        log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
+        with open(log_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["tool"] == "browser_ping"
+        assert entry["screenshot"] is None  # Screenshot failed
+
+    # ── browser_replay_status ───────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_status_not_active(self):
+        result = await server.browser_replay_status()
+        data = json.loads(result)
+        assert data["active"] is False
+
+    @pytest.mark.asyncio
+    async def test_status_active(self, tmp_path):
+        server.SESSION_ID = "status-test"
+        server._replay_state_loaded = False
         with patch("tempfile.gettempdir", return_value=str(tmp_path)):
-            result = server._load_replay_state()
-        assert result is False
-        assert server._replay_active is False
+            result = await server.browser_replay_status()
+        data = json.loads(result)
+        assert data["active"] is True
+        assert data["tool_call_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_status_with_entries(self, tmp_path):
+        server._replay_dir = str(tmp_path)
+        server._replay_active = True
+        server._replay_state_loaded = True
+        # Write some log entries
+        log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
+        with open(log_path, "w") as f:
+            f.write('{"seq":0}\n{"seq":1}\n{"seq":2}\n')
+        # Write manifest
+        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
+            json.dump({"session_id": "test", "started_at": "2026-01-01T00:00:00Z"}, f)
+
+        result = await server.browser_replay_status()
+        data = json.loads(result)
+        assert data["active"] is True
+        assert data["tool_call_count"] == 3
+
+    # ── Tool call logging wrapper ────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_navigate_logs_tool_call(self, tmp_path):
+        """browser_navigate logs tool call with screenshot via the wrapper."""
+        server._replay_state_loaded = False
+        server.SESSION_ID = "log-test"
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)):
+            fake_ws = FakeWebSocket(responses=[
+                {"id": "x", "result": {"url": "https://example.com"}},  # navigate
+                {"id": "x", "result": {"status": "complete"}},  # wait_for_load
+                {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},  # screenshot
+            ])
+            with patch.object(server, "get_ws", return_value=fake_ws):
+                await server.browser_navigate("https://example.com")
+
+        replay_dir = os.path.join(str(tmp_path), "zenripple_replay_log-test")
+        log_path = os.path.join(replay_dir, "tool_log.jsonl")
+        assert os.path.exists(log_path)
+        with open(log_path) as f:
+            entry = json.loads(f.readline())
+        assert entry["tool"] == "browser_navigate"
+        assert entry["args"]["url"] == "https://example.com"
+
+    @pytest.mark.asyncio
+    async def test_no_logging_when_inactive(self):
+        """Tools don't log when replay is inactive."""
+        fake_ws = FakeWebSocket(responses=[
+            {"id": "x", "result": {"url": "https://example.com"}},
+        ])
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_navigate("https://example.com")
+        # Only 1 message sent (navigate), no screenshot
+        assert len(fake_ws.sent) == 1
 
     def test_corrupt_manifest_fresh_start(self, tmp_path):
-        """_load_replay_state handles corrupt manifest by starting fresh."""
-        server._replay_state_loaded = False  # Allow auto-init
+        """_load_replay_state handles corrupt manifest by creating fresh one."""
+        server._replay_state_loaded = False
         server.SESSION_ID = "corrupt-test"
         replay_dir = str(tmp_path / "zenripple_replay_corrupt-test")
         os.makedirs(replay_dir)
@@ -4435,147 +4217,10 @@ class TestSessionReplay:
             result = server._load_replay_state()
         assert result is True
         assert server._replay_active is True
-        assert server._replay_seq == 0
-        # Fresh manifest was written
         with open(os.path.join(replay_dir, "manifest.json")) as f:
             fresh = json.load(f)
         assert fresh["session_id"] == "corrupt-test"
-        assert fresh["frames"] == []
-
-    def test_flush_manifest_merge(self, tmp_path):
-        """_flush_manifest merges new frames with existing disk frames."""
-        server._replay_dir = str(tmp_path)
-        ts = "2026-01-01T00:00:00+00:00"
-        # Write initial manifest to disk
-        disk_manifest = {
-            "session_id": "merge-test",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-            ],
-        }
-        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
-            json.dump(disk_manifest, f)
-
-        # In-memory manifest has new frame
-        in_memory = {
-            "session_id": "merge-test",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-                {"seq": 1, "file": "f1.jpg", "method": "click", "timestamp": ts, "prompt_index": None},
-            ],
-        }
-        server._replay_manifest = in_memory
-        server._flush_manifest()
-
-        with open(os.path.join(str(tmp_path), "manifest.json")) as f:
-            merged = json.load(f)
-        assert len(merged["frames"]) == 2
-        assert merged["frames"][0]["seq"] == 0
-        assert merged["frames"][1]["seq"] == 1
-
-        # Verify in-memory manifest was replaced with merged copy (prevents unbounded growth)
-        assert len(server._replay_manifest["frames"]) == 2
-        assert server._replay_manifest is not in_memory
-
-    def test_flush_manifest_stopped_flag_sync(self, tmp_path):
-        """_flush_manifest syncs stopped flag: in-memory is authoritative."""
-        server._replay_dir = str(tmp_path)
-        ts = "2026-01-01T00:00:00+00:00"
-        # Disk manifest has stopped=True
-        disk_manifest = {
-            "session_id": "stop-test",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-            ],
-            "stopped": True,
-        }
-        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
-            json.dump(disk_manifest, f)
-
-        # In-memory manifest does NOT have stopped (resume scenario)
-        server._replay_manifest = {
-            "session_id": "stop-test",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-            ],
-        }
-        server._flush_manifest()
-
-        with open(os.path.join(str(tmp_path), "manifest.json")) as f:
-            merged = json.load(f)
-        # stopped flag should be cleared on disk since in-memory doesn't have it
-        assert "stopped" not in merged
-
-    def test_flush_manifest_sets_stopped_on_disk(self, tmp_path):
-        """_flush_manifest writes stopped flag to disk when in-memory has it."""
-        server._replay_dir = str(tmp_path)
-        ts = "2026-01-01T00:00:00+00:00"
-        disk_manifest = {
-            "session_id": "stop-test2",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-            ],
-        }
-        with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
-            json.dump(disk_manifest, f)
-
-        server._replay_manifest = {
-            "session_id": "stop-test2",
-            "started_at": ts,
-            "prompts": [],
-            "frames": [
-                {"seq": 0, "file": "f0.jpg", "method": "nav", "timestamp": ts, "prompt_index": None},
-            ],
-            "stopped": True,
-        }
-        server._flush_manifest()
-
-        with open(os.path.join(str(tmp_path), "manifest.json")) as f:
-            merged = json.load(f)
-        assert merged.get("stopped") is True
-
-    def test_load_replay_state_fast_path(self, tmp_path):
-        """Once loaded, _load_replay_state returns cached value."""
-        server.SESSION_ID = "fast-test"
-        server._replay_state_loaded = True
-        server._replay_active = True
-        # Should NOT read from disk — returns cached value immediately
-        result = server._load_replay_state()
-        assert result is True
-
-    @pytest.mark.asyncio
-    async def test_auto_capture_without_manual_start(self, tmp_path):
-        """Visual tools capture frames automatically when SESSION_ID is set."""
-        server._replay_state_loaded = False  # Allow auto-init
-        server.SESSION_ID = "auto-capture-test"
-        with patch("tempfile.gettempdir", return_value=str(tmp_path)):
-            fake_ws = FakeWebSocket(responses=[
-                {"id": "x", "result": {"url": "https://example.com"}},  # navigate
-                {"id": "x", "result": {"status": "complete"}},  # wait_for_load (navigate is a nav method)
-                {"id": "x", "result": {"image": _TINY_DATA_URL, "width": 1, "height": 1}},  # screenshot
-            ])
-            with patch.object(server, "get_ws", return_value=fake_ws):
-                await server.browser_navigate("https://example.com")
-
-        assert server._replay_active is True
-        assert server._replay_seq == 1
-        replay_dir = os.path.join(str(tmp_path), "zenripple_replay_auto-capture-test")
-        manifest_path = os.path.join(replay_dir, "manifest.json")
-        assert os.path.exists(manifest_path)
-        with open(manifest_path) as f:
-            manifest = json.load(f)
-        assert len(manifest["frames"]) == 1
-        assert manifest["frames"][0]["method"] == "navigate"
+        assert fresh["next_seq"] == 0
 
 
 class TestSanitizeSessionId:
