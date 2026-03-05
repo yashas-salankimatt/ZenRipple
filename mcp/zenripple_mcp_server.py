@@ -294,6 +294,12 @@ _NAVIGATION_TOOLS = frozenset({
     "browser_go_forward", "browser_reload", "browser_batch_navigate",
 })
 
+# Tools that destroy state — screenshot must be captured BEFORE the tool runs.
+_PRE_SCREENSHOT_TOOLS = frozenset({
+    "browser_close_tab", "browser_delete_cookies", "browser_delete_storage",
+    "browser_session_close",
+})
+
 
 def _load_replay_state() -> bool:
     """Initialize replay state from disk. Returns True if logging is active.
@@ -445,37 +451,51 @@ def _append_log_entry(entry: dict) -> None:
         print(f"[zenripple] _append_log_entry error: {exc}", file=sys.stderr)
 
 
+async def _save_replay_screenshot(tool_name: str, seq: int,
+                                   target_tab: str = "") -> str | None:
+    """Capture and save a screenshot for a replay log entry. Returns filename or None."""
+    try:
+        ss_result = await browser_command("screenshot", {"tab_id": target_tab or None})
+        data_url = ss_result.get("image", "")
+        if data_url:
+            b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+            raw_bytes = base64.b64decode(b64)
+            filename = f"{seq:05d}_{tool_name}.jpg"
+            with open(os.path.join(_replay_dir, filename), "wb") as f:
+                f.write(raw_bytes)
+            return filename
+    except Exception:
+        pass  # Screenshot is best-effort
+    return None
+
+
 async def _log_tool_call(tool_name: str, call_args: dict, result, timestamp: str,
-                         duration_ms: float, error: bool = False) -> None:
-    """Log a tool call with screenshot to the session replay directory."""
+                         duration_ms: float, error: bool = False,
+                         pre_seq: int = -1,
+                         pre_screenshot: str | None = None) -> None:
+    """Log a tool call with screenshot to the session replay directory.
+
+    If pre_seq >= 0, uses that seq number (already claimed) instead of claiming a new one.
+    If pre_screenshot is set, skips screenshot capture and uses the provided filename.
+    """
     if not _load_replay_state():
         return
 
-    seq = _claim_next_seq()
+    seq = pre_seq if pre_seq >= 0 else _claim_next_seq()
     if seq < 0:
         return
 
-    # Capture screenshot (best-effort). Use the tool's target tab if available.
-    screenshot_file = None
-    target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
-    try:
+    # Use pre-captured screenshot if provided, otherwise capture now.
+    screenshot_file = pre_screenshot
+    if screenshot_file is None:
+        target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
         if tool_name in _NAVIGATION_TOOLS:
             try:
                 await asyncio.sleep(0.5)
                 await browser_command("wait_for_load", {"tab_id": target_tab or None, "timeout": 5})
             except Exception:
                 pass
-
-        ss_result = await browser_command("screenshot", {"tab_id": target_tab or None})
-        data_url = ss_result.get("image", "")
-        if data_url:
-            b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
-            raw_bytes = base64.b64decode(b64)
-            screenshot_file = f"{seq:05d}_{tool_name}.jpg"
-            with open(os.path.join(_replay_dir, screenshot_file), "wb") as f:
-                f.write(raw_bytes)
-    except Exception:
-        pass  # Screenshot is best-effort; never fail the tool call
+        screenshot_file = await _save_replay_screenshot(tool_name, seq, target_tab)
 
     _append_log_entry({
         "seq": seq,
@@ -505,6 +525,15 @@ def _with_call_logging(fn):
         except Exception:
             call_args = kwargs if kwargs else {}
 
+        # For destructive tools, capture screenshot BEFORE the tool runs.
+        pre_seq = -1
+        pre_screenshot = None
+        if tool_name in _PRE_SCREENSHOT_TOOLS and _load_replay_state():
+            pre_seq = _claim_next_seq()
+            if pre_seq >= 0:
+                target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
+                pre_screenshot = await _save_replay_screenshot(tool_name, pre_seq, target_tab)
+
         ts = datetime.now(timezone.utc).isoformat()
         start = time.monotonic()
 
@@ -514,14 +543,16 @@ def _with_call_logging(fn):
                 result = await result
             duration_ms = (time.monotonic() - start) * 1000
             try:
-                await _log_tool_call(tool_name, call_args, result, ts, duration_ms)
+                await _log_tool_call(tool_name, call_args, result, ts, duration_ms,
+                                     pre_seq=pre_seq, pre_screenshot=pre_screenshot)
             except Exception:
                 pass
             return result
         except Exception as exc:
             duration_ms = (time.monotonic() - start) * 1000
             try:
-                await _log_tool_call(tool_name, call_args, str(exc), ts, duration_ms, error=True)
+                await _log_tool_call(tool_name, call_args, str(exc), ts, duration_ms,
+                                     error=True, pre_seq=pre_seq, pre_screenshot=pre_screenshot)
             except Exception:
                 pass
             raise

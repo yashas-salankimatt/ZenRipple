@@ -3907,25 +3907,25 @@
 
   function syntaxHighlightJSON(jsonStr) {
     if (typeof jsonStr !== 'string') return '';
+    // Single-pass tokenizer to avoid nested-span issues from chained regexes
     const escaped = jsonStr
       .replace(/&/g, '&amp;')
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;');
+    // Match JSON tokens: strings, numbers, booleans, null, and key-value separators
     return escaped.replace(
-      /("(?:\\.|[^"\\])*")\s*:/g,
-      '<span class="zr-key">$1</span>:'
-    ).replace(
-      /:\s*("(?:\\.|[^"\\])*")/g,
-      ': <span class="zr-str">$1</span>'
-    ).replace(
-      /:\s*(-?\d+\.?\d*(?:[eE][+-]?\d+)?)/g,
-      ': <span class="zr-num">$1</span>'
-    ).replace(
-      /:\s*(true|false)/g,
-      ': <span class="zr-bool">$1</span>'
-    ).replace(
-      /:\s*(null)/g,
-      ': <span class="zr-null">$1</span>'
+      /("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b)|\b(true|false)\b|\b(null)\b/g,
+      function(match, str, colon, num, bool_, null_) {
+        if (str) {
+          return colon
+            ? '<span class="zr-key">' + str + '</span>' + colon
+            : '<span class="zr-str">' + str + '</span>';
+        }
+        if (num) return '<span class="zr-num">' + num + '</span>';
+        if (bool_) return '<span class="zr-bool">' + bool_ + '</span>';
+        if (null_) return '<span class="zr-null">' + null_ + '</span>';
+        return match;
+      }
     );
   }
 
@@ -4365,7 +4365,10 @@
     if (ssContainer) {
       if (entry.screenshot) {
         const url = await loadScreenshot(replayDir, entry.screenshot);
-        if (generation !== _selectGeneration) return;
+        if (generation !== _selectGeneration) {
+          if (url) try { URL.revokeObjectURL(url); } catch (_) {}
+          return;
+        }
         if (url) {
           _currentScreenshotBlobURL = url;
           ssContainer.innerHTML = '<img src="' + url + '" alt="Screenshot" />';
@@ -4509,7 +4512,7 @@
     _replaySelectedIdx = -1;
     _replaySessionId = null;
     _replayReplayDir = null;
-    _replayLoading = false;
+    // Note: _replayLoading is managed by openReplayModal's try/finally — don't reset here
 
     log('Replay viewer closed');
   }
