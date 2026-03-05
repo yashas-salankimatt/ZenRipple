@@ -11,12 +11,16 @@ try:
     import fcntl
 except ImportError:
     fcntl = None  # Windows — file locking disabled
+import functools
+import inspect
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -81,17 +85,18 @@ _session_id: str | None = None  # Populated from X-ZenRipple-Session after conne
 # Keyed by tab_id (empty string for default tab).
 _last_screenshot_dims: dict[str, dict] = {}
 
-# ── Session Replay State ────────────────────────────────────────
+# ── Session Replay State (Tool Call Logging) ──────────────────────
 _replay_state_loaded: bool = False  # Have we loaded from disk this process?
 _replay_active: bool = False
 _replay_dir: str | None = None
-_replay_seq: int = 0
-_replay_prompt_index: int = -1
-_replay_manifest: dict | None = None
-_replay_started_at: str | None = None
 
-# Opt-out: set ZENRIPPLE_NO_REPLAY=1 to disable automatic replay capture
+# Opt-out: set ZENRIPPLE_NO_REPLAY=1 to disable automatic tool call logging
 REPLAY_DISABLED = os.environ.get("ZENRIPPLE_NO_REPLAY", "").strip().lower() not in ("", "0", "false", "no")
+
+# Max replay sessions to keep on disk (oldest pruned at startup)
+REPLAY_KEEP = int(os.environ.get("ZENRIPPLE_REPLAY_KEEP", "50"))
+
+_replay_pruned: bool = False  # Have we run pruning this process?
 
 
 def _sanitize_session_id(raw: str) -> str:
@@ -282,27 +287,105 @@ def text_result(data) -> str:
     return str(data)
 
 
-# ── Session Replay Helpers ──────────────────────────────────────
+# ── Tool Call Logging (Session Replay) ──────────────────────────
+#
+# Every tool call is logged to $TMPDIR/zenripple_replay_{session_id}/tool_log.jsonl
+# with a screenshot captured after each call. This provides a complete observability
+# trail for each session: what was called, with what args, what it returned, and
+# what the page looked like.
+
+# Navigation tools need a brief delay before screenshot so the page has loaded.
+_NAVIGATION_TOOLS = frozenset({
+    "browser_create_tab", "browser_navigate", "browser_go_back",
+    "browser_go_forward", "browser_reload", "browser_batch_navigate",
+})
+
+# Tools that destroy state — screenshot must be captured BEFORE the tool runs.
+_PRE_SCREENSHOT_TOOLS = frozenset({
+    "browser_close_tab", "browser_delete_cookies", "browser_delete_storage",
+    "browser_session_close",
+})
+
+
+def _prune_old_replays(current_dir: str | None) -> None:
+    """Delete oldest replay directories when count exceeds REPLAY_KEEP.
+
+    Reads each directory's manifest.json for started_at to sort by age.
+    Skips the current session directory. Runs once per process.
+    """
+    global _replay_pruned
+    if _replay_pruned or REPLAY_KEEP <= 0:
+        return
+    _replay_pruned = True
+
+    tmp = tempfile.gettempdir()
+    prefix = "zenripple_replay_"
+    try:
+        candidates = [
+            os.path.join(tmp, d)
+            for d in os.listdir(tmp)
+            if d.startswith(prefix) and os.path.isdir(os.path.join(tmp, d))
+        ]
+    except OSError:
+        return
+
+    if len(candidates) <= REPLAY_KEEP:
+        return
+
+    # Read started_at from each manifest; fall back to dir mtime
+    dated: list[tuple[str, str]] = []
+    for d in candidates:
+        manifest = os.path.join(d, "manifest.json")
+        ts = ""
+        try:
+            with open(manifest, "r") as f:
+                ts = json.load(f).get("started_at", "")
+        except Exception:
+            pass
+        if not ts:
+            try:
+                ts = datetime.fromtimestamp(
+                    os.path.getmtime(d), tz=timezone.utc
+                ).isoformat()
+            except OSError:
+                ts = ""
+        dated.append((ts, d))
+
+    # Sort oldest first
+    dated.sort(key=lambda x: x[0])
+
+    # Remove oldest, keeping REPLAY_KEEP. Never remove current session dir.
+    # Exclude current dir from candidates so REPLAY_KEEP is honored exactly.
+    norm_current = os.path.normpath(current_dir) if current_dir else None
+    removable = [(ts, d) for ts, d in dated if not norm_current or os.path.normpath(d) != norm_current]
+    to_remove = len(removable) - (REPLAY_KEEP - (1 if norm_current else 0))
+    removed = 0
+    for ts, d in removable:
+        if removed >= to_remove:
+            break
+        try:
+            shutil.rmtree(d)
+            removed += 1
+        except Exception as exc:
+            print(f"[zenripple] prune error for {d}: {exc}", file=sys.stderr)
+
+    if removed:
+        print(f"[zenripple] pruned {removed} old replay dir(s)", file=sys.stderr)
 
 
 def _load_replay_state() -> bool:
-    """Load or initialize replay state from disk. Returns True if replay is active.
+    """Initialize replay state from disk. Returns True if logging is active.
 
     Called once per process (fast-path after first call). Auto-initializes when
-    SESSION_ID env var is set, so replay works across MCPorter process spawns
-    without manual browser_replay_start().
+    a session ID is available, so logging works across MCPorter process spawns.
     """
-    global _replay_state_loaded, _replay_active, _replay_dir, _replay_seq
-    global _replay_prompt_index, _replay_manifest, _replay_started_at
+    global _replay_state_loaded, _replay_active, _replay_dir
 
-    # Fast path: already loaded this process
     if _replay_state_loaded:
         return _replay_active
 
     _replay_state_loaded = True
 
-    # Opt-out or no session ID → no replay
-    # Check both env var (explicit) and in-memory (auto-session) session IDs.
     effective_session = SESSION_ID or _session_id
     if REPLAY_DISABLED or not effective_session:
         _replay_active = False
@@ -314,322 +397,277 @@ def _load_replay_state() -> bool:
         return False
 
     _replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
-    manifest_path = os.path.join(_replay_dir, "manifest.json")
-
-    if os.path.exists(manifest_path):
-        # Recover state from existing manifest on disk.
-        # No reader-side lock needed — _flush_manifest uses atomic os.replace(),
-        # so readers always see a complete file (old or new).
-        try:
-            with open(manifest_path, "r") as f:
-                _replay_manifest = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            # Corrupt manifest — start fresh
-            _replay_manifest = None
-
-        if _replay_manifest and _replay_manifest.get("stopped"):
-            _replay_active = False
-            return False
-
-        if _replay_manifest:
-            frames = _replay_manifest.get("frames", [])
-            prompts = _replay_manifest.get("prompts", [])
-            _replay_seq = (max(f["seq"] for f in frames) + 1) if frames else 0
-            _replay_prompt_index = max(p["index"] for p in prompts) if prompts else -1
-            _replay_started_at = _replay_manifest.get("started_at", "")
-            _replay_active = True
-            return True
-
-    # No manifest or corrupt → create fresh
     os.makedirs(_replay_dir, exist_ok=True)
-    _replay_seq = 0
-    _replay_prompt_index = -1
-    _replay_started_at = datetime.now(timezone.utc).isoformat()
-    _replay_manifest = {
-        "session_id": safe_id,
-        "started_at": _replay_started_at,
-        "prompts": [],
-        "frames": [],
-    }
-    _flush_manifest()
-    _replay_active = True
-    return True
 
+    # Initialize manifest if it doesn't exist or is corrupt — under lock to
+    # prevent two concurrent processes from both writing next_seq: 0.
+    manifest_path = os.path.join(_replay_dir, "manifest.json")
+    lock_path = os.path.join(_replay_dir, "replay.lock")
 
-def _flush_manifest() -> None:
-    """Write manifest.json to replay dir atomically with file locking.
+    def _ensure_manifest():
+        needs_fresh = not os.path.exists(manifest_path)
+        if not needs_fresh:
+            try:
+                with open(manifest_path, "r") as f:
+                    json.load(f)
+            except (json.JSONDecodeError, OSError):
+                needs_fresh = True
+        if needs_fresh:
+            manifest = {
+                "session_id": safe_id,
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "next_seq": 0,
+            }
+            tmp = manifest_path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(manifest, f)
+            os.replace(tmp, manifest_path)
 
-    Merges in-memory frames/prompts with any that other processes may have
-    written to disk (handles concurrent MCPorter calls). Best-effort — logs
-    errors to stderr but never raises.
-    """
-    global _replay_manifest
-    if not _replay_dir or not _replay_manifest:
-        return
     try:
-        os.makedirs(_replay_dir, exist_ok=True)
-        manifest_path = os.path.join(_replay_dir, "manifest.json")
-        lock_path = manifest_path + ".lock"
-
-        def _do_flush():
-            global _replay_manifest
-            # Read existing manifest from disk to merge
-            disk_manifest = None
-            if os.path.exists(manifest_path):
-                try:
-                    with open(manifest_path, "r") as rf:
-                        disk_manifest = json.load(rf)
-                except (json.JSONDecodeError, OSError):
-                    pass
-
-            if disk_manifest and isinstance(disk_manifest.get("frames"), list):
-                # Merge: add any in-memory frames not yet on disk
-                disk_seqs = {f["seq"] for f in disk_manifest["frames"]}
-                for frame in _replay_manifest.get("frames", []):
-                    if frame["seq"] not in disk_seqs:
-                        disk_manifest["frames"].append(frame)
-                disk_manifest["frames"].sort(key=lambda f: f["seq"])
-
-                # Merge prompts
-                disk_prompt_idxs = {p["index"] for p in disk_manifest.get("prompts", [])}
-                for prompt in _replay_manifest.get("prompts", []):
-                    if prompt["index"] not in disk_prompt_idxs:
-                        disk_manifest["prompts"].append(prompt)
-                disk_manifest["prompts"].sort(key=lambda p: p["index"])
-
-                # Sync stopped flag: in-memory is authoritative
-                if _replay_manifest.get("stopped"):
-                    disk_manifest["stopped"] = True
-                elif "stopped" in disk_manifest:
-                    del disk_manifest["stopped"]
-
-                merged = disk_manifest
-            else:
-                merged = _replay_manifest
-
-            tmp_path = manifest_path + ".tmp"
-            with open(tmp_path, "w") as f:
-                json.dump(merged, f, indent=2)
-            os.replace(tmp_path, manifest_path)
-
-            # Replace in-memory manifest with the authoritative merged copy.
-            # This keeps in-memory state in sync with disk without unbounded
-            # growth from re-merging the same historical frames.
-            _replay_manifest = merged
-
         if fcntl:
-            with open(lock_path, "w") as lock_f:
+            with open(lock_path, "a") as lock_f:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
                 try:
-                    _do_flush()
+                    _ensure_manifest()
                 finally:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
         else:
-            # No file locking on Windows — best-effort, atomic replace still safe
-            _do_flush()
+            _ensure_manifest()
     except Exception as exc:
-        import sys
-        print(f"[zenripple] _flush_manifest error: {exc}", file=sys.stderr)
+        print(f"[zenripple] manifest init error: {exc}", file=sys.stderr)
+
+    _replay_active = True
+    _prune_old_replays(_replay_dir)
+    return True
 
 
-def _overlay_frame_info(raw_bytes: bytes, method: str, timestamp: str) -> bytes:
-    """Burn timestamp + tool name onto image using Pillow. Returns raw_bytes unchanged if unavailable."""
+def _claim_next_seq() -> int:
+    """Atomically claim the next sequence number from the manifest. Returns -1 on error."""
+    if not _replay_dir:
+        return -1
+    manifest_path = os.path.join(_replay_dir, "manifest.json")
+    lock_path = os.path.join(_replay_dir, "replay.lock")
+
+    def _do_claim():
+        try:
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            manifest = {"next_seq": 0}
+
+        seq = manifest.get("next_seq", 0)
+        manifest["next_seq"] = seq + 1
+
+        tmp = manifest_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(manifest, f)
+        os.replace(tmp, manifest_path)
+        return seq
+
     try:
-        from PIL import Image as PILImage, ImageDraw, ImageFont
-        import io
-
-        img = PILImage.open(io.BytesIO(raw_bytes))
-        draw = ImageDraw.Draw(img)
-
-        font_size = max(14, img.height // 50)
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Menlo.ttc", font_size)
-        except (OSError, IOError):
-            try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", font_size
-                )
-            except (OSError, IOError):
-                font = ImageFont.load_default()
-
-        time_short = timestamp[11:19] if len(timestamp) > 19 else timestamp
-        text = f"{time_short} | {method}"
-
-        text_bbox = draw.textbbox((0, 0), text, font=font)
-        text_h = text_bbox[3] - text_bbox[1]
-        padding = 6
-        bar_height = text_h + padding * 2
-
-        # Draw dark bar at top
-        overlay = PILImage.new("RGBA", img.size, (0, 0, 0, 0))
-        overlay_draw = ImageDraw.Draw(overlay)
-        overlay_draw.rectangle([(0, 0), (img.width, bar_height)], fill=(0, 0, 0, 180))
-        if img.mode != "RGBA":
-            img = img.convert("RGBA")
-        img = PILImage.alpha_composite(img, overlay)
-        draw = ImageDraw.Draw(img)
-        draw.text((padding, padding), text, fill=(255, 255, 255, 255), font=font)
-
-        buf = io.BytesIO()
-        img.convert("RGB").save(buf, format="JPEG", quality=85)
-        return buf.getvalue()
-    except ImportError:
-        return raw_bytes
-    except Exception:
-        return raw_bytes
+        os.makedirs(_replay_dir, exist_ok=True)
+        if fcntl:
+            with open(lock_path, "a") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    return _do_claim()
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        else:
+            return _do_claim()
+    except Exception as exc:
+        print(f"[zenripple] _claim_next_seq error: {exc}", file=sys.stderr)
+        return -1
 
 
-def _create_title_card(text: str, width: int = 1568, height: int = 882) -> bytes | None:
-    """Create a title card image with prompt text on dark background. Returns JPEG bytes or None."""
-    try:
-        from PIL import Image as PILImage, ImageDraw, ImageFont
-        import io
-
-        img = PILImage.new("RGB", (width, height), color=(24, 24, 32))
-        draw = ImageDraw.Draw(img)
-
-        title_size = max(28, height // 20)
-        try:
-            title_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", title_size)
-        except (OSError, IOError):
-            try:
-                title_font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", title_size
-                )
-            except (OSError, IOError):
-                title_font = ImageFont.load_default()
-
-        body_size = max(18, height // 35)
-        try:
-            body_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", body_size)
-        except (OSError, IOError):
-            try:
-                body_font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", body_size
-                )
-            except (OSError, IOError):
-                body_font = ImageFont.load_default()
-
-        # Header
-        header = "New Prompt"
-        header_bbox = draw.textbbox((0, 0), header, font=title_font)
-        header_w = header_bbox[2] - header_bbox[0]
-        draw.text(
-            ((width - header_w) // 2, height // 3),
-            header,
-            fill=(100, 200, 255),
-            font=title_font,
-        )
-
-        # Word-wrapped prompt text
-        max_chars = max(40, width // (body_size // 2))
-        words = text.split()
-        lines: list[str] = []
-        current_line = ""
-        for word in words:
-            if len(current_line) + len(word) + 1 > max_chars:
-                lines.append(current_line)
-                current_line = word
+def _serialize_for_log(value) -> object:
+    """Convert a tool result or args dict to a JSON-safe representation.
+    Uses default=str in the final json.dumps, so only strips Image objects."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return value  # json.dumps(default=str) handles non-serializable values
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, Image):
+                parts.append("[Image data]")
+            elif isinstance(item, str):
+                parts.append(item)
             else:
-                current_line = f"{current_line} {word}".strip()
-        if current_line:
-            lines.append(current_line)
+                parts.append(str(item))
+        return parts
+    return str(value)
 
-        y_start = height // 3 + title_size + 40
-        for i, line in enumerate(lines[:8]):
-            line_bbox = draw.textbbox((0, 0), line, font=body_font)
-            line_w = line_bbox[2] - line_bbox[0]
-            draw.text(
-                ((width - line_w) // 2, y_start + i * (body_size + 8)),
-                line,
-                fill=(220, 220, 220),
-                font=body_font,
-            )
 
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=90)
-        return buf.getvalue()
-    except ImportError:
-        return None
+def _append_log_entry(entry: dict) -> None:
+    """Append a single JSON line to tool_log.jsonl under file lock."""
+    if not _replay_dir:
+        return
+    log_path = os.path.join(_replay_dir, "tool_log.jsonl")
+    lock_path = os.path.join(_replay_dir, "replay.lock")
+    line = json.dumps(entry, default=str) + "\n"
+
+    try:
+        if fcntl:
+            with open(lock_path, "a") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    with open(log_path, "a") as f:
+                        f.write(line)
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        else:
+            with open(log_path, "a") as f:
+                f.write(line)
+    except Exception as exc:
+        print(f"[zenripple] _append_log_entry error: {exc}", file=sys.stderr)
+
+
+async def _save_replay_screenshot(tool_name: str, seq: int,
+                                   target_tab: str = "") -> str | None:
+    """Capture and save a screenshot for a replay log entry. Returns filename or None."""
+    try:
+        ss_result = await browser_command("screenshot", {"tab_id": target_tab or None})
+        data_url = ss_result.get("image", "")
+        if data_url:
+            b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+            raw_bytes = base64.b64decode(b64)
+            filename = f"{seq:05d}_{tool_name}.jpg"
+            with open(os.path.join(_replay_dir, filename), "wb") as f:
+                f.write(raw_bytes)
+            return filename
     except Exception:
-        return None
+        pass  # Screenshot is best-effort
+    return None
 
 
-_NAVIGATION_METHODS = frozenset({
-    "create_tab", "navigate", "go_back", "go_forward", "reload",
-})
+async def _log_tool_call(tool_name: str, call_args: dict, result, timestamp: str,
+                         duration_ms: float, error: bool = False,
+                         pre_seq: int = -1,
+                         pre_screenshot: str | None = None) -> None:
+    """Log a tool call with screenshot to the session replay directory.
 
-
-async def _capture_replay_frame(method: str) -> None:
-    """Capture a screenshot frame for session replay. Auto-initializes from disk."""
-    global _replay_seq
+    If pre_seq >= 0, uses that seq number (already claimed) instead of claiming a new one.
+    If pre_screenshot is set, skips screenshot capture and uses the provided filename.
+    """
     if not _load_replay_state():
         return
-    try:
-        # For navigation actions, wait for the page to finish loading before
-        # taking the screenshot — otherwise we capture a blank/previous page.
-        # The sleep gives the browser time to START the navigation before we
-        # poll for load completion (wait_for_load returns immediately if the
-        # current page is already loaded).
-        if method in _NAVIGATION_METHODS:
+
+    seq = pre_seq if pre_seq >= 0 else _claim_next_seq()
+    if seq < 0:
+        return
+
+    # Use pre-captured screenshot if provided, otherwise capture now.
+    screenshot_file = pre_screenshot
+    if screenshot_file is None:
+        target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
+        if tool_name in _NAVIGATION_TOOLS:
             try:
                 await asyncio.sleep(0.5)
-                await browser_command("wait_for_load", {"timeout": 5})
+                await browser_command("wait_for_load", {"tab_id": target_tab or None, "timeout": 5})
             except Exception:
-                pass  # Best-effort; take screenshot anyway
+                pass
+        screenshot_file = await _save_replay_screenshot(tool_name, seq, target_tab)
 
-        result = await browser_command("screenshot", {})
-        data_url = result.get("image", "")
-        if not data_url:
-            return
+    _append_log_entry({
+        "seq": seq,
+        "tool": tool_name,
+        "args": _serialize_for_log(call_args),
+        "result": _serialize_for_log(result),
+        "timestamp": timestamp,
+        "duration_ms": round(duration_ms, 1),
+        "screenshot": screenshot_file,
+        "error": error,
+    })
 
-        if data_url.startswith("data:") and "," in data_url:
-            b64 = data_url.split(",", 1)[1]
-        else:
-            b64 = data_url
-        raw_bytes = base64.b64decode(b64)
 
-        timestamp = datetime.now(timezone.utc).isoformat()
-        filename = f"{_replay_seq:05d}_{method}.jpg"
-        filepath = os.path.join(_replay_dir, filename)
+def _with_call_logging(fn):
+    """Decorator: wraps a tool function to log args, result, and screenshot.
+    Logging is awaited (not fire-and-forget) to ensure ordered screenshots."""
+    tool_name = fn.__name__
+    sig = inspect.signature(fn)
 
-        raw_bytes = _overlay_frame_info(raw_bytes, method, timestamp)
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        # Bind args to parameter names for structured logging
+        try:
+            bound = sig.bind(*args, **kwargs)
+            bound.apply_defaults()
+            call_args = dict(bound.arguments)
+        except Exception:
+            call_args = kwargs if kwargs else {}
 
-        with open(filepath, "wb") as f:
-            f.write(raw_bytes)
+        ts = datetime.now(timezone.utc).isoformat()
 
-        _replay_manifest["frames"].append({
-            "seq": _replay_seq,
-            "file": filename,
-            "method": method,
-            "timestamp": timestamp,
-            "prompt_index": _replay_prompt_index if _replay_prompt_index >= 0 else None,
-        })
-        _replay_seq += 1
-        _flush_manifest()
-    except Exception as exc:
-        # Never fail the tool because of replay capture, but log for diagnostics.
-        import sys
-        print(f"[zenripple] replay capture failed ({method}): {exc}", file=sys.stderr)
+        # For destructive tools, capture screenshot BEFORE the tool runs.
+        pre_seq = -1
+        pre_screenshot = None
+        if tool_name in _PRE_SCREENSHOT_TOOLS and _load_replay_state():
+            pre_seq = _claim_next_seq()
+            if pre_seq >= 0:
+                target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
+                pre_screenshot = await _save_replay_screenshot(tool_name, pre_seq, target_tab)
+
+        start = time.monotonic()
+
+        try:
+            result = fn(*args, **kwargs)
+            if inspect.isawaitable(result):
+                result = await result
+            duration_ms = (time.monotonic() - start) * 1000
+            try:
+                await _log_tool_call(tool_name, call_args, result, ts, duration_ms,
+                                     pre_seq=pre_seq, pre_screenshot=pre_screenshot)
+            except Exception:
+                pass
+            return result
+        except Exception as exc:
+            duration_ms = (time.monotonic() - start) * 1000
+            try:
+                await _log_tool_call(tool_name, call_args, str(exc), ts, duration_ms,
+                                     error=True, pre_seq=pre_seq, pre_screenshot=pre_screenshot)
+            except Exception:
+                pass
+            raise
+
+    return wrapper
+
+
+# Monkey-patch mcp.tool() to wrap every tool with call logging.
+# This runs before any @mcp.tool() decorators below, ensuring universal coverage.
+_original_mcp_tool = mcp.tool
+
+
+def _logging_tool_wrapper(*args, **kwargs):
+    original_decorator = _original_mcp_tool(*args, **kwargs)
+
+    def combined(fn):
+        return original_decorator(_with_call_logging(fn))
+
+    return combined
+
+
+mcp.tool = _logging_tool_wrapper
 
 
 # ── Tab Management ──────────────────────────────────────────────
 
 
 @mcp.tool()
-async def browser_create_tab(url: str = "about:blank", persist: bool = False) -> str:
+async def browser_create_tab(url: str = "about:blank", persist: bool = True) -> str:
     """Create a new browser tab in the ZenRipple workspace and navigate to a URL.
     Set persist=true to keep the tab alive after session close (it will be
     released back to unclaimed instead of destroyed)."""
     result = text_result(await browser_command("create_tab", {"url": url, "persist": persist}))
-    await _capture_replay_frame("create_tab")
+
     return _append_notifications(result)
 
 
 @mcp.tool()
 async def browser_close_tab(tab_id: str = "") -> str:
     """Close a browser tab. If no tab_id, closes the active tab."""
-    await _capture_replay_frame("close_tab")  # Capture BEFORE close — tab must exist
+
     result = text_result(
         await browser_command("close_tab", {"tab_id": tab_id or None})
     )
@@ -642,7 +680,7 @@ async def browser_close_tab(tab_id: str = "") -> str:
 async def browser_switch_tab(tab_id: str) -> str:
     """Switch to a different tab in the ZenRipple workspace."""
     result = text_result(await browser_command("switch_tab", {"tab_id": tab_id}))
-    await _capture_replay_frame("switch_tab")
+
     return _append_notifications(result)
 
 
@@ -661,7 +699,7 @@ async def browser_navigate(url: str, tab_id: str = "") -> str:
     result = text_result(
         await browser_command("navigate", {"url": url, "tab_id": tab_id or None})
     )
-    await _capture_replay_frame("navigate")
+
     return _append_notifications(result)
 
 
@@ -671,7 +709,7 @@ async def browser_go_back(tab_id: str = "") -> str:
     result = text_result(
         await browser_command("go_back", {"tab_id": tab_id or None})
     )
-    await _capture_replay_frame("go_back")
+
     return _append_notifications(result)
 
 
@@ -681,7 +719,7 @@ async def browser_go_forward(tab_id: str = "") -> str:
     result = text_result(
         await browser_command("go_forward", {"tab_id": tab_id or None})
     )
-    await _capture_replay_frame("go_forward")
+
     return _append_notifications(result)
 
 
@@ -691,7 +729,7 @@ async def browser_reload(tab_id: str = "") -> str:
     result = text_result(
         await browser_command("reload", {"tab_id": tab_id or None})
     )
-    await _capture_replay_frame("reload")
+
     return _append_notifications(result)
 
 
@@ -725,7 +763,7 @@ async def browser_handle_dialog(action: str, text: str = "") -> str:
     if text:
         params["text"] = text
     result = text_result(await browser_command("handle_dialog", params))
-    await _capture_replay_frame("handle_dialog")
+
     return _append_notifications(result)
 
 
@@ -748,7 +786,7 @@ async def browser_allow_blocked_popup(tab_id: str = "", index: int = -1) -> str:
     if index >= 0:
         params["index"] = index
     result = text_result(await browser_command("allow_blocked_popup", params))
-    await _capture_replay_frame("allow_blocked_popup")
+
     return _append_notifications(result)
 
 
@@ -1003,7 +1041,7 @@ async def browser_click(index: int, tab_id: str = "", frame_id: int = 0) -> str:
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("click_element", params))
-    await _capture_replay_frame("click")
+
     return _append_notifications(result)
 
 
@@ -1027,7 +1065,7 @@ async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("click_coordinates", params))
-    await _capture_replay_frame("click_coordinates")
+
     return _append_notifications(result)
 
 
@@ -1252,7 +1290,7 @@ async def browser_grounded_click(
         "tab_id": tab_id or None, "x": click_x, "y": click_y,
     }))
 
-    await _capture_replay_frame("grounded_click")
+
 
     return _append_notifications(
         f"Grounded click: \"{description}\" → VLM predicted ({px},{py}), "
@@ -1268,7 +1306,7 @@ async def browser_fill(index: int, value: str, tab_id: str = "", frame_id: int =
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("fill_field", params))
-    await _capture_replay_frame("fill")
+
     return _append_notifications(result)
 
 
@@ -1280,7 +1318,7 @@ async def browser_select_option(index: int, value: str, tab_id: str = "", frame_
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("select_option", params))
-    await _capture_replay_frame("select_option")
+
     return _append_notifications(result)
 
 
@@ -1293,7 +1331,7 @@ async def browser_type(text: str, tab_id: str = "", frame_id: int = 0) -> str:
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("type_text", params))
-    await _capture_replay_frame("type")
+
     return _append_notifications(result)
 
 
@@ -1308,7 +1346,7 @@ async def browser_press_key(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("press_key", params))
-    await _capture_replay_frame("press_key")
+
     return _append_notifications(result)
 
 
@@ -1322,7 +1360,7 @@ async def browser_scroll(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("scroll", params))
-    await _capture_replay_frame("scroll")
+
     return _append_notifications(result)
 
 
@@ -1334,7 +1372,7 @@ async def browser_hover(index: int, tab_id: str = "", frame_id: int = 0) -> str:
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("hover", params))
-    await _capture_replay_frame("hover")
+
     return _append_notifications(result)
 
 
@@ -1356,7 +1394,6 @@ async def browser_hover_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("hover_coordinates", params))
-    await _capture_replay_frame("hover_coordinates")
     return _append_notifications(result)
 
 
@@ -1474,7 +1511,7 @@ async def browser_grounded_hover(
         "tab_id": tab_id or None, "x": hover_x, "y": hover_y,
     }))
 
-    await _capture_replay_frame("grounded_hover")
+
 
     return _append_notifications(
         f"Grounded hover: \"{description}\" -> VLM predicted ({px},{py}), "
@@ -1512,7 +1549,6 @@ async def browser_scroll_at_point(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("scroll_at_point", params))
-    await _capture_replay_frame("scroll_at_point")
     return _append_notifications(result)
 
 
@@ -1634,7 +1670,7 @@ async def browser_grounded_scroll(
         "direction": direction, "amount": amount,
     }))
 
-    await _capture_replay_frame("grounded_scroll")
+
 
     return _append_notifications(
         f"Grounded scroll: \"{description}\" -> VLM predicted ({px},{py}), "
@@ -1769,7 +1805,7 @@ async def browser_wait_for_element(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("wait_for_element", params))
-    await _capture_replay_frame("wait_for_element")
+
     return _append_notifications(result)
 
 
@@ -1784,7 +1820,7 @@ async def browser_wait_for_text(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("wait_for_text", params))
-    await _capture_replay_frame("wait_for_text")
+
     return _append_notifications(result)
 
 
@@ -1799,7 +1835,7 @@ async def browser_wait_for_load(tab_id: str = "", timeout: int = 15) -> str:
             {"tab_id": tab_id or None, "timeout": timeout},
         )
     )
-    await _capture_replay_frame("wait_for_load")
+
     return _append_notifications(result)
 
 
@@ -2058,7 +2094,7 @@ async def browser_compare_tabs(tab_ids: str) -> str:
 
 
 @mcp.tool()
-async def browser_batch_navigate(urls: str, persist: bool = False) -> str:
+async def browser_batch_navigate(urls: str, persist: bool = True) -> str:
     """Open multiple URLs in new tabs at once. Pass comma-separated URLs.
     All tabs are created in the ZenRipple workspace.
     Returns the tab IDs for all opened tabs.
@@ -2169,333 +2205,43 @@ async def browser_record_replay(file_path: str, delay: float = 0.5) -> str:
     )
 
 
-# ── Session Replay (Video) ───────────────────────────────────────
-
-
-@mcp.tool()
-async def browser_replay_start(output_dir: str = "") -> str:
-    """Start capturing screenshots after each visual browser action for session replay.
-    Replay is auto-enabled when ZENRIPPLE_SESSION_ID is set. This tool is kept for
-    backwards compatibility and can resume a stopped session."""
-    global _replay_active, _replay_dir, _replay_seq, _replay_prompt_index
-    global _replay_manifest, _replay_started_at, _replay_state_loaded
-
-    # If already active (auto-initialized or previous call), return current state
-    if _load_replay_state():
-        return text_result({
-            "status": "already_active",
-            "dir": _replay_dir,
-            "frames": _replay_seq,
-        })
-
-    # If we get here, replay was stopped or disabled. Try to resume.
-    raw_id = SESSION_ID or _session_id or ""
-    session_id = _sanitize_session_id(raw_id) if raw_id else ""
-    if not session_id:
-        session_id = f"anon_{uuid4().hex[:8]}"
-    if output_dir:
-        _replay_dir = output_dir
-    else:
-        _replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{session_id}")
-
-    manifest_path = os.path.join(_replay_dir, "manifest.json")
-
-    # Check if there's a stopped manifest to resume.
-    # No reader-side lock needed — _flush_manifest uses atomic os.replace().
-    if os.path.exists(manifest_path):
-        try:
-            with open(manifest_path, "r") as f:
-                disk = json.load(f)
-            # Clear stopped flag so flush will remove it from disk too
-            disk.pop("stopped", None)
-            _replay_manifest = disk
-            frames = disk.get("frames", [])
-            prompts = disk.get("prompts", [])
-            _replay_seq = (max(f["seq"] for f in frames) + 1) if frames else 0
-            _replay_prompt_index = max(p["index"] for p in prompts) if prompts else -1
-            _replay_started_at = disk.get("started_at", "")
-            _flush_manifest()
-            _replay_active = True
-            _replay_state_loaded = True
-            return text_result({
-                "status": "resumed",
-                "dir": _replay_dir,
-                "session_id": session_id,
-                "frames": _replay_seq,
-            })
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Fresh start
-    os.makedirs(_replay_dir, exist_ok=True)
-    _replay_seq = 0
-    _replay_prompt_index = -1
-    _replay_started_at = datetime.now(timezone.utc).isoformat()
-    _replay_manifest = {
-        "session_id": session_id,
-        "started_at": _replay_started_at,
-        "prompts": [],
-        "frames": [],
-    }
-    _flush_manifest()
-    _replay_active = True
-    _replay_state_loaded = True
-
-    return text_result({
-        "status": "started",
-        "dir": _replay_dir,
-        "session_id": session_id,
-    })
-
-
-@mcp.tool()
-async def browser_replay_mark_prompt(text: str) -> str:
-    """Mark a prompt boundary in the session replay. Creates a title card frame
-    with the prompt text. Use this to segment the replay video by user request."""
-    global _replay_seq, _replay_prompt_index
-
-    if not _load_replay_state():
-        return "Error: replay capture is not active (no SESSION_ID or replay disabled)."
-
-    _replay_prompt_index += 1
-    timestamp = datetime.now(timezone.utc).isoformat()
-
-    _replay_manifest["prompts"].append({
-        "index": _replay_prompt_index,
-        "text": text,
-        "timestamp": timestamp,
-        "first_frame_seq": _replay_seq,
-    })
-
-    title_card_bytes = _create_title_card(text)
-    if title_card_bytes:
-        filename = f"P{_replay_prompt_index:04d}_prompt.jpg"
-        filepath = os.path.join(_replay_dir, filename)
-        with open(filepath, "wb") as f:
-            f.write(title_card_bytes)
-
-        _replay_manifest["frames"].append({
-            "seq": _replay_seq,
-            "file": filename,
-            "method": "prompt_boundary",
-            "timestamp": timestamp,
-            "prompt_index": _replay_prompt_index,
-            "is_title_card": True,
-        })
-        _replay_seq += 1
-
-    _flush_manifest()
-
-    return text_result({
-        "status": "prompt_marked",
-        "prompt_index": _replay_prompt_index,
-        "text": text,
-        "title_card": title_card_bytes is not None,
-    })
-
-
-@mcp.tool()
-async def browser_replay_save_video(
-    output_path: str,
-    scope: str = "session",
-    prompt_index: int = -1,
-) -> str:
-    """Stitch captured replay frames into an MP4 video using ffmpeg.
-
-    Args:
-        output_path: Path for the output .mp4 file.
-        scope: "session" (all frames), "last_prompt" (frames from last prompt),
-               or "prompt" (frames for a specific prompt_index).
-        prompt_index: Which prompt to include (only used when scope="prompt").
-    """
-    # Load manifest from disk (works even from a fresh MCPorter process)
-    _load_replay_state()
-
-    # Read manifest from disk for the most up-to-date state (works across
-    # MCPorter process boundaries). No reader-side lock needed — atomic replace.
-    manifest = _replay_manifest
-    if _replay_dir:
-        manifest_path = os.path.join(_replay_dir, "manifest.json")
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, "r") as f:
-                    manifest = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    if not manifest:
-        return "Error: no replay data available. No SESSION_ID set or no frames captured."
-
-    if not _replay_dir:
-        return "Error: no replay directory available."
-
-    if not manifest.get("frames"):
-        return "Error: no frames captured yet."
-
-    ffmpeg_path = shutil.which("ffmpeg")
-    if not ffmpeg_path:
-        return "Error: ffmpeg not found in PATH. Install ffmpeg to generate videos."
-
-    all_frames = manifest["frames"]
-    if scope == "last_prompt":
-        if not manifest.get("prompts"):
-            return "Error: no prompts marked. Use scope='session' or mark a prompt first."
-        last_idx = manifest["prompts"][-1]["index"]
-        frames = [f for f in all_frames if f.get("prompt_index") == last_idx]
-    elif scope == "prompt":
-        if prompt_index < 0:
-            return "Error: prompt_index required when scope='prompt'."
-        frames = [f for f in all_frames if f.get("prompt_index") == prompt_index]
-    else:
-        frames = all_frames
-
-    if not frames:
-        return f"Error: no frames found for scope='{scope}'" + (
-            f", prompt_index={prompt_index}" if scope == "prompt" else ""
-        )
-
-    # Build ffmpeg concat demuxer file (use PID to avoid races between concurrent calls)
-    concat_path = os.path.join(_replay_dir, f"_concat_{os.getpid()}.txt")
-    lines = []
-    last_existing_file = None
-    for i, frame in enumerate(frames):
-        filepath = os.path.join(_replay_dir, frame["file"])
-        if not os.path.exists(filepath):
-            continue
-
-        last_existing_file = filepath
-        if i + 1 < len(frames):
-            try:
-                t_curr = datetime.fromisoformat(frame["timestamp"])
-                t_next = datetime.fromisoformat(frames[i + 1]["timestamp"])
-                duration = (t_next - t_curr).total_seconds()
-                duration = max(1.0, min(duration, 10.0))
-            except (ValueError, KeyError):
-                duration = 2.0
-        else:
-            duration = 3.0
-
-        escaped = filepath.replace("'", "'\\''")
-        lines.append(f"file '{escaped}'")
-        lines.append(f"duration {duration:.3f}")
-
-    if not lines:
-        return "Error: no frame files found on disk (files may have been deleted)."
-
-    # Concat demuxer requires last file repeated without duration
-    if last_existing_file:
-        escaped = last_existing_file.replace("'", "'\\''")
-        lines.append(f"file '{escaped}'")
-
-    with open(concat_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-
-    output_abs = os.path.abspath(output_path)
-    os.makedirs(os.path.dirname(output_abs) or ".", exist_ok=True)
-
-    cmd = [
-        ffmpeg_path,
-        "-y",
-        "-f", "concat",
-        "-safe", "0",
-        "-i", concat_path,
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "fast",
-        "-crf", "23",
-        output_abs,
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await proc.wait()
-        try:
-            os.remove(concat_path)
-        except OSError:
-            pass
-        return "Error: ffmpeg timed out (>120s). Try fewer frames or lower resolution."
-
-    if proc.returncode != 0:
-        error_msg = stderr.decode("utf-8", errors="replace")[-500:]
-        try:
-            os.remove(concat_path)
-        except OSError:
-            pass
-        return f"Error: ffmpeg failed (exit {proc.returncode}): {error_msg}"
-
-    try:
-        os.remove(concat_path)
-    except OSError:
-        pass
-
-    file_size = os.path.getsize(output_abs) if os.path.exists(output_abs) else 0
-    return text_result({
-        "status": "saved",
-        "output_path": output_abs,
-        "frames": len(frames),
-        "file_size_bytes": file_size,
-        "scope": scope,
-    })
+# ── Session Replay (Tool Call Log) ───────────────────────────────
 
 
 @mcp.tool()
 async def browser_replay_status() -> str:
-    """Get current session replay status: frame count, prompt count, directory path."""
+    """Get current tool call logging status: tool call count, directory path, session ID."""
     active = _load_replay_state()
 
-    # Read latest counts from disk for accuracy (atomic replace, no lock needed)
-    manifest = _replay_manifest
+    if not active:
+        return text_result({"active": False})
+
+    # Count tool calls from the JSONL log on disk
+    tool_call_count = 0
+    if _replay_dir:
+        log_path = os.path.join(_replay_dir, "tool_log.jsonl")
+        try:
+            with open(log_path, "r") as f:
+                tool_call_count = sum(1 for _ in f)
+        except (FileNotFoundError, OSError):
+            pass
+
+    # Read manifest for metadata
+    manifest = {}
     if _replay_dir:
         manifest_path = os.path.join(_replay_dir, "manifest.json")
-        if os.path.exists(manifest_path):
-            try:
-                with open(manifest_path, "r") as f:
-                    manifest = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                pass
-
-    if not active or not manifest:
-        return text_result({"active": False})
+        try:
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            pass
 
     return text_result({
         "active": True,
         "dir": _replay_dir,
-        "frame_count": len(manifest.get("frames", [])),
-        "prompt_count": len(manifest.get("prompts", [])),
+        "tool_call_count": tool_call_count,
         "started_at": manifest.get("started_at", ""),
         "session_id": manifest.get("session_id", ""),
-    })
-
-
-@mcp.tool()
-async def browser_replay_stop() -> str:
-    """Stop capturing session replay frames. Frame data is preserved on disk
-    and can still be used with browser_replay_save_video."""
-    global _replay_active
-
-    _load_replay_state()
-
-    if not _replay_active:
-        return text_result({"status": "not_active"})
-
-    _replay_active = False
-    if _replay_manifest:
-        _replay_manifest["stopped"] = True
-    _flush_manifest()
-
-    return text_result({
-        "status": "stopped",
-        "dir": _replay_dir,
-        "frame_count": _replay_seq,
-        "prompt_count": len(_replay_manifest.get("prompts", [])) if _replay_manifest else 0,
     })
 
 
@@ -2518,7 +2264,7 @@ async def browser_drag(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("drag_element", params))
-    await _capture_replay_frame("drag")
+
     return _append_notifications(result)
 
 
@@ -2541,7 +2287,7 @@ async def browser_drag_coordinates(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("drag_coordinates", params))
-    await _capture_replay_frame("drag_coordinates")
+
     return _append_notifications(result)
 
 
@@ -2653,7 +2399,7 @@ async def browser_file_upload(
     if frame_id:
         params["frame_id"] = frame_id
     result = text_result(await browser_command("file_upload", params))
-    await _capture_replay_frame("file_upload")
+
     return _append_notifications(result)
 
 
