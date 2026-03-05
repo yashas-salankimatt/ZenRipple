@@ -3669,7 +3669,7 @@
   border-radius: var(--zr-r-sm);
   cursor: pointer;
   transition: background 0.1s;
-  min-height: 28px;
+  min-height: 32px;
 }
 
 .zenripple-replay-entry:hover {
@@ -3694,6 +3694,14 @@
   flex-shrink: 0;
 }
 
+.zenripple-replay-entry-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
 .zenripple-replay-entry-name {
   font-family: var(--zr-font-mono);
   font-size: 12px;
@@ -3702,7 +3710,21 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  flex: 1;
+}
+
+.zenripple-replay-entry-subtitle {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  color: var(--zr-text-muted);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.zenripple-replay-entry.selected .zenripple-replay-entry-subtitle {
+  opacity: 0.85;
 }
 
 .zenripple-replay-entry-dot {
@@ -3940,6 +3962,106 @@
     return (name || '').replace(/^browser_/, '');
   }
 
+  function toolCallSubtitle(tool, args) {
+    if (!args || typeof args !== 'object') return '';
+    const a = args;
+    const stripProto = (u) => String(u || '').replace(/^https?:\/\//, '');
+    const trunc = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n) + '\u2026' : s; };
+    const selectorIdx = () => {
+      let s = a.selector || '';
+      if (a.index != null) s += ' [' + a.index + ']';
+      return trunc(s, 50);
+    };
+    const bare = (tool || '').replace(/^browser_/, '');
+    switch (bare) {
+      case 'navigate':
+      case 'create_tab':
+        return trunc(stripProto(a.url), 50);
+      case 'batch_navigate':
+        return (a.urls || []).map(u => stripProto(u)).join(', ').slice(0, 50);
+      case 'click':
+      case 'hover':
+      case 'select_option':
+      case 'wait_for_element':
+        return selectorIdx();
+      case 'fill':
+        return trunc((a.selector || '') + ' \u2190 ' + (a.value || ''), 50);
+      case 'grounded_click':
+      case 'find_element_by_description':
+        return trunc(a.description, 50);
+      case 'type':
+        return trunc(a.text, 50);
+      case 'press_key': {
+        let parts = [];
+        if (a.ctrl || a.control) parts.push('Ctrl');
+        if (a.alt) parts.push('Alt');
+        if (a.shift) parts.push('Shift');
+        if (a.meta) parts.push('Cmd');
+        parts.push(a.key || '');
+        return parts.join('+');
+      }
+      case 'scroll':
+        return a.direction || '';
+      case 'set_session_name':
+        return trunc(a.name, 50);
+      case 'get_dom':
+      case 'get_elements_compact':
+      case 'get_accessibility_tree':
+        return trunc(a.selector || '*', 50);
+      case 'eval_chrome':
+      case 'console_eval':
+        return trunc(a.expression, 45);
+      case 'wait_for_text':
+        return trunc(a.text, 50);
+      case 'wait':
+        return a.ms != null ? a.ms + 'ms' : '';
+      case 'wait_for_load':
+        return a.state || '';
+      case 'set_cookie':
+        return trunc((a.name || '') + '=' + (a.value || ''), 50);
+      case 'intercept_add_rule':
+        return trunc(a.url_pattern, 50);
+      case 'file_upload':
+        return trunc((a.path || '').split('/').pop(), 50);
+      case 'save_screenshot':
+        return trunc((a.path || '').split('/').pop(), 50);
+      case 'claim_tab':
+        return trunc(a.tab_id, 50);
+      case 'close_tab':
+      case 'switch_tab':
+        return trunc(a.tab_id, 50);
+      case 'set_storage':
+      case 'get_storage':
+      case 'delete_storage':
+        return trunc(a.key, 50);
+      case 'clipboard_write':
+        return trunc(a.text, 50);
+      case 'handle_dialog':
+        return a.action || '';
+      case 'compare_tabs':
+        return trunc((a.tab_id_1 || '') + ' vs ' + (a.tab_id_2 || ''), 50);
+      case 'drag':
+        return trunc((a.source_selector || '') + ' \u2192 ' + (a.target_selector || ''), 50);
+      case 'drag_coordinates':
+        return (a.start_x || 0) + ',' + (a.start_y || 0) + ' \u2192 ' + (a.end_x || 0) + ',' + (a.end_y || 0);
+      case 'click_coordinates':
+        return (a.x || 0) + ',' + (a.y || 0);
+      case 'reflect':
+        return trunc(a.query, 50);
+      case 'record_replay':
+        return trunc(a.name, 50);
+      default: {
+        // Fallback: find first short string value in args
+        for (const v of Object.values(a)) {
+          if (typeof v === 'string' && v.length > 0 && v.length <= 80) {
+            return trunc(v, 50);
+          }
+        }
+        return '';
+      }
+    }
+  }
+
   async function loadReplayData(sessionId) {
     const tmpDir = PathUtils.tempDir;
     const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
@@ -4132,10 +4254,14 @@
         const el = document.createElement('div');
         el.className = 'zenripple-replay-entry';
         el.dataset.idx = String(i);
+        const subtitle = toolCallSubtitle(entry.tool, entry.args);
         el.innerHTML = `
           <span class="zenripple-replay-entry-seq">${escapeHTML(entry.seq ?? i)}</span>
           <span class="zenripple-replay-entry-dot${entry.error ? ' error' : ''}"></span>
-          <span class="zenripple-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+          <span class="zenripple-replay-entry-col">
+            <span class="zenripple-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+            ${subtitle ? '<span class="zenripple-replay-entry-subtitle">' + escapeHTML(subtitle) + '</span>' : ''}
+          </span>
           <span class="zenripple-replay-entry-time">${escapeHTML(extractTime(entry.timestamp))}</span>
         `;
         el.addEventListener('click', () => {
