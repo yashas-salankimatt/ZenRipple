@@ -3452,7 +3452,7 @@
 #zenripple-replay-container {
   position: relative;
   width: 96%;
-  max-width: 1800px;
+  max-width: 1600px;
   height: 88vh;
   max-height: 980px;
   background: var(--zr-bg-surface);
@@ -3572,7 +3572,7 @@
 
 .zenripple-replay-tool-name {
   font-family: var(--zr-font-mono);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 700;
   color: var(--zr-accent);
   margin-bottom: 10px;
@@ -3588,7 +3588,7 @@
 
 .zenripple-replay-meta-item {
   font-family: var(--zr-font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--zr-text-muted);
   background: var(--zr-bg-elevated);
@@ -3613,8 +3613,8 @@
 
 .zenripple-replay-json {
   font-family: var(--zr-font-mono);
-  font-size: 11px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.6;
   color: var(--zr-text-secondary);
   background: var(--zr-bg-raised);
   border: 1px solid var(--zr-border-subtle);
@@ -3696,7 +3696,7 @@
 
 .zenripple-replay-entry-name {
   font-family: var(--zr-font-mono);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 500;
   color: var(--zr-text-secondary);
   overflow: hidden;
@@ -3719,7 +3719,7 @@
 
 .zenripple-replay-entry-time {
   font-family: var(--zr-font-mono);
-  font-size: 9px;
+  font-size: 10px;
   color: var(--zr-text-muted);
   flex-shrink: 0;
 }
@@ -4110,6 +4110,10 @@
             nav
           </span>
           <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">[</span><span class="zenripple-replay-kbd">]</span>
+            speed
+          </span>
+          <span class="zenripple-replay-hint">
             <span class="zenripple-replay-kbd">Esc</span>
             close
           </span>
@@ -4269,19 +4273,19 @@
       return;
     }
 
-    // Navigation: ArrowDown/j = next (newer), ArrowUp/k = previous (older)
+    // Navigation: ArrowDown/j = older (lower seq), ArrowUp/k = newer (higher seq)
     if (e.key === 'ArrowDown' || e.key === 'j') {
       e.preventDefault();
       e.stopPropagation();
       _stopPlayback();
-      _navigateReplay(1);
+      _navigateReplay(-1);
       return;
     }
     if (e.key === 'ArrowUp' || e.key === 'k') {
       e.preventDefault();
       e.stopPropagation();
       _stopPlayback();
-      _navigateReplay(-1);
+      _navigateReplay(1);
       return;
     }
 
