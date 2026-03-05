@@ -4609,9 +4609,20 @@
     }
   }
 
+  let _lastLogSize = 0;
+
   async function _pollForNewEntries() {
     if (!_replayModal || !_replayReplayDir) return;
     const logPath = PathUtils.join(_replayReplayDir, 'tool_log.jsonl');
+
+    // Skip re-parsing if file size hasn't changed
+    try {
+      const info = await IOUtils.stat(logPath);
+      if (info.size === _lastLogSize) return;
+      _lastLogSize = info.size;
+    } catch (_) {
+      return;
+    }
     let allEntries = [];
     try {
       const content = await IOUtils.readUTF8(logPath);
@@ -4627,14 +4638,16 @@
     if (allEntries.length <= _replayEntries.length) return;
 
     // New entries found — append them
-    const newEntries = allEntries.slice(_replayEntries.length);
+    const oldLen = _replayEntries.length;
+    const newEntries = allEntries.slice(oldLen);
     _replayEntries = allEntries;
 
     // Add new entries to the list DOM (inserted at top since list is reversed)
     const listContainer = _replayModal.querySelector('#zenripple-replay-entries');
     if (listContainer) {
-      for (const entry of newEntries) {
-        const i = allEntries.indexOf(entry);
+      for (let j = 0; j < newEntries.length; j++) {
+        const entry = newEntries[j];
+        const i = oldLen + j;
         const el = document.createElement('div');
         el.className = 'zenripple-replay-entry';
         el.dataset.idx = String(i);
@@ -5325,6 +5338,7 @@
     _replaySessionId = null;
     _replayReplayDir = null;
     _sessionBrowserMode = false;
+    _lastLogSize = 0;
     // Note: _replayLoading is managed by openReplayModal's try/finally — don't reset here
 
     log('Replay viewer closed');

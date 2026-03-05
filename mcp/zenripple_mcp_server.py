@@ -598,6 +598,8 @@ def _with_call_logging(fn):
         except Exception:
             call_args = kwargs if kwargs else {}
 
+        ts = datetime.now(timezone.utc).isoformat()
+
         # For destructive tools, capture screenshot BEFORE the tool runs.
         pre_seq = -1
         pre_screenshot = None
@@ -607,7 +609,6 @@ def _with_call_logging(fn):
                 target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
                 pre_screenshot = await _save_replay_screenshot(tool_name, pre_seq, target_tab)
 
-        ts = datetime.now(timezone.utc).isoformat()
         start = time.monotonic()
 
         try:
@@ -2093,7 +2094,7 @@ async def browser_compare_tabs(tab_ids: str) -> str:
 
 
 @mcp.tool()
-async def browser_batch_navigate(urls: str, persist: bool = False) -> str:
+async def browser_batch_navigate(urls: str, persist: bool = True) -> str:
     """Open multiple URLs in new tabs at once. Pass comma-separated URLs.
     All tabs are created in the ZenRipple workspace.
     Returns the tab IDs for all opened tabs.
