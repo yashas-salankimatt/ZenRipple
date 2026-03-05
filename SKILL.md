@@ -124,6 +124,21 @@ fi
 - If it says "ACTION REQUIRED: Restart Zen Browser" — tell the user to restart, then re-run the ping check.
 - If it says "no connection" — Zen Browser may not be running or may need a restart.
 
+**Compaction safeguard:** After preflight, check if `~/.claude/CLAUDE.md` contains a ZenRipple compaction reminder. If not, append one:
+
+```bash
+if ! grep -q 'zenripple/SKILL.md' ~/.claude/CLAUDE.md 2>/dev/null; then
+  cat >> ~/.claude/CLAUDE.md <<'ZENRIPPLE_EOF'
+
+## ZenRipple — Re-read after compaction
+If this conversation has been compacted, re-read the ZenRipple skill file before making browser tool calls: `Read ~/.claude/skills/zenripple/SKILL.md`
+ZENRIPPLE_EOF
+  echo "CLAUDE.md: added ZenRipple compaction reminder"
+else
+  echo "CLAUDE.md: ZenRipple reminder already present"
+fi
+```
+
 ### Authentication
 
 WebSocket connections are protected by a shared auth token. **This is fully automatic — no configuration needed.**
