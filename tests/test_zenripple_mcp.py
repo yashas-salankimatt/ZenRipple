@@ -4855,3 +4855,642 @@ class TestNotificationsOnError:
         assert len(server._pending_notifications) == 0
         assert "something_new" in result
         assert "whatever" in result
+
+
+# ── Hover Coordinates ──────────────────────────────────────────
+
+
+class TestHoverCoordinates:
+    @pytest.mark.asyncio
+    async def test_hover_coordinates_basic(self):
+        """Hover at specific coordinates sends correct command."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "x": 100, "y": 200, "tag": "div", "text": "content"}}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_hover_coordinates(100, 200)
+        data = json.loads(result)
+        assert data["success"] is True
+        assert data["x"] == 100
+        assert data["y"] == 200
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "hover_coordinates"
+        assert msg["params"]["x"] == 100
+        assert msg["params"]["y"] == 200
+
+    @pytest.mark.asyncio
+    async def test_hover_coordinates_with_tab_id(self):
+        """Tab ID is forwarded correctly."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "x": 50, "y": 60, "tag": "a", "text": "Link"}}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_hover_coordinates(50, 60, tab_id="tab1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "tab1"
+
+    @pytest.mark.asyncio
+    async def test_hover_coordinates_with_frame_id(self):
+        """Frame ID is forwarded correctly."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "x": 10, "y": 20, "tag": "span", "text": ""}}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_hover_coordinates(10, 20, frame_id=42)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["frame_id"] == 42
+
+    @pytest.mark.asyncio
+    async def test_hover_coordinates_auto_scales(self):
+        """Coordinates are auto-scaled from screenshot-space to viewport-space."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "x": 200, "y": 200, "tag": "div", "text": ""}}
+            ]
+        )
+        # Set up screenshot dims: 1000px screenshot, 2000px viewport
+        server._last_screenshot_dims[""] = {"sw": 1000, "sh": 500, "vw": 2000, "vh": 1000}
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_hover_coordinates(100, 100)
+        msg = json.loads(fake_ws.sent[0])
+        # 100 * (2000/1000) = 200, 100 * (1000/500) = 200
+        assert msg["params"]["x"] == 200
+        assert msg["params"]["y"] == 200
+        server._last_screenshot_dims.clear()
+
+    @pytest.mark.asyncio
+    async def test_hover_coordinates_no_scale_when_same_dims(self):
+        """No scaling when screenshot and viewport dimensions match."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"success": True, "x": 100, "y": 100, "tag": "div", "text": ""}}
+            ]
+        )
+        server._last_screenshot_dims[""] = {"sw": 1000, "sh": 500, "vw": 1000, "vh": 500}
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_hover_coordinates(100, 100)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["x"] == 100
+        assert msg["params"]["y"] == 100
+        server._last_screenshot_dims.clear()
+
+
+# ── Scroll at Point ────────────────────────────────────────────
+
+
+class TestScrollAtPoint:
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_default(self):
+        """Scroll at point sends correct command with defaults."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {
+                    "success": True, "x": 300, "y": 400, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_scroll_at_point(300, 400)
+        data = json.loads(result)
+        assert data["success"] is True
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["method"] == "scroll_at_point"
+        assert msg["params"]["x"] == 300
+        assert msg["params"]["y"] == 400
+        assert msg["params"]["direction"] == "down"
+        assert msg["params"]["amount"] == 500
+
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_custom_direction_amount(self):
+        """Custom direction and amount are forwarded."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {
+                    "success": True, "x": 50, "y": 60, "direction": "up",
+                    "amount": 200, "scrollX": 0, "scrollY": 0, "tag": "ul",
+                }}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_scroll_at_point(50, 60, direction="up", amount=200)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["direction"] == "up"
+        assert msg["params"]["amount"] == 200
+
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_left_right(self):
+        """Horizontal scroll directions work."""
+        for direction in ("left", "right"):
+            fake_ws = FakeWebSocket(
+                responses=[
+                    {"id": "x", "result": {
+                        "success": True, "x": 100, "y": 100, "direction": direction,
+                        "amount": 300, "scrollX": 300, "scrollY": 0, "tag": "div",
+                    }}
+                ]
+            )
+            server._last_screenshot_dims.clear()
+            with patch.object(server, "get_ws", return_value=fake_ws):
+                await server.browser_scroll_at_point(100, 100, direction=direction, amount=300)
+            msg = json.loads(fake_ws.sent[0])
+            assert msg["params"]["direction"] == direction
+            assert msg["params"]["amount"] == 300
+
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_with_tab_id(self):
+        """Tab ID is forwarded correctly."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {
+                    "success": True, "x": 10, "y": 20, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_scroll_at_point(10, 20, tab_id="panel1")
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["tab_id"] == "panel1"
+
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_with_frame_id(self):
+        """Frame ID is forwarded correctly."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {
+                    "success": True, "x": 10, "y": 20, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }}
+            ]
+        )
+        server._last_screenshot_dims.clear()
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_scroll_at_point(10, 20, frame_id=99)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["frame_id"] == 99
+
+    @pytest.mark.asyncio
+    async def test_scroll_at_point_auto_scales(self):
+        """Coordinates are auto-scaled from screenshot-space to viewport-space."""
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {
+                    "success": True, "x": 200, "y": 200, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }}
+            ]
+        )
+        server._last_screenshot_dims[""] = {"sw": 1000, "sh": 500, "vw": 2000, "vh": 1000}
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            await server.browser_scroll_at_point(100, 100)
+        msg = json.loads(fake_ws.sent[0])
+        assert msg["params"]["x"] == 200
+        assert msg["params"]["y"] == 200
+        server._last_screenshot_dims.clear()
+
+
+# ── Grounded Hover ─────────────────────────────────────────────
+
+
+class TestGroundedHover:
+    @pytest.fixture(autouse=True)
+    def reset_grounding(self, reset_grounding_globals):
+        pass
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_basic(self):
+        """Grounded hover takes screenshot, calls VLM, hovers at predicted coords."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                # screenshot
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                # hover_coordinates
+                {"id": "x", "result": {"success": True, "x": 400, "y": 300, "tag": "button", "text": "Submit"}},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(400, 300)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_hover("the Submit button")
+
+        assert "Grounded hover" in result
+        hover_msg = json.loads(fake_ws.sent[1])
+        assert hover_msg["method"] == "hover_coordinates"
+        assert hover_msg["params"]["x"] == 400
+        assert hover_msg["params"]["y"] == 300
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_no_api_key(self):
+        """Returns error when no API key is set."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = True
+        result = await server.browser_grounded_hover("something")
+        assert "OPENROUTER_API_KEY not set" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_empty_screenshot(self):
+        """Returns error when screenshot is empty."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"image": "", "width": 0, "height": 0}},
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_grounded_hover("the button")
+        assert "empty image" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_unparseable_coords(self):
+        """Returns error when VLM response can't be parsed."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "I can't find that element"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_hover("nonexistent element")
+        assert "could not parse coordinates" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_viewport_scaling(self):
+        """Grounded hover scales from screenshot-space to viewport-space."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1920, "viewport_height": 1080,
+                    },
+                },
+                {"id": "x", "result": {"success": True, "x": 960, "y": 540, "tag": "div", "text": ""}},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(784, 441)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_hover("center of page")
+
+        assert "Grounded hover" in result
+        hover_msg = json.loads(fake_ws.sent[1])
+        assert hover_msg["method"] == "hover_coordinates"
+        # 784 * (1920/1568) = 960, 441 * (1080/882) = 540
+        assert hover_msg["params"]["x"] == 960
+        assert hover_msg["params"]["y"] == 540
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_vlm_4xx(self):
+        """4xx VLM errors fail immediately."""
+        server._GROUNDING_API_KEY = "sk-bad"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "Unauthorized"
+
+        async def mock_post(*args, **kwargs):
+            raise httpx.HTTPStatusError("401", request=MagicMock(), response=mock_response)
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_hover("the button")
+        assert "401" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_hover_transport_error_retries(self):
+        """Transport errors are retried with backoff."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+
+        call_count = 0
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ConnectError("connection refused")
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server.browser_grounded_hover("the tooltip trigger")
+
+        assert "failed after 3 attempts" in result
+        assert call_count == 3
+
+
+# ── Grounded Scroll ────────────────────────────────────────────
+
+
+class TestGroundedScroll:
+    @pytest.fixture(autouse=True)
+    def reset_grounding(self, reset_grounding_globals):
+        pass
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_basic(self):
+        """Grounded scroll takes screenshot, calls VLM, scrolls at predicted coords."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                # screenshot
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                # scroll_at_point
+                {"id": "x", "result": {
+                    "success": True, "x": 400, "y": 300, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(400, 300)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_scroll("the dropdown menu")
+
+        assert "Grounded scroll" in result
+        scroll_msg = json.loads(fake_ws.sent[1])
+        assert scroll_msg["method"] == "scroll_at_point"
+        assert scroll_msg["params"]["x"] == 400
+        assert scroll_msg["params"]["y"] == 300
+        assert scroll_msg["params"]["direction"] == "down"
+        assert scroll_msg["params"]["amount"] == 500
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_custom_direction_amount(self):
+        """Custom direction and amount are forwarded."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+                {"id": "x", "result": {
+                    "success": True, "x": 200, "y": 200, "direction": "up",
+                    "amount": 300, "scrollX": 0, "scrollY": 0, "tag": "ul",
+                }},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(200, 200)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_scroll(
+                "the sidebar", direction="up", amount=300
+            )
+
+        assert "Grounded scroll" in result
+        assert "up" in result
+        scroll_msg = json.loads(fake_ws.sent[1])
+        assert scroll_msg["params"]["direction"] == "up"
+        assert scroll_msg["params"]["amount"] == 300
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_no_api_key(self):
+        """Returns error when no API key is set."""
+        server._GROUNDING_API_KEY = ""
+        server._GROUNDING_KEY_SYNCED = True
+        result = await server.browser_grounded_scroll("something")
+        assert "OPENROUTER_API_KEY not set" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_empty_screenshot(self):
+        """Returns error when screenshot is empty."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {"id": "x", "result": {"image": "", "width": 0, "height": 0}},
+            ]
+        )
+        with patch.object(server, "get_ws", return_value=fake_ws):
+            result = await server.browser_grounded_scroll("the dropdown")
+        assert "empty image" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_unparseable_coords(self):
+        """Returns error when VLM response can't be parsed."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "No scrollable area found"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_scroll("nonexistent area")
+        assert "could not parse coordinates" in result
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_viewport_scaling(self):
+        """Grounded scroll scales from screenshot-space to viewport-space."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1920, "viewport_height": 1080,
+                    },
+                },
+                {"id": "x", "result": {
+                    "success": True, "x": 960, "y": 540, "direction": "down",
+                    "amount": 500, "scrollX": 0, "scrollY": 500, "tag": "div",
+                }},
+            ]
+        )
+        mock_resp = type("Resp", (), {
+            "status_code": 200,
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"choices": [{"message": {"content": "(784, 441)"}}]},
+        })()
+
+        async def mock_post(*args, **kwargs):
+            return mock_resp
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post):
+            result = await server.browser_grounded_scroll("center of page")
+
+        assert "Grounded scroll" in result
+        scroll_msg = json.loads(fake_ws.sent[1])
+        assert scroll_msg["method"] == "scroll_at_point"
+        assert scroll_msg["params"]["x"] == 960
+        assert scroll_msg["params"]["y"] == 540
+
+    @pytest.mark.asyncio
+    async def test_grounded_scroll_vlm_transport_error_retries(self):
+        """Transport errors are retried with backoff."""
+        server._GROUNDING_API_KEY = "sk-test"
+        server._GROUNDING_KEY_SYNCED = True
+        server._last_screenshot_dims.clear()
+        fake_ws = FakeWebSocket(
+            responses=[
+                {
+                    "id": "x",
+                    "result": {
+                        "image": _TINY_DATA_URL,
+                        "width": 1568, "height": 882,
+                        "viewport_width": 1568, "viewport_height": 882,
+                    },
+                },
+            ]
+        )
+
+        call_count = 0
+
+        async def mock_post(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise httpx.ConnectError("connection refused")
+
+        with patch.object(server, "get_ws", return_value=fake_ws), \
+             patch("httpx.AsyncClient.post", side_effect=mock_post), \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await server.browser_grounded_scroll("the dropdown")
+
+        assert "failed after 3 attempts" in result
+        assert call_count == 3
