@@ -22,17 +22,26 @@ _CALLER_ENV_VARS = (
 )
 
 
+_caller_key_cache: str | None = None
+
+
 def get_caller_key() -> str:
     """Stable identifier for the calling terminal/environment.
 
     Checks terminal-specific env vars that are unique per terminal window/pane/tab.
     Returns a 16-char hex hash, or 'default' if no terminal can be identified.
+    Result is cached since env vars don't change within a process.
     """
+    global _caller_key_cache
+    if _caller_key_cache is not None:
+        return _caller_key_cache
     for var in _CALLER_ENV_VARS:
         val = os.environ.get(var, "").strip()
         if val:
-            return hashlib.sha256(f"{var}:{val}".encode()).hexdigest()[:16]
-    return "default"
+            _caller_key_cache = hashlib.sha256(f"{var}:{val}".encode()).hexdigest()[:16]
+            return _caller_key_cache
+    _caller_key_cache = "default"
+    return _caller_key_cache
 
 
 def read_session_file() -> str:
