@@ -144,15 +144,15 @@ The MCP server identifies your terminal via env vars like `TMUX_PANE`, `ITERM_SE
 
 ```bash
 # Just start using tools — session is created automatically on first call
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
+npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
 
 # Name the session (do this right after your first tool call)
 # The name appears as a sublabel under each tab title in Zen's sidebar,
 # so you can see which agent owns which tabs at a glance.
 # First check what names other sessions are using, then pick a unique name.
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_list_sessions --output json
+npx -y mcporter call zenripple.browser_list_sessions --output json
 # ^ Check the "name" field on each session to avoid duplicates
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
+npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
 # ^ Returns: {"name": "researcher", "other_session_names": ["coder", ...]}
 
 # Close when done
@@ -198,7 +198,7 @@ browser_set_session_name(name="researcher")
 
 **MCPorter CLI:**
 ```bash
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
+npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
 ```
 
 The name also appears in `browser_session_info` and `browser_list_sessions` responses.
@@ -320,24 +320,22 @@ All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to
 
 ```bash
 # CORRECT — always use --args with JSON:
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_wait_for_load --args '{"timeout":15}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_click --args '{"index":5}' --output json
-MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_fill --args '{"index":3,"value":"hello"}' --output json
+npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
+npx -y mcporter call zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
+npx -y mcporter call zenripple.browser_wait_for_load --args '{"timeout":15}' --output json
+npx -y mcporter call zenripple.browser_click --args '{"index":5}' --output json
+npx -y mcporter call zenripple.browser_fill --args '{"index":3,"value":"hello"}' --output json
 
 # WRONG — do NOT use these formats:
 # npx -y mcporter call zenripple.browser_navigate "https://example.com"          # URL colon parsed as key:value
 # npx -y mcporter call zenripple.browser_navigate -- --url "https://example.com" # --url becomes literal text
 ```
 
-**Always set `MCPORTER_CALL_TIMEOUT=30000`** (or higher) as an env var — the default timeout is too low for page loads and screenshots.
-
 Sessions are automatic — no need to export `ZENRIPPLE_SESSION_ID`. Each terminal gets its own session on first tool call.
 
 Recommended shell alias:
 ```bash
-alias mc='MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call'
+alias mc='npx -y mcporter call'
 # Then: mc zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
 ```
 
