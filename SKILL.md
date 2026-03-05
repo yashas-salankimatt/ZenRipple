@@ -159,17 +159,29 @@ npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researc
 npx -y mcporter call zenripple.browser_session_close --output json
 ```
 
-### Sub-Agent Isolation
+### Sub-Agent Isolation — IMPORTANT
 
-By default, sub-agents share the parent terminal's session and tabs. To give a sub-agent its own isolated session, set `ZENRIPPLE_CALLER_ID` in its environment:
+> **Every sub-agent that uses the browser MUST get its own session.**
+> Sharing a session between agents causes tab conflicts, race conditions, and corrupted replay logs. This is non-negotiable.
+
+To give a sub-agent its own isolated session, set `ZENRIPPLE_SESSION_ID` to a fresh ID in its environment **before** any tool calls:
 
 ```bash
-# Sub-agent shares parent's session (default — no action needed)
-<sub-agent-command>
+# ✅ CORRECT: Sub-agent gets its own isolated session + replay
+SUB_SID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
+ZENRIPPLE_SESSION_ID="$SUB_SID" <sub-agent-command>
 
-# Sub-agent gets its own isolated session
+# ✅ ALSO CORRECT: Use ZENRIPPLE_CALLER_ID for auto-session with terminal-based isolation
 ZENRIPPLE_CALLER_ID=research-agent <sub-agent-command>
+
+# ❌ WRONG: Sub-agent sharing parent's session (causes conflicts)
+<sub-agent-command>
 ```
+
+**Why this matters:**
+- Each session has its own tabs, replay log, and screenshots
+- Two agents sharing a session will step on each other's tabs and produce an interleaved, unusable replay log
+- The replay viewer (Ctrl+Shift+E) shows one session at a time — separate sessions = separate replay histories
 
 ### Pinned Session (Advanced)
 
@@ -460,7 +472,7 @@ browser_batch_navigate(urls="https://a.com,https://b.com", persist=true)
 **MCPorter CLI:**
 ```bash
 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
-npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":["https://a.com","https://b.com"],"persist":true}' --output json
+npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":"https://a.com,https://b.com","persist":true}' --output json
 ```
 
 **Checking persistence status:**
@@ -529,7 +541,7 @@ Press **Ctrl+Shift+E** while focused on a ZenRipple-claimed tab in Zen Browser. 
 - **Center (25%):** Tool call details — tool name, duration, timestamp, arguments, and result JSON.
 - **Right (25%):** Tool call list — most recent first, with timestamps, navigable with arrow keys or j/k (vim).
 
-**Playback:** Press **Space** to play/pause auto-advance through entries. Use **[** / **]** to change speed (0.5×, 1×, 2×, 4×). A progress bar in the footer shows current position and supports click-to-seek.
+**Playback:** Press **Space** to play/pause auto-advance through entries. Use **[** / **]** to change speed (0.5×, 1×, 2×, 4×, 8×, 16×, 32×). A progress bar in the footer shows current position and supports click-to-seek.
 
 The shortcut only activates on tabs owned by a ZenRipple session. Press Ctrl+Shift+E again or Esc to close.
 
