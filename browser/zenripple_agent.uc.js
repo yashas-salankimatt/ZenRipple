@@ -2309,6 +2309,65 @@
       return await actorInteraction(tab, 'ZenRippleAgent:Hover', { index }, null, frame_id);
     },
 
+    hover_coordinates: async ({ tab_id, frame_id, x, y, color }, ctx) => {
+      if (x === undefined || y === undefined) throw new Error('x and y are required');
+      const tab = ctx.resolveTab(tab_id);
+      const data = { x, y };
+      if (color) data.color = color;
+      const result = await actorInteraction(tab, 'ZenRippleAgent:HoverCoordinates', data, null, frame_id);
+      // Auto-route: if the hover hit an iframe, forward into the iframe's
+      // content process with adjusted coordinates.
+      if (result && (result.tag === 'iframe' || result.tag === 'frame') && result.iframe_bc_id && result.iframe_rect) {
+        const iframeX = x - result.iframe_rect.x;
+        const iframeY = y - result.iframe_rect.y;
+        if (iframeX >= 0 && iframeY >= 0 &&
+            iframeX < result.iframe_rect.width && iframeY < result.iframe_rect.height) {
+          const iframeResult = await actorInteraction(
+            tab, 'ZenRippleAgent:HoverCoordinates',
+            { x: iframeX, y: iframeY, color },
+            null, result.iframe_bc_id
+          );
+          if (iframeResult) {
+            iframeResult.routed_through_iframe = true;
+            iframeResult.iframe_frame_id = result.iframe_bc_id;
+            return iframeResult;
+          }
+        }
+      }
+      return result;
+    },
+
+    scroll_at_point: async ({ tab_id, frame_id, x, y, direction, amount }, ctx) => {
+      if (x === undefined || y === undefined) throw new Error('x and y are required');
+      if (!direction) throw new Error('direction is required (up/down/left/right)');
+      const tab = ctx.resolveTab(tab_id);
+      const result = await actorInteraction(
+        tab, 'ZenRippleAgent:ScrollAtPoint',
+        { x, y, direction, amount: amount || 500 },
+        null, frame_id
+      );
+      // Auto-route: if the scroll hit an iframe, forward into the iframe's
+      // content process with adjusted coordinates.
+      if (result && (result.tag === 'iframe' || result.tag === 'frame') && result.iframe_bc_id && result.iframe_rect) {
+        const iframeX = x - result.iframe_rect.x;
+        const iframeY = y - result.iframe_rect.y;
+        if (iframeX >= 0 && iframeY >= 0 &&
+            iframeX < result.iframe_rect.width && iframeY < result.iframe_rect.height) {
+          const iframeResult = await actorInteraction(
+            tab, 'ZenRippleAgent:ScrollAtPoint',
+            { x: iframeX, y: iframeY, direction, amount: amount || 500 },
+            null, result.iframe_bc_id
+          );
+          if (iframeResult) {
+            iframeResult.routed_through_iframe = true;
+            iframeResult.iframe_frame_id = result.iframe_bc_id;
+            return iframeResult;
+          }
+        }
+      }
+      return result;
+    },
+
     // --- Console / Eval ---
     console_setup: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);

@@ -1338,6 +1338,310 @@ async def browser_hover(index: int, tab_id: str = "", frame_id: int = 0) -> str:
     return _append_notifications(result)
 
 
+@mcp.tool()
+async def browser_hover_coordinates(x: int, y: int, tab_id: str = "", frame_id: int = 0) -> str:
+    """Hover at specific x,y coordinates on the page, dispatching native mouse events.
+    Triggers mouseenter/mouseover/mousemove at the position — useful for revealing
+    tooltips, dropdown menus, hover-dependent UI, and positioning for scroll_at_point.
+    Shows a visual cursor overlay (lime green) for 12 seconds.
+    If screenshot and viewport dimensions differ, coordinates are auto-scaled."""
+    tab_key = tab_id or ""
+    dims = _last_screenshot_dims.get(tab_key)
+    if dims and dims["sw"] and dims["vw"] and dims["sw"] != dims["vw"]:
+        scale_x = dims["vw"] / dims["sw"]
+        scale_y = dims["vh"] / dims["sh"]
+        x = round(x * scale_x)
+        y = round(y * scale_y)
+    params = {"tab_id": tab_id or None, "x": x, "y": y}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = text_result(await browser_command("hover_coordinates", params))
+    await _capture_replay_frame("hover_coordinates")
+    return _append_notifications(result)
+
+
+@mcp.tool()
+async def browser_grounded_hover(
+    description: str, tab_id: str = "",
+    frame_id: int = 0,  # Kept for backwards compat; ignored — hover_coordinates auto-routes into iframes
+) -> str:
+    """Hover on a page element described in natural language using VLM grounding.
+
+    Takes a screenshot, sends it to a grounding VLM (Qwen3-VL-235B-A22B by default)
+    which returns precise pixel coordinates, then hovers at that position.
+    Dispatches native mouse events to trigger tooltips, dropdowns, and hover-dependent UI.
+
+    Args:
+        description: Natural language description of what to hover over
+                     (e.g. "the user avatar", "the Settings menu item")
+        tab_id: Optional tab ID (defaults to active tab)
+        frame_id: Optional frame ID for iframe content
+    """
+    api_key = await _ensure_grounding_key()
+    if not api_key:
+        return "Error: OPENROUTER_API_KEY not set (provide via env var or it will be remembered from a previous session)"
+
+    # Step 1: Take a screenshot
+    result = await browser_command("screenshot", {"tab_id": tab_id or None})
+    data_url = result.get("image", "")
+    if not data_url:
+        return "Error: screenshot returned empty image"
+
+    if data_url.startswith("data:") and "," in data_url:
+        header, b64 = data_url.split(",", 1)
+        media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+    else:
+        b64 = data_url
+        media_type = "image/png"
+
+    sw = result.get("width", 0)
+    sh = result.get("height", 0)
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+
+    tab_key = tab_id or ""
+    if sw and sh:
+        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
+
+    # Step 2: Ask the grounding VLM for coordinates
+    prompt = (
+        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
+        f"of {description}. Return ONLY the center point coordinates as (x, y). "
+        f"Nothing else."
+    )
+    payload = {
+        "model": _GROUNDING_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{media_type};base64,{b64}"
+            }},
+            {"type": "text", "text": prompt},
+        ]}],
+        "max_tokens": 100,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    max_retries = 3
+    last_error = None
+    vlm_text = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    _GROUNDING_API_URL, headers=headers, json=payload,
+                )
+                resp.raise_for_status()
+                try:
+                    vlm_text = resp.json()["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as e:
+                    return f"Error: unexpected VLM response format: {e}"
+                break
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                status = e.response.status_code
+                if status >= 500 or status == 429:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (2**attempt))
+                    continue
+                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (2**attempt))
+                continue
+
+    if vlm_text is None:
+        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
+
+    # Step 3: Parse coordinates and validate bounds
+    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
+    if px is None or py is None:
+        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
+    px = max(0, min(px, sw - 1)) if sw else px
+    py = max(0, min(py, sh - 1)) if sh else py
+
+    # Step 4: Scale from screenshot-space to viewport-space if needed
+    hover_x, hover_y = px, py
+    if sw and vw and sw != vw:
+        hover_x = round(px * vw / sw)
+        hover_y = round(py * vh / sh)
+
+    # Step 5: Hover using the hover_coordinates command
+    hover_result = text_result(await browser_command("hover_coordinates", {
+        "tab_id": tab_id or None, "x": hover_x, "y": hover_y,
+    }))
+
+    await _capture_replay_frame("grounded_hover")
+
+    return _append_notifications(
+        f"Grounded hover: \"{description}\" -> VLM predicted ({px},{py}), "
+        f"hovered ({hover_x},{hover_y}). {hover_result}"
+    )
+
+
+@mcp.tool()
+async def browser_scroll_at_point(
+    x: int, y: int, direction: str = "down", amount: int = 500,
+    tab_id: str = "", frame_id: int = 0
+) -> str:
+    """Scroll at specific x,y coordinates using native wheel events.
+    Unlike browser_scroll which scrolls the whole page, this scrolls whatever
+    scrollable container is under the given coordinates — dropdowns, sub-menus,
+    iframes, overflow containers, etc.
+    If screenshot and viewport dimensions differ, coordinates are auto-scaled.
+
+    Args:
+        x: X coordinate (in viewport or screenshot space)
+        y: Y coordinate (in viewport or screenshot space)
+        direction: Scroll direction (up/down/left/right)
+        amount: Scroll amount in pixels (default 500)
+        tab_id: Optional tab ID
+        frame_id: Optional frame ID for iframe content
+    """
+    tab_key = tab_id or ""
+    dims = _last_screenshot_dims.get(tab_key)
+    if dims and dims["sw"] and dims["vw"] and dims["sw"] != dims["vw"]:
+        scale_x = dims["vw"] / dims["sw"]
+        scale_y = dims["vh"] / dims["sh"]
+        x = round(x * scale_x)
+        y = round(y * scale_y)
+    params = {"tab_id": tab_id or None, "x": x, "y": y, "direction": direction, "amount": amount}
+    if frame_id:
+        params["frame_id"] = frame_id
+    result = text_result(await browser_command("scroll_at_point", params))
+    await _capture_replay_frame("scroll_at_point")
+    return _append_notifications(result)
+
+
+@mcp.tool()
+async def browser_grounded_scroll(
+    description: str, direction: str = "down", amount: int = 500,
+    tab_id: str = "",
+    frame_id: int = 0,  # Kept for backwards compat; ignored — scroll_at_point auto-routes into iframes
+) -> str:
+    """Scroll at a page element described in natural language using VLM grounding.
+
+    Takes a screenshot, sends it to a grounding VLM to find the described element,
+    then dispatches native wheel events at that position. Scrolls whatever container
+    is under the element — dropdowns, sub-menus, iframes, overflow areas, etc.
+
+    Args:
+        description: Natural language description of where to scroll
+                     (e.g. "the dropdown menu", "the scrollable sidebar", "the chat messages area")
+        direction: Scroll direction (up/down/left/right)
+        amount: Scroll amount in pixels (default 500)
+        tab_id: Optional tab ID (defaults to active tab)
+        frame_id: Optional frame ID for iframe content
+    """
+    api_key = await _ensure_grounding_key()
+    if not api_key:
+        return "Error: OPENROUTER_API_KEY not set (provide via env var or it will be remembered from a previous session)"
+
+    # Step 1: Take a screenshot
+    result = await browser_command("screenshot", {"tab_id": tab_id or None})
+    data_url = result.get("image", "")
+    if not data_url:
+        return "Error: screenshot returned empty image"
+
+    if data_url.startswith("data:") and "," in data_url:
+        header, b64 = data_url.split(",", 1)
+        media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+    else:
+        b64 = data_url
+        media_type = "image/png"
+
+    sw = result.get("width", 0)
+    sh = result.get("height", 0)
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+
+    tab_key = tab_id or ""
+    if sw and sh:
+        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
+
+    # Step 2: Ask the grounding VLM for coordinates
+    prompt = (
+        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
+        f"of {description}. Return ONLY the center point coordinates as (x, y). "
+        f"Nothing else."
+    )
+    payload = {
+        "model": _GROUNDING_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{media_type};base64,{b64}"
+            }},
+            {"type": "text", "text": prompt},
+        ]}],
+        "max_tokens": 100,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    max_retries = 3
+    last_error = None
+    vlm_text = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    _GROUNDING_API_URL, headers=headers, json=payload,
+                )
+                resp.raise_for_status()
+                try:
+                    vlm_text = resp.json()["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as e:
+                    return f"Error: unexpected VLM response format: {e}"
+                break
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                status = e.response.status_code
+                if status >= 500 or status == 429:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (2**attempt))
+                    continue
+                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (2**attempt))
+                continue
+
+    if vlm_text is None:
+        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
+
+    # Step 3: Parse coordinates and validate bounds
+    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
+    if px is None or py is None:
+        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
+    px = max(0, min(px, sw - 1)) if sw else px
+    py = max(0, min(py, sh - 1)) if sh else py
+
+    # Step 4: Scale from screenshot-space to viewport-space if needed
+    scroll_x, scroll_y = px, py
+    if sw and vw and sw != vw:
+        scroll_x = round(px * vw / sw)
+        scroll_y = round(py * vh / sh)
+
+    # Step 5: Scroll using the scroll_at_point command
+    scroll_result = text_result(await browser_command("scroll_at_point", {
+        "tab_id": tab_id or None, "x": scroll_x, "y": scroll_y,
+        "direction": direction, "amount": amount,
+    }))
+
+    await _capture_replay_frame("grounded_scroll")
+
+    return _append_notifications(
+        f"Grounded scroll: \"{description}\" -> VLM predicted ({px},{py}), "
+        f"scrolled {direction} {amount}px at ({scroll_x},{scroll_y}). {scroll_result}"
+    )
+
+
 # ── Console / Eval ─────────────────────────────────────────────
 
 
