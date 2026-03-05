@@ -138,13 +138,15 @@ WebSocket connections are protected by a shared auth token. **This is fully auto
 
 ## Sessions
 
-Session isolation is based on `ZENRIPPLE_SESSION_ID`. One top-level agent = one session. Sub-agents share the parent's session. Different agents must use different sessions.
+Sessions are **automatic**. Each terminal (tmux pane, iTerm tab, VS Code terminal, etc.) automatically gets its own browser session — just start using tools. No env vars or manual setup needed.
+
+The MCP server identifies your terminal via env vars like `TMUX_PANE`, `ITERM_SESSION_ID`, `TERM_SESSION_ID`, or `VSCODE_PID`, and persists your session ID to `~/.zenripple/sessions/`. Subsequent calls from the same terminal reuse the same session.
 
 ```bash
-# Create a session
-export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
+# Just start using tools — session is created automatically on first call
+MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
 
-# Name the session (do this right after creating it)
+# Name the session (do this right after your first tool call)
 # The name appears as a sublabel under each tab title in Zen's sidebar,
 # so you can see which agent owns which tabs at a glance.
 # First check what names other sessions are using, then pick a unique name.
@@ -153,12 +155,31 @@ MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_list_sessions
 MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
 # ^ Returns: {"name": "researcher", "other_session_names": ["coder", ...]}
 
-# Pass to sub-agents if env isn't inherited
-ZENRIPPLE_SESSION_ID="$ZENRIPPLE_SESSION_ID" <sub-agent-command>
-
 # Close when done
 npx -y mcporter call zenripple.browser_session_close --output json
 ```
+
+### Sub-Agent Isolation
+
+By default, sub-agents share the parent terminal's session and tabs. To give a sub-agent its own isolated session, set `ZENRIPPLE_CALLER_ID` in its environment:
+
+```bash
+# Sub-agent shares parent's session (default — no action needed)
+<sub-agent-command>
+
+# Sub-agent gets its own isolated session
+ZENRIPPLE_CALLER_ID=research-agent <sub-agent-command>
+```
+
+### Pinned Session (Advanced)
+
+To force all calls to use a specific session ID (e.g., to share a session across different machines or scripts):
+
+```bash
+export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
+```
+
+When `ZENRIPPLE_SESSION_ID` is set, it takes priority over auto-session and no session file is written.
 
 ### Session Naming
 
@@ -312,11 +333,10 @@ MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call zenripple.browser_fill --args '
 
 **Always set `MCPORTER_CALL_TIMEOUT=30000`** (or higher) as an env var — the default timeout is too low for page loads and screenshots.
 
-**Always export `ZENRIPPLE_SESSION_ID`** so every call uses the same browser session.
+Sessions are automatic — no need to export `ZENRIPPLE_SESSION_ID`. Each terminal gets its own session on first tool call.
 
-Recommended shell setup at the start of every session:
+Recommended shell alias:
 ```bash
-export ZENRIPPLE_SESSION_ID="<your-session-id>"
 alias mc='MCPORTER_CALL_TIMEOUT=30000 npx -y mcporter call'
 # Then: mc zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
 ```
@@ -498,11 +518,11 @@ Record a sequence of browser actions and replay them later:
 
 ### Session Replay (Video)
 
-Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when `ZENRIPPLE_SESSION_ID` is set (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
+Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
 
 **Workflow:**
 
-1. Replay starts automatically when `ZENRIPPLE_SESSION_ID` is set. No need to call `browser_replay_start`.
+1. Replay starts automatically when a session is active. No need to call `browser_replay_start`.
 2. Call `browser_replay_mark_prompt(text)` each time a new user prompt begins — this creates visual prompt-boundary markers in the video.
 3. Perform browser actions as normal — screenshots are captured automatically after every visual tool call (navigate, click, scroll, type, etc.).
 4. Call `browser_replay_save_video(output_path)` to assemble an MP4. Use `scope` to control what's included:
@@ -595,12 +615,12 @@ npx -y mcporter call zenripple.browser_session_close --output json
 
 ## Guardrails
 
-- **Name your session** immediately after creating it — call `browser_set_session_name` with a unique, descriptive name.
+- **Name your session** early — call `browser_set_session_name` with a unique, descriptive name after your first tool call.
 - **Default to `persist=true`** when creating tabs. Only skip persist for throwaway scratch tabs the user will never need.
 - **Respect user activity.** If page state changed unexpectedly, the user may have acted. Evaluate whether it helps or blocks you, and adapt accordingly (see Shared Browser section above).
-- Do not reuse another active agent's `ZENRIPPLE_SESSION_ID`.
 - Do not claim actively-owned tabs — only unclaimed or stale ones.
 - Close your session (`browser_session_close`) when done to prevent stale resources.
+- **Stale sessions / wrong tabs**: `rm ~/.zenripple/sessions/*` and retry to force fresh sessions.
 - Close tabs you no longer need (`browser_close_tab`).
 - Do not force-send messages or bypass verification gates.
 - If blocked by a human-required step, stop and ask for human action.

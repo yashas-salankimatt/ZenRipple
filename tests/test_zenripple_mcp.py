@@ -18,6 +18,7 @@ import pytest_asyncio
 from mcp.server.fastmcp.utilities.types import Image
 
 import zenripple_mcp_server as server
+import zenripple_session_file as session_file
 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -2119,6 +2120,13 @@ class TestWaitForDownload:
 class TestGetWsSessionRouting:
     """Tests for URL-based session routing in get_ws()."""
 
+    @pytest.fixture(autouse=True)
+    def _no_session_files(self):
+        """Prevent session file I/O from leaking between tests."""
+        with patch.object(server, "_read_session_file", return_value=""), \
+             patch.object(server, "_write_session_file"):
+            yield
+
     @pytest.mark.asyncio
     async def test_new_session_url(self):
         """Without ZENRIPPLE_SESSION_ID, connects to /new."""
@@ -2294,6 +2302,13 @@ class TestGetWsSessionRouting:
 class TestAuthToken:
     """Tests for _read_auth_token and auth header passing."""
 
+    @pytest.fixture(autouse=True)
+    def _no_session_files(self):
+        """Prevent session file I/O from leaking between tests."""
+        with patch.object(server, "_read_session_file", return_value=""), \
+             patch.object(server, "_write_session_file"):
+            yield
+
     def test_auth_token_from_env(self):
         """ZENRIPPLE_AUTH_TOKEN env var takes priority."""
         with patch.dict(os.environ, {"ZENRIPPLE_AUTH_TOKEN": "env-token-123"}):
@@ -2350,6 +2365,301 @@ class TestAuthToken:
             await server.get_ws()
         _, kwargs = mock_connect.call_args
         assert kwargs["additional_headers"] == {"Authorization": "Bearer my-secret"}
+        server._ws_connection = None
+        server._session_id = None
+
+
+# ── Auto-Session (Terminal-Keyed File Persistence) ────────────
+
+
+class TestCallerKey:
+    """Tests for _get_caller_key() terminal identification."""
+
+    def test_tmux_pane(self):
+        with patch.dict(os.environ, {"TMUX_PANE": "%17"}, clear=False):
+            key = session_file.get_caller_key()
+            assert len(key) == 16
+            assert key.isalnum()
+
+    def test_iterm_session(self):
+        with patch.dict(os.environ, {"ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
+            key = session_file.get_caller_key()
+            assert len(key) == 16
+
+    def test_explicit_caller_id_takes_priority(self):
+        """ZENRIPPLE_CALLER_ID overrides terminal env vars."""
+        with patch.dict(os.environ, {
+            "ZENRIPPLE_CALLER_ID": "subagent-1",
+            "TMUX_PANE": "%17",
+        }, clear=False):
+            key = session_file.get_caller_key()
+        with patch.dict(os.environ, {
+            "ZENRIPPLE_CALLER_ID": "subagent-1",
+        }, clear=False):
+            # Remove TMUX_PANE — should get same key since CALLER_ID matches
+            env = os.environ.copy()
+            env.pop("TMUX_PANE", None)
+            with patch.dict(os.environ, env, clear=True):
+                key2 = session_file.get_caller_key()
+        assert key == key2
+
+    def test_different_panes_different_keys(self):
+        with patch.dict(os.environ, {"TMUX_PANE": "%17"}, clear=False):
+            key1 = session_file.get_caller_key()
+        with patch.dict(os.environ, {"TMUX_PANE": "%18"}, clear=False):
+            key2 = session_file.get_caller_key()
+        assert key1 != key2
+
+    def test_default_fallback(self):
+        """When no terminal env var is set, returns 'default'."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ZENRIPPLE_CALLER_ID", "TMUX_PANE", "ITERM_SESSION_ID",
+                            "TERM_SESSION_ID", "VSCODE_PID", "WINDOWID")}
+        with patch.dict(os.environ, env, clear=True):
+            assert session_file.get_caller_key() == "default"
+
+    def test_whitespace_only_skipped(self):
+        """Whitespace-only env var values are skipped."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ZENRIPPLE_CALLER_ID", "TMUX_PANE", "ITERM_SESSION_ID",
+                            "TERM_SESSION_ID", "VSCODE_PID", "WINDOWID")}
+        env["TMUX_PANE"] = "   "
+        with patch.dict(os.environ, env, clear=True):
+            assert session_file.get_caller_key() == "default"
+
+
+class TestAutoSession:
+    """Tests for session file read/write and get_ws() integration."""
+
+    def test_read_session_file(self, tmp_path):
+        """Reads session ID from the caller's file."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="abc123"):
+            (sessions / "abc123").write_text("sess-uuid-1\n")
+            assert server._read_session_file() == "sess-uuid-1"
+
+    def test_read_session_file_missing(self, tmp_path):
+        """Returns empty string when file doesn't exist."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="nonexistent"):
+            assert server._read_session_file() == ""
+
+    def test_write_session_file(self, tmp_path):
+        """Writes session ID to the caller's file."""
+        sessions = tmp_path / "sessions"
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="abc123"):
+            server._write_session_file("new-sess-id")
+        assert (sessions / "abc123").read_text().strip() == "new-sess-id"
+
+    def test_write_creates_directory(self, tmp_path):
+        """Creates sessions directory if it doesn't exist."""
+        sessions = tmp_path / "deep" / "sessions"
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="key1"):
+            server._write_session_file("sess-123")
+        assert sessions.exists()
+        assert (sessions / "key1").read_text().strip() == "sess-123"
+
+    def test_write_permission_error_silent(self, tmp_path):
+        """Write failure is silently ignored."""
+        sessions = tmp_path / "readonly"
+        sessions.mkdir()
+        sessions.chmod(0o444)
+        try:
+            with patch.object(session_file, "SESSIONS_DIR", sessions / "sub"), \
+                 patch.object(session_file, "get_caller_key", return_value="key1"):
+                # Should not raise
+                server._write_session_file("sess-123")
+        finally:
+            sessions.chmod(0o755)
+
+    def test_delete_session_file(self, tmp_path):
+        """Deletes the caller's session file."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "delkey").write_text("sess-to-delete\n")
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="delkey"):
+            session_file.delete_session_file()
+        assert not (sessions / "delkey").exists()
+
+    def test_delete_session_file_missing(self, tmp_path):
+        """Deleting nonexistent file doesn't raise."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        with patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="nope"):
+            session_file.delete_session_file()  # should not raise
+
+    @pytest.mark.asyncio
+    async def test_session_close_deletes_file(self, tmp_path):
+        """browser_session_close removes the session file when not using env var."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "closekey").write_text("closing-session\n")
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="closekey"), \
+             patch.object(server, "browser_command", new_callable=AsyncMock,
+                          return_value={"success": True}):
+            await server.browser_session_close()
+        assert not (sessions / "closekey").exists()
+
+    @pytest.mark.asyncio
+    async def test_session_close_skips_file_with_env_var(self, tmp_path):
+        """browser_session_close does NOT delete file when ZENRIPPLE_SESSION_ID is set."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "envkey").write_text("pinned-session\n")
+        with patch.object(server, "SESSION_ID", "pinned-session"), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="envkey"), \
+             patch.object(server, "browser_command", new_callable=AsyncMock,
+                          return_value={"success": True}):
+            await server.browser_session_close()
+        # File should still exist — env var sessions don't touch the file
+        assert (sessions / "envkey").exists()
+
+    @pytest.mark.asyncio
+    async def test_session_close_clears_memory(self, tmp_path):
+        """browser_session_close clears _session_id and _ws_connection."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "memkey").write_text("mem-session\n")
+        server._session_id = "mem-session"
+        server._ws_connection = "fake-ws"
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="memkey"), \
+             patch.object(server, "browser_command", new_callable=AsyncMock,
+                          return_value={"success": True}):
+            await server.browser_session_close()
+        assert server._session_id is None
+        assert server._ws_connection is None
+
+    @pytest.mark.asyncio
+    async def test_session_file_used_in_get_ws(self, tmp_path):
+        """get_ws() reads session ID from file when no env var or in-memory ID."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "testkey").write_text("file-session-id\n")
+
+        server._ws_connection = None
+        server._session_id = None
+        fake_ws = FakeWebSocket(
+            response_headers={"X-ZenRipple-Session": "file-session-id"}
+        )
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="testkey"), \
+             patch.object(server, "_read_auth_token", return_value=""), \
+             patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws) as mock_connect:
+            ws = await server.get_ws()
+        assert ws is fake_ws
+        mock_connect.assert_called_once()
+        url = mock_connect.call_args[0][0]
+        assert url == "ws://localhost:9876/session/file-session-id"
+        server._ws_connection = None
+        server._session_id = None
+
+    @pytest.mark.asyncio
+    async def test_session_file_written_after_connect(self, tmp_path):
+        """get_ws() writes session ID to file after successful connect."""
+        sessions = tmp_path / "sessions"
+
+        server._ws_connection = None
+        server._session_id = None
+        fake_ws = FakeWebSocket(
+            response_headers={"X-ZenRipple-Session": "new-session-xyz"}
+        )
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="writekey"), \
+             patch.object(server, "_read_auth_token", return_value=""), \
+             patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws):
+            await server.get_ws()
+        assert (sessions / "writekey").read_text().strip() == "new-session-xyz"
+        server._ws_connection = None
+        server._session_id = None
+
+    @pytest.mark.asyncio
+    async def test_session_file_not_written_when_env_var_set(self, tmp_path):
+        """Explicit ZENRIPPLE_SESSION_ID skips file write."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+
+        server._ws_connection = None
+        server._session_id = None
+        fake_ws = FakeWebSocket(
+            response_headers={"X-ZenRipple-Session": "explicit-sess"}
+        )
+        with patch.object(server, "SESSION_ID", "explicit-sess"), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="envkey"), \
+             patch.object(server, "_read_auth_token", return_value=""), \
+             patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws):
+            await server.get_ws()
+        assert not (sessions / "envkey").exists()
+        server._ws_connection = None
+        server._session_id = None
+
+    @pytest.mark.asyncio
+    async def test_stale_file_session_falls_back_to_new(self, tmp_path):
+        """If file session is expired, falls back to /new and updates file."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+        (sessions / "stalekey").write_text("dead-session\n")
+
+        server._ws_connection = None
+        server._session_id = None
+
+        new_ws = FakeWebSocket(
+            response_headers={"X-ZenRipple-Session": "fresh-session"}
+        )
+
+        async def mock_connect(url, **kwargs):
+            if "dead-session" in url:
+                raise Exception("session not found")
+            return new_ws
+
+        with patch.object(server, "SESSION_ID", ""), \
+             patch.object(session_file, "SESSIONS_DIR", sessions), \
+             patch.object(session_file, "get_caller_key", return_value="stalekey"), \
+             patch.object(server, "_read_auth_token", return_value=""), \
+             patch("websockets.connect", side_effect=mock_connect):
+            ws = await server.get_ws()
+        assert ws is new_ws
+        # File should be updated with the fresh session
+        assert (sessions / "stalekey").read_text().strip() == "fresh-session"
+        server._ws_connection = None
+        server._session_id = None
+
+    @pytest.mark.asyncio
+    async def test_multiple_callers_different_files(self, tmp_path):
+        """Two different callers get different session files."""
+        sessions = tmp_path / "sessions"
+        sessions.mkdir()
+
+        for caller, sess_id in [("caller-a", "sess-a"), ("caller-b", "sess-b")]:
+            server._ws_connection = None
+            server._session_id = None
+            fake_ws = FakeWebSocket(
+                response_headers={"X-ZenRipple-Session": sess_id}
+            )
+            with patch.object(server, "SESSION_ID", ""), \
+                 patch.object(session_file, "SESSIONS_DIR", sessions), \
+                 patch.object(session_file, "get_caller_key", return_value=caller), \
+                 patch.object(server, "_read_auth_token", return_value=""), \
+                 patch("websockets.connect", new_callable=AsyncMock, return_value=fake_ws):
+                await server.get_ws()
+
+        assert (sessions / "caller-a").read_text().strip() == "sess-a"
+        assert (sessions / "caller-b").read_text().strip() == "sess-b"
         server._ws_connection = None
         server._session_id = None
 
@@ -3637,8 +3947,12 @@ class TestSessionReplay:
         orig_session = server._session_id
         orig_session_id = server.SESSION_ID
         orig_replay_disabled = server.REPLAY_DISABLED
-        # Default: disable auto-init so existing tests behave as before
+        # Default: disable auto-init so existing tests behave as before.
+        # Set _replay_state_loaded = True to prevent _load_replay_state() from
+        # auto-starting replay when tests set _session_id manually.
         server.SESSION_ID = ""
+        server._session_id = None
+        server._replay_state_loaded = True
         server.REPLAY_DISABLED = False
         yield
         server._replay_state_loaded = False
@@ -3657,16 +3971,17 @@ class TestSessionReplay:
     @pytest.mark.asyncio
     async def test_replay_start(self, tmp_path):
         """Start creates directory and manifest."""
-        server._session_id = "test123"
+        # Don't set _session_id — let browser_replay_start create an anon session.
+        # (With auto-session, setting _session_id would trigger auto-init.)
         result = await server.browser_replay_start(str(tmp_path / "replay"))
         data = json.loads(result)
         assert data["status"] == "started"
-        assert data["session_id"] == "test123"
+        assert data["session_id"].startswith("anon_")
         manifest_path = os.path.join(data["dir"], "manifest.json")
         assert os.path.exists(manifest_path)
         with open(manifest_path) as f:
             manifest = json.load(f)
-        assert manifest["session_id"] == "test123"
+        assert manifest["session_id"].startswith("anon_")
         assert manifest["frames"] == []
         assert manifest["prompts"] == []
 
@@ -4025,6 +4340,7 @@ class TestSessionReplay:
     def test_auto_init_from_session_id(self, tmp_path):
         """_load_replay_state auto-creates dir + manifest when SESSION_ID is set."""
         server.SESSION_ID = "auto-test-123"
+        server._replay_state_loaded = False  # Allow auto-init
         # Point replay dir to tmp_path to avoid polluting /tmp
         with patch("tempfile.gettempdir", return_value=str(tmp_path)):
             result = server._load_replay_state()
@@ -4041,6 +4357,8 @@ class TestSessionReplay:
     def test_no_init_without_session_id(self):
         """_load_replay_state returns False when SESSION_ID is empty."""
         server.SESSION_ID = ""
+        server._session_id = None
+        server._replay_state_loaded = False  # Allow auto-init check
         result = server._load_replay_state()
         assert result is False
         assert server._replay_active is False
@@ -4049,12 +4367,14 @@ class TestSessionReplay:
         """_load_replay_state returns False when REPLAY_DISABLED is True."""
         server.SESSION_ID = "test-123"
         server.REPLAY_DISABLED = True
+        server._replay_state_loaded = False  # Allow auto-init check
         result = server._load_replay_state()
         assert result is False
         assert server._replay_active is False
 
     def test_disk_recovery(self, tmp_path):
         """_load_replay_state recovers seq/prompt counters from existing manifest."""
+        server._replay_state_loaded = False  # Allow auto-init
         server.SESSION_ID = "recovery-test"
         replay_dir = str(tmp_path / "zenripple_replay_recovery-test")
         os.makedirs(replay_dir)
@@ -4083,6 +4403,7 @@ class TestSessionReplay:
 
     def test_stopped_flag_prevents_init(self, tmp_path):
         """_load_replay_state returns False when manifest has stopped=True."""
+        server._replay_state_loaded = False  # Allow auto-init
         server.SESSION_ID = "stopped-test"
         replay_dir = str(tmp_path / "zenripple_replay_stopped-test")
         os.makedirs(replay_dir)
@@ -4103,6 +4424,7 @@ class TestSessionReplay:
 
     def test_corrupt_manifest_fresh_start(self, tmp_path):
         """_load_replay_state handles corrupt manifest by starting fresh."""
+        server._replay_state_loaded = False  # Allow auto-init
         server.SESSION_ID = "corrupt-test"
         replay_dir = str(tmp_path / "zenripple_replay_corrupt-test")
         os.makedirs(replay_dir)
@@ -4234,6 +4556,7 @@ class TestSessionReplay:
     @pytest.mark.asyncio
     async def test_auto_capture_without_manual_start(self, tmp_path):
         """Visual tools capture frames automatically when SESSION_ID is set."""
+        server._replay_state_loaded = False  # Allow auto-init
         server.SESSION_ID = "auto-capture-test"
         with patch("tempfile.gettempdir", return_value=str(tmp_path)):
             fake_ws = FakeWebSocket(responses=[

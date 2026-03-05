@@ -9,6 +9,8 @@ import sys
 
 import websockets
 
+from zenripple_session_file import write_session_file
+
 
 DEFAULT_WS_URL = os.environ.get("ZENRIPPLE_WS_URL", "ws://localhost:9876")
 
@@ -67,6 +69,11 @@ def main() -> int:
         action="store_true",
         help="Print in shell export format: export ZENRIPPLE_SESSION_ID=...",
     )
+    parser.add_argument(
+        "--write-file",
+        action="store_true",
+        help="Also persist session ID to ~/.zenripple/sessions/<caller_key> for auto-session reuse.",
+    )
     args = parser.parse_args()
 
     try:
@@ -74,10 +81,14 @@ def main() -> int:
             existing = os.environ.get("ZENRIPPLE_SESSION_ID", "").strip()
             if existing:
                 _print_value(existing, args.shell)
+                if args.write_file:
+                    write_session_file(existing)
                 return 0
 
         created = asyncio.run(_create_session(args.ws_url))
         _print_value(created, args.shell)
+        if args.write_file:
+            write_session_file(created)
         return 0
     except Exception as exc:  # pragma: no cover - simple CLI fallback path
         print(f"Error: {exc}", file=sys.stderr)

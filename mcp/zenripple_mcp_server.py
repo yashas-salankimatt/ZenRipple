@@ -25,12 +25,17 @@ import websockets
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.utilities.types import Image
+from zenripple_session_file import (
+    read_session_file as _read_session_file,
+    write_session_file as _write_session_file,
+    delete_session_file as _delete_session_file,
+)
 
 BROWSER_WS_URL = os.environ.get("ZENRIPPLE_WS_URL", "ws://localhost:9876")
 SESSION_ID = os.environ.get("ZENRIPPLE_SESSION_ID", "")
 
 # Grounding VLM configuration for browser_grounded_click.
-# Uses an external VLM (default: Qwen2.5-VL-72B via OpenRouter) for accurate
+# Uses an external VLM (default: Qwen3-VL-235B-A22B via OpenRouter) for accurate
 # pixel coordinate prediction from screenshots.
 # The API key is loaded from env var on startup, but also persisted in Firefox
 # prefs so the user only needs to provide it once.
@@ -100,10 +105,11 @@ async def get_ws():
     Reconnection strategy:
     1. If ZENRIPPLE_SESSION_ID env var is set, always join that session
     2. If we previously connected and have a saved _session_id, rejoin it
-    3. Otherwise create a new session via /new
+    3. If a session file exists for this terminal (~/.zenripple/sessions/), rejoin that session
+    4. Otherwise create a new session via /new
     This prevents tab loss when the WebSocket connection drops mid-operation.
     """
-    global _ws_connection, _session_id
+    global _ws_connection, _session_id, _replay_state_loaded
     async with _ws_lock:
         if _ws_connection is not None:
             try:
@@ -118,8 +124,8 @@ async def get_ws():
                     pass
                 # Keep _session_id for reconnection — don't clear it
 
-        # Route: env var > saved session from previous connection > new
-        reconnect_id = SESSION_ID or _session_id
+        # Route: env var > in-memory > session file > new
+        reconnect_id = SESSION_ID or _session_id or _read_session_file()
         if reconnect_id:
             url = f"{BROWSER_WS_URL}/session/{reconnect_id}"
         else:
@@ -166,7 +172,15 @@ async def get_ws():
         elif hasattr(_ws_connection, "response_headers"):
             headers = _ws_connection.response_headers
         if headers:
+            prev_session = _session_id
             _session_id = headers.get("X-ZenRipple-Session")
+            # Persist for other processes (skip when explicit env var is set)
+            if _session_id and not SESSION_ID:
+                _write_session_file(_session_id)
+            # If auto-session just populated _session_id for the first time,
+            # allow replay to re-check (it may have skipped due to no session).
+            if _session_id and not prev_session and not SESSION_ID:
+                _replay_state_loaded = False
 
         return _ws_connection
 
@@ -288,11 +302,13 @@ def _load_replay_state() -> bool:
     _replay_state_loaded = True
 
     # Opt-out or no session ID → no replay
-    if REPLAY_DISABLED or not SESSION_ID:
+    # Check both env var (explicit) and in-memory (auto-session) session IDs.
+    effective_session = SESSION_ID or _session_id
+    if REPLAY_DISABLED or not effective_session:
         _replay_active = False
         return False
 
-    safe_id = _sanitize_session_id(SESSION_ID)
+    safe_id = _sanitize_session_id(effective_session)
     if not safe_id:
         _replay_active = False
         return False
@@ -2363,7 +2379,15 @@ async def browser_session_close() -> str:
     """Close session. Created tabs are closed; claimed tabs are released back
     to unclaimed status so they persist in the workspace. The shared Zen AI
     Agent workspace is never destroyed."""
-    return text_result(await browser_command("session_close"))
+    global _session_id, _ws_connection
+    result = await browser_command("session_close")
+    # Clean up in-memory state so next call creates a fresh session
+    _session_id = None
+    _ws_connection = None
+    # Clean up session file so next call from this terminal creates a fresh session
+    if not SESSION_ID:
+        _delete_session_file()
+    return text_result(result)
 
 
 @mcp.tool()
