@@ -31,8 +31,13 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
   #elementMap = new Map(); // index → WeakRef(element)
   #elementMeta = new Map(); // index → {tag, text, href, name, type, ariaLabel} for self-healing
   #previousDOM = null; // previous DOM snapshot for incremental diffing
+  // Ring buffers for console capture — avoids O(n) Array.shift() per entry.
   #consoleLogs = [];
+  #consoleLogIdx = 0;
+  #consoleLogFull = false;
   #consoleErrors = [];
+  #consoleErrorIdx = 0;
+  #consoleErrorFull = false;
   #captureSetup = false;
   #consoleOriginals = null;
   #consoleErrorListener = null;
@@ -79,9 +84,9 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       case 'ZenRippleAgent:TeardownConsoleCapture':
         return this.#teardownConsoleCapture();
       case 'ZenRippleAgent:GetConsoleLogs':
-        return { logs: [...this.#consoleLogs] };
+        return { logs: this.#getOrderedLogs() };
       case 'ZenRippleAgent:GetConsoleErrors':
-        return { errors: [...this.#consoleErrors] };
+        return { errors: this.#getOrderedErrors() };
       case 'ZenRippleAgent:EvalJS':
         return this.#evalInContent(data.expression);
       case 'ZenRippleAgent:QuerySelector':
@@ -117,15 +122,56 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
   }
 
   didDestroy() {
+    // Each cleanup is independent — don't let one failure skip the rest.
     try { this.#teardownConsoleCapture(); } catch (e) {}
     try { this.#removeCursor(); } catch (e) {}
-    if (this.#tip) {
-      try { this.#tip.endInputTransaction(); } catch (e) {}
-      this.#tip = null;
-    }
+    try {
+      if (this.#tip) {
+        this.#tip.endInputTransaction();
+        this.#tip = null;
+      }
+    } catch (e) {}
     this.#elementMap.clear();
     this.#elementMeta.clear();
     this.#previousDOM = null;
+  }
+
+  // --- Ring buffer helpers for console capture (O(1) insert, no shift()) ---
+
+  static #LOG_MAX = 500;
+  static #ERR_MAX = 100;
+
+  #pushLog(entry) {
+    if (this.#consoleLogs.length < ZenRippleAgentChild.#LOG_MAX) {
+      this.#consoleLogs.push(entry);
+    } else {
+      this.#consoleLogs[this.#consoleLogIdx] = entry;
+      this.#consoleLogIdx = (this.#consoleLogIdx + 1) % ZenRippleAgentChild.#LOG_MAX;
+      this.#consoleLogFull = true;
+    }
+  }
+
+  #pushError(entry) {
+    if (this.#consoleErrors.length < ZenRippleAgentChild.#ERR_MAX) {
+      this.#consoleErrors.push(entry);
+    } else {
+      this.#consoleErrors[this.#consoleErrorIdx] = entry;
+      this.#consoleErrorIdx = (this.#consoleErrorIdx + 1) % ZenRippleAgentChild.#ERR_MAX;
+      this.#consoleErrorFull = true;
+    }
+  }
+
+  #getOrderedLogs() {
+    if (!this.#consoleLogFull) return [...this.#consoleLogs];
+    // Ring buffer is full — return in chronological order
+    const idx = this.#consoleLogIdx;
+    return [...this.#consoleLogs.slice(idx), ...this.#consoleLogs.slice(0, idx)];
+  }
+
+  #getOrderedErrors() {
+    if (!this.#consoleErrorFull) return [...this.#consoleErrors];
+    const idx = this.#consoleErrorIdx;
+    return [...this.#consoleErrors.slice(idx), ...this.#consoleErrors.slice(0, idx)];
   }
 
   // --- DOM Extraction ---
@@ -577,7 +623,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
           const e = new KE('', { key: 'Tab', code: 'Tab' });
           tip.keydown(e, TIP_KEY_NON_PRINTABLE);
           tip.keyup(e, TIP_KEY_NON_PRINTABLE);
-          await new Promise(r => win.setTimeout(r, 50));
+          await new Promise(r => win.setTimeout(r, 20));
           try { tip = this.#getTextInputProcessor(); } catch (_) { break; }
           continue;
         }
@@ -585,7 +631,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
           const e = new KE('', { key: 'Enter', code: 'Enter' });
           tip.keydown(e, TIP_KEY_NON_PRINTABLE);
           tip.keyup(e, TIP_KEY_NON_PRINTABLE);
-          await new Promise(r => win.setTimeout(r, 50));
+          await new Promise(r => win.setTimeout(r, 20));
           try { tip = this.#getTextInputProcessor(); } catch (_) { break; }
           continue;
         }
@@ -1020,12 +1066,9 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       throw new Error('Element [' + index + '] is <' + tag + (el.type ? ' type=' + el.type : '') + '>, not <input type="file">');
     }
 
-    // Decode base64 to binary
+    // Decode base64 to binary — use Uint8Array.from for efficiency
     const binaryStr = win.atob(base64);
-    const bytes = new Uint8Array(binaryStr.length);
-    for (let i = 0; i < binaryStr.length; i++) {
-      bytes[i] = binaryStr.charCodeAt(i);
-    }
+    const bytes = Uint8Array.from(binaryStr, c => c.charCodeAt(0));
 
     // Create File via content window constructors
     const blob = new win.Blob([bytes], { type: mimeType });
@@ -1093,11 +1136,10 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
     const makeWrapper = (level, origFn, isError) => {
       return Cu.exportFunction(function(...args) {
         const message = Array.from(args).map(a => self.#formatArg(a)).join(' ');
-        self.#consoleLogs.push({ level, message, timestamp: new Date().toISOString() });
-        if (self.#consoleLogs.length > 500) self.#consoleLogs.shift();
+        const ts = new Date().toISOString();
+        self.#pushLog({ level, message, timestamp: ts });
         if (isError) {
-          self.#consoleErrors.push({ type: 'console.error', message, timestamp: new Date().toISOString() });
-          if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
+          self.#pushError({ type: 'console.error', message, timestamp: ts });
         }
         origFn.apply(unwrapped, args);
       }, win);
@@ -1110,7 +1152,7 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
 
     // Capture uncaught errors
     this.#consoleErrorListener = (event) => {
-      self.#consoleErrors.push({
+      self.#pushError({
         type: 'uncaught_error',
         message: event.message || '',
         filename: event.filename || '',
@@ -1119,20 +1161,18 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
         stack: event.error?.stack || '',
         timestamp: new Date().toISOString(),
       });
-      if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
     };
     win.addEventListener('error', this.#consoleErrorListener);
 
     // Capture unhandled promise rejections
     this.#consoleRejectionListener = (event) => {
       const reason = event.reason;
-      self.#consoleErrors.push({
+      self.#pushError({
         type: 'unhandled_rejection',
         message: reason?.message || String(reason),
         stack: reason?.stack || '',
         timestamp: new Date().toISOString(),
       });
-      if (self.#consoleErrors.length > 100) self.#consoleErrors.shift();
     };
     win.addEventListener('unhandledrejection', this.#consoleRejectionListener);
 

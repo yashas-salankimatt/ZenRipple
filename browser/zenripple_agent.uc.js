@@ -27,7 +27,11 @@
     const line = new Date().toISOString() + ' ' + msg;
     console.log('[ZenRipple] ' + msg);
     logBuffer.push(line);
-    if (logBuffer.length > MAX_LOG_LINES) logBuffer.shift();
+    // Batch-truncate: let the buffer grow 25% over limit, then trim in one splice.
+    // Avoids O(n) shift() on every push.
+    if (logBuffer.length > MAX_LOG_LINES + (MAX_LOG_LINES >> 2)) {
+      logBuffer.splice(0, logBuffer.length - MAX_LOG_LINES);
+    }
   }
 
   // ============================================
@@ -61,7 +65,9 @@
     pushTabEvent(event) {
       event._index = this.tabEventIndex++;
       this.tabEvents.push(event);
-      if (this.tabEvents.length > 200) this.tabEvents.shift();
+      if (this.tabEvents.length > 250) {
+        this.tabEvents.splice(0, this.tabEvents.length - 200);
+      }
     }
 
     pushDialogEvent(event) {
@@ -80,7 +86,9 @@
     pushPopupBlockedEvent(event) {
       event._index = this.popupBlockedEventIndex++;
       this.popupBlockedEvents.push(event);
-      if (this.popupBlockedEvents.length > 50) this.popupBlockedEvents.shift();
+      if (this.popupBlockedEvents.length > 62) {
+        this.popupBlockedEvents.splice(0, this.popupBlockedEvents.length - 50);
+      }
     }
 
     touch() {
@@ -971,8 +979,9 @@
             params,
             timestamp: new Date().toISOString(),
           });
-          if (session.recordedActions.length > MAX_RECORDED_ACTIONS) {
-            session.recordedActions.shift();
+          // Batch-truncate: let buffer grow 10% over limit, then trim in one splice.
+          if (session.recordedActions.length > MAX_RECORDED_ACTIONS + 500) {
+            session.recordedActions.splice(0, session.recordedActions.length - MAX_RECORDED_ACTIONS);
           }
         }
 
@@ -1091,7 +1100,8 @@
   }
 
   function getSessionTabCount(sessionId) {
-    return getSessionTabs(sessionId).length;
+    const session = sessions.get(sessionId);
+    return session ? session.agentTabs.size : 0;
   }
 
   function ensureSessionCanOpenTabs(session, requested = 1) {
@@ -1163,13 +1173,18 @@
   }
 
   // Periodic sweep: demote active→claimed after TAB_ACTIVE_THRESHOLD_MS of inactivity.
+  // Only scans session-owned tabs (via session.agentTabs) instead of all browser tabs.
   function updateTabIndicators() {
     const now = Date.now();
-    for (const tab of getAllTabs()) {
-      if (tab.getAttribute('data-agent-indicator') !== 'active') continue;
-      const ts = parseInt(tab.getAttribute('data-agent-tab-active-at') || '0', 10);
-      if (now - ts > TAB_ACTIVE_THRESHOLD_MS) {
-        try { tab.setAttribute('data-agent-indicator', 'claimed'); } catch (e) {}
+    for (const [, session] of sessions) {
+      for (const tab of session.agentTabs) {
+        try {
+          if (tab.getAttribute('data-agent-indicator') !== 'active') continue;
+          const ts = parseInt(tab.getAttribute('data-agent-tab-active-at') || '0', 10);
+          if (now - ts > TAB_ACTIVE_THRESHOLD_MS) {
+            tab.setAttribute('data-agent-indicator', 'claimed');
+          }
+        } catch (e) {}
       }
     }
   }
@@ -1567,7 +1582,9 @@
             type: 'request',
             timestamp: new Date().toISOString(),
           });
-          if (networkLog.length > MAX_NETWORK_LOG) networkLog.shift();
+          if (networkLog.length > MAX_NETWORK_LOG + 50) {
+            networkLog.splice(0, networkLog.length - MAX_NETWORK_LOG);
+          }
         } else if (topic === 'http-on-examine-response') {
           // Find matching request and update, or add new entry
           let status = 0;
@@ -1582,7 +1599,9 @@
             content_type: contentType,
             timestamp: new Date().toISOString(),
           });
-          if (networkLog.length > MAX_NETWORK_LOG) networkLog.shift();
+          if (networkLog.length > MAX_NETWORK_LOG + 50) {
+            networkLog.splice(0, networkLog.length - MAX_NETWORK_LOG);
+          }
         }
       } catch (e) {
         // Non-HTTP channel or other error — ignore

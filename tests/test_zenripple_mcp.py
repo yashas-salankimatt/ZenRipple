@@ -2375,6 +2375,10 @@ class TestAuthToken:
 class TestCallerKey:
     """Tests for _get_caller_key() terminal identification."""
 
+    def setup_method(self):
+        """Clear caller key cache before each test so env changes take effect."""
+        session_file._caller_key_cache = None
+
     def test_tmux_pane(self):
         with patch.dict(os.environ, {"TMUX_PANE": "%17"}, clear=False):
             key = session_file.get_caller_key()
@@ -2383,6 +2387,7 @@ class TestCallerKey:
 
     def test_iterm_session(self):
         with patch.dict(os.environ, {"ITERM_SESSION_ID": "w0t0p0:abc"}, clear=False):
+            session_file._caller_key_cache = None
             key = session_file.get_caller_key()
             assert len(key) == 16
 
@@ -2392,6 +2397,7 @@ class TestCallerKey:
             "ZENRIPPLE_CALLER_ID": "subagent-1",
             "TMUX_PANE": "%17",
         }, clear=False):
+            session_file._caller_key_cache = None
             key = session_file.get_caller_key()
         with patch.dict(os.environ, {
             "ZENRIPPLE_CALLER_ID": "subagent-1",
@@ -2400,13 +2406,16 @@ class TestCallerKey:
             env = os.environ.copy()
             env.pop("TMUX_PANE", None)
             with patch.dict(os.environ, env, clear=True):
+                session_file._caller_key_cache = None
                 key2 = session_file.get_caller_key()
         assert key == key2
 
     def test_different_panes_different_keys(self):
         with patch.dict(os.environ, {"TMUX_PANE": "%17"}, clear=False):
+            session_file._caller_key_cache = None
             key1 = session_file.get_caller_key()
         with patch.dict(os.environ, {"TMUX_PANE": "%18"}, clear=False):
+            session_file._caller_key_cache = None
             key2 = session_file.get_caller_key()
         assert key1 != key2
 
@@ -2416,6 +2425,7 @@ class TestCallerKey:
                if k not in ("ZENRIPPLE_CALLER_ID", "TMUX_PANE", "ITERM_SESSION_ID",
                             "TERM_SESSION_ID", "VSCODE_PID", "WINDOWID")}
         with patch.dict(os.environ, env, clear=True):
+            session_file._caller_key_cache = None
             assert session_file.get_caller_key() == "default"
 
     def test_whitespace_only_skipped(self):
@@ -2425,6 +2435,7 @@ class TestCallerKey:
                             "TERM_SESSION_ID", "VSCODE_PID", "WINDOWID")}
         env["TMUX_PANE"] = "   "
         with patch.dict(os.environ, env, clear=True):
+            session_file._caller_key_cache = None
             assert session_file.get_caller_key() == "default"
 
 
@@ -4114,24 +4125,27 @@ class TestSessionReplay:
         assert os.path.exists(ss_path)
 
     @pytest.mark.asyncio
+    @pytest.mark.asyncio
     async def test_log_tool_call_screenshot_failure(self, tmp_path):
-        """Screenshot failure doesn't prevent logging the tool call."""
+        """Screenshot failure on a visual tool doesn't prevent logging the call."""
         server._replay_dir = str(tmp_path)
         server._replay_active = True
         with open(os.path.join(str(tmp_path), "manifest.json"), "w") as f:
             json.dump({"session_id": "test", "next_seq": 0}, f)
 
+        # Use a visual tool so screenshot capture is attempted
         with patch.object(server, "browser_command", side_effect=Exception("no tab")):
             await server._log_tool_call(
-                "browser_ping", {}, '{"status":"ok"}',
+                "browser_click", {"index": 0}, '{"clicked": true}',
                 "2026-01-01T12:00:00Z", 5.0
             )
 
         log_path = os.path.join(str(tmp_path), "tool_log.jsonl")
         with open(log_path) as f:
             entry = json.loads(f.readline())
-        assert entry["tool"] == "browser_ping"
-        assert entry["screenshot"] is None  # Screenshot failed
+        assert entry["tool"] == "browser_click"
+        assert entry["screenshot"] is None  # Screenshot failed gracefully
+
 
     # ── browser_replay_status ───────────────────────────
 
@@ -4271,8 +4285,8 @@ class TestNotifications:
         assert "confirmCheck" in result
         assert "Delete this item?" in result
         assert "browser_handle_dialog" in result
-        # Drain clears the list
-        assert server._pending_notifications == []
+        # Drain clears the deque
+        assert len(server._pending_notifications) == 0
 
     def test_drain_popup_blocked_notification(self):
         server._pending_notifications.append({
@@ -4476,20 +4490,20 @@ class TestNotificationsOnError:
         assert len(server._pending_notifications) == 0
 
     @pytest.mark.asyncio
-    async def test_notification_cap_at_200(self):
-        """Notifications are capped at 200, keeping the newest."""
+    async def test_notification_cap(self):
+        """Notifications are capped at deque maxlen (50), keeping the newest."""
         notifications = [{"type": "dialog_opened", "dialog_type": "alert",
-                          "message": f"n{i}", "tab_id": "t"} for i in range(250)]
+                          "message": f"n{i}", "tab_id": "t"} for i in range(80)]
         fake_ws = FakeWebSocket(responses=[{
             "id": "x", "result": {"ok": True},
             "_notifications": notifications,
         }])
         with patch.object(server, "get_ws", return_value=fake_ws):
             await server.browser_command("ping", {})
-        assert len(server._pending_notifications) == 200
-        # Keeps the newest 200 (n50..n249)
-        assert server._pending_notifications[0]["message"] == "n50"
-        assert server._pending_notifications[-1]["message"] == "n249"
+        assert len(server._pending_notifications) == 50
+        # Keeps the newest 50 (n30..n79)
+        assert server._pending_notifications[0]["message"] == "n30"
+        assert server._pending_notifications[-1]["message"] == "n79"
 
     def test_drain_unknown_notification_type(self):
         """Unknown notification types are included, not silently dropped."""
