@@ -164,24 +164,40 @@ npx -y mcporter call zenripple.browser_session_close --output json
 > **Every sub-agent that uses the browser MUST get its own session.**
 > Sharing a session between agents causes tab conflicts, race conditions, and corrupted replay logs. This is non-negotiable.
 
-To give a sub-agent its own isolated session, set `ZENRIPPLE_SESSION_ID` to a fresh ID in its environment **before** any tool calls:
-
-```bash
-# ✅ CORRECT: Sub-agent gets its own isolated session + replay
-SUB_SID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
-ZENRIPPLE_SESSION_ID="$SUB_SID" <sub-agent-command>
-
-# ✅ ALSO CORRECT: Use ZENRIPPLE_CALLER_ID for auto-session with terminal-based isolation
-ZENRIPPLE_CALLER_ID=research-agent <sub-agent-command>
-
-# ❌ WRONG: Sub-agent sharing parent's session (causes conflicts)
-<sub-agent-command>
-```
-
 **Why this matters:**
 - Each session has its own tabs, replay log, and screenshots
 - Two agents sharing a session will step on each other's tabs and produce an interleaved, unusable replay log
 - The replay viewer (Ctrl+Shift+E) shows one session at a time — separate sessions = separate replay histories
+
+**How to spawn a sub-agent with its own session:**
+
+1. **Generate a fresh session ID** before spawning the sub-agent:
+```bash
+SUB_SID="$(uv run --project ~/zenripple/mcp python ~/zenripple/mcp/zenripple_session.py new)"
+```
+
+2. **Tell the sub-agent its session ID** in the Agent tool prompt, and instruct it to prefix every MCPorter call with it:
+
+```
+Your ZenRipple session ID is: <the $SUB_SID value>
+
+Prefix EVERY MCPorter browser call with your session ID:
+
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.<tool> --args '...' --output json
+
+Before doing anything else, name your session:
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"research-agent"}' --output json
+
+When finished, close your session:
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_session_close --output json
+```
+
+The parent's session is unaffected — the `ZENRIPPLE_SESSION_ID` prefix only applies to that one MCPorter process.
+
+**Common mistakes:**
+- ❌ Sub-agent calling MCPorter without the `ZENRIPPLE_SESSION_ID` prefix — it will get the parent's session
+- ❌ Not naming the sub-agent's session — makes it hard to tell tabs apart in the sidebar
+- ❌ Not closing the sub-agent's session — leaves stale tabs and resources
 
 ### Pinned Session (Advanced)
 
@@ -630,6 +646,7 @@ npx -y mcporter call zenripple.browser_session_close --output json
 - **Respect user activity.** If page state changed unexpectedly, the user may have acted. Evaluate whether it helps or blocks you, and adapt accordingly (see Shared Browser section above).
 - Do not claim actively-owned tabs — only unclaimed or stale ones.
 - Close your session (`browser_session_close`) when done to prevent stale resources.
+- **Sub-agents MUST have their own sessions.** See "Sub-Agent Isolation" above — generate a fresh `ZENRIPPLE_SESSION_ID` before spawning any sub-agent that will use the browser.
 - **Stale sessions / wrong tabs**: `rm ~/.zenripple/sessions/*` and retry to force fresh sessions.
 - Close tabs you no longer need (`browser_close_tab`).
 - Do not force-send messages or bypass verification gates.
