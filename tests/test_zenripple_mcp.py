@@ -1650,7 +1650,7 @@ class TestMultiTabCoordination:
         msg = json.loads(fake_ws.sent[0])
         assert msg["method"] == "batch_navigate"
         assert msg["params"]["urls"] == ["https://a.com", "https://b.com"]
-        assert msg["params"]["persist"] is False
+        assert msg["params"]["persist"] is True
 
     @pytest.mark.asyncio
     async def test_batch_navigate_persist(self):

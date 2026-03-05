@@ -556,14 +556,14 @@ Every tool call is automatically logged to `$TMPDIR/zenripple_replay_{session_id
 
 **Viewing the replay:**
 
-Press **Ctrl+Shift+E** while focused on a ZenRipple-claimed tab in Zen Browser. This opens a three-panel modal:
-- **Left (50%):** Screenshot viewer — shows the screenshot from the selected tool call.
-- **Center (25%):** Tool call details — tool name, duration, timestamp, arguments, and result JSON.
-- **Right (25%):** Tool call list — most recent first, with timestamps, navigable with arrow keys or j/k (vim).
+Press **Ctrl+Shift+E** while in the ZenRipple workspace in Zen Browser. On agent-owned tabs, it opens that session's replay directly. On other tabs, it attempts smart matching by URL or opens a session browser. This opens a three-panel modal:
+- **Left:** Screenshot viewer — shows the screenshot from the selected tool call.
+- **Center:** Tool call details — tool name, duration, timestamp, arguments, and result JSON.
+- **Right:** Tool call list (fixed 280px) — most recent first, with timestamps, navigable with arrow keys or j/k (vim).
 
 **Playback:** Press **Space** to play/pause auto-advance through entries. Use **[** / **]** to change speed (0.5×, 1×, 2×, 4×, 8×, 16×, 32×). A progress bar in the footer shows current position and supports click-to-seek.
 
-The shortcut only activates on tabs owned by a ZenRipple session. Press Ctrl+Shift+E again or Esc to close.
+Press Ctrl+Shift+E again or Esc to close.
 
 **Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic tool call logging.
 
