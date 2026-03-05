@@ -3265,8 +3265,8 @@ class TestGroundedClick:
         assert "OPENROUTER_API_KEY" in result
 
     @pytest.mark.asyncio
-    async def test_passes_cyan_color(self, reset_grounding_globals):
-        """Grounded click passes cyan color to click_coordinates."""
+    async def test_uses_click_native(self, reset_grounding_globals):
+        """Grounded click uses click_native for real mouse events through iframes."""
         server._GROUNDING_API_KEY = "sk-test"
         server._GROUNDING_KEY_SYNCED = True
         server._last_screenshot_dims.clear()
@@ -3281,8 +3281,8 @@ class TestGroundedClick:
                         "viewport_width": 1568, "viewport_height": 882,
                     },
                 },
-                # click_coordinates
-                {"id": "x", "result": {"success": True, "tag": "a", "text": "Link"}},
+                # click_native
+                {"id": "x", "result": {"success": True, "x": 400, "y": 300}},
             ]
         )
         mock_resp = type("Resp", (), {
@@ -3299,10 +3299,8 @@ class TestGroundedClick:
             result = await server.browser_grounded_click("the link")
 
         assert "Grounded click" in result
-        # Check the click_coordinates call has cyan color
         click_msg = json.loads(fake_ws.sent[1])
-        assert click_msg["method"] == "click_coordinates"
-        assert click_msg["params"]["color"] == "cyan"
+        assert click_msg["method"] == "click_native"
         assert click_msg["params"]["x"] == 400
         assert click_msg["params"]["y"] == 300
 
@@ -3323,8 +3321,8 @@ class TestGroundedClick:
                         "viewport_width": 1920, "viewport_height": 1080,
                     },
                 },
-                # click_coordinates
-                {"id": "x", "result": {"success": True}},
+                # click_native
+                {"id": "x", "result": {"success": True, "x": 960, "y": 540}},
             ]
         )
         mock_resp = type("Resp", (), {
@@ -3342,6 +3340,7 @@ class TestGroundedClick:
 
         assert "Grounded click" in result
         click_msg = json.loads(fake_ws.sent[1])
+        assert click_msg["method"] == "click_native"
         # 784 * (1920/1568) = 960, 441 * (1080/882) = 540
         assert click_msg["params"]["x"] == 960
         assert click_msg["params"]["y"] == 540

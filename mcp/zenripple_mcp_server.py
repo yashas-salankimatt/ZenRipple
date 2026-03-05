@@ -1229,11 +1229,11 @@ async def browser_grounded_click(
         click_x = round(px * vw / sw)
         click_y = round(py * vh / sh)
 
-    # Step 5: Click (cyan crosshair to distinguish from manual coordinate clicks)
-    params = {"tab_id": tab_id or None, "x": click_x, "y": click_y, "color": "cyan"}
-    if frame_id:
-        params["frame_id"] = frame_id
-    click_result = text_result(await browser_command("click_coordinates", params))
+    # Step 5: Click using chrome-level native mouse events — routes through
+    # iframes exactly like a real user click. No frame_id needed.
+    click_result = text_result(await browser_command("click_native", {
+        "tab_id": tab_id or None, "x": click_x, "y": click_y,
+    }))
 
     await _capture_replay_frame("grounded_click")
 

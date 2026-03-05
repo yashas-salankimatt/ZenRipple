@@ -2169,6 +2169,17 @@
       return listFramesForTab(tab);
     },
 
+    // Click at content viewport coordinates with auto-routing through iframes.
+    // Shows a cyan crosshair, then delegates to click_coordinates which
+    // automatically routes into iframes when detected.
+    click_native: async ({ tab_id, x, y, color }, ctx) => {
+      if (x === undefined || y === undefined) throw new Error('x and y are required');
+      // Delegate to click_coordinates with the cyan color for grounded clicks
+      return await commandHandlers.click_coordinates(
+        { tab_id, x, y, color: color || 'cyan' }, ctx
+      );
+    },
+
     // --- Observation ---
     get_viewport_dimensions: async ({ tab_id, frame_id }, ctx) => {
       const tab = ctx.resolveTab(tab_id);
@@ -2235,7 +2246,28 @@
       const tab = ctx.resolveTab(tab_id);
       const data = { x, y };
       if (color) data.color = color;
-      return await actorInteraction(tab, 'ZenRippleAgent:ClickCoordinates', data, null, frame_id);
+      const result = await actorInteraction(tab, 'ZenRippleAgent:ClickCoordinates', data, null, frame_id);
+      // Auto-route: if the click hit an iframe, forward into the iframe's
+      // content process with adjusted coordinates.
+      if (result && result.tag === 'iframe' && result.iframe_bc_id && result.iframe_rect) {
+        const iframeX = x - result.iframe_rect.x;
+        const iframeY = y - result.iframe_rect.y;
+        // Only route if coordinates are within the iframe bounds
+        if (iframeX >= 0 && iframeY >= 0 &&
+            iframeX < result.iframe_rect.width && iframeY < result.iframe_rect.height) {
+          const iframeResult = await actorInteraction(
+            tab, 'ZenRippleAgent:ClickCoordinates',
+            { x: iframeX, y: iframeY, color },
+            null, result.iframe_bc_id
+          );
+          if (iframeResult) {
+            iframeResult.routed_through_iframe = true;
+            iframeResult.iframe_frame_id = result.iframe_bc_id;
+            return iframeResult;
+          }
+        }
+      }
+      return result;
     },
 
     fill_field: async ({ tab_id, frame_id, index, value }, ctx) => {

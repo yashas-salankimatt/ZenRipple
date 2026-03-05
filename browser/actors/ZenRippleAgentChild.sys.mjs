@@ -104,6 +104,9 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
         return this.#dragCoordinates(data);
       case 'ZenRippleAgent:FileUpload':
         return this.#fileUpload(data.index, data.base64, data.filename, data.mimeType);
+      case 'ZenRippleAgent:ShowCursor':
+        this.#showCursor(data.x, data.y, data.color);
+        return { success: true };
       default:
         return { error: 'Unknown message: ' + message.name };
     }
@@ -404,11 +407,15 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       utils.sendMouseEvent('mousedown', cx, cy, 0, 1, 0);
       utils.sendMouseEvent('mouseup', cx, cy, 0, 1, 0);
     } else {
-      method = 'el.click';
-      el.click();
+      method = 'dispatchEvent';
+      const win = this.contentWindow;
+      const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy };
+      el.dispatchEvent(new win.MouseEvent('mousedown', opts));
+      el.dispatchEvent(new win.MouseEvent('mouseup', opts));
+      el.dispatchEvent(new win.MouseEvent('click', opts));
     }
     // Always ensure focus — sendMouseEvent doesn't trigger focus change,
-    // and el.click() doesn't always focus either
+    // and dispatchEvent doesn't always focus either
     el.focus();
     const doc = this.contentWindow?.document;
     return {
@@ -768,16 +775,28 @@ export class ZenRippleAgentChild extends JSWindowActorChild {
       if (el) el.focus();
     } else {
       if (!el) throw new Error('No element at coordinates (' + x + ', ' + y + ')');
-      const opts = { bubbles: true, clientX: x, clientY: y };
+      const opts = { bubbles: true, cancelable: true, clientX: x, clientY: y };
       el.dispatchEvent(new win.MouseEvent('mousedown', opts));
       el.dispatchEvent(new win.MouseEvent('mouseup', opts));
       el.dispatchEvent(new win.MouseEvent('click', opts));
     }
-    return {
+    const result = {
       success: true,
       tag: el?.tagName?.toLowerCase() || 'unknown',
       text: el ? this.#getVisibleText(el).substring(0, 100) : '',
     };
+    // If we hit an iframe, include its rect and browsingContext ID so the
+    // chrome-side handler can auto-route the click into the iframe.
+    if (el && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+      const rect = el.getBoundingClientRect();
+      result.iframe_rect = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+      try {
+        result.iframe_bc_id = el.browsingContext?.id || null;
+      } catch (e) {
+        result.iframe_bc_id = null;
+      }
+    }
+    return result;
   }
 
   // --- Drag-and-Drop ---
