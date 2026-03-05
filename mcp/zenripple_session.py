@@ -31,13 +31,13 @@ async def _create_session(ws_url: str) -> str:
     token = _read_auth_token()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     async with websockets.connect(f"{ws_url}/new", additional_headers=headers) as ws:
-        headers = None
+        resp_headers = None
         if hasattr(ws, "response") and ws.response:
-            headers = ws.response.headers
+            resp_headers = ws.response.headers
         elif hasattr(ws, "response_headers"):
-            headers = ws.response_headers
+            resp_headers = ws.response_headers
 
-        session_id = headers.get("X-ZenRipple-Session") if headers else None
+        session_id = resp_headers.get("X-ZenRipple-Session") if resp_headers else None
         if not session_id:
             raise RuntimeError("Missing X-ZenRipple-Session header from ZenRipple")
         return session_id

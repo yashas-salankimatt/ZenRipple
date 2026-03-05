@@ -7,6 +7,7 @@ Connects to the ZenRipple WebSocket server running in the browser.
 
 import asyncio
 import base64
+import collections
 try:
     import fcntl
 except ImportError:
@@ -68,6 +69,21 @@ _ws_connection = None
 _ws_lock = asyncio.Lock()
 
 
+def _cache_screenshot_dims(tab_id: str, result: dict) -> None:
+    """Cache screenshot ↔ viewport dimensions with LRU eviction."""
+    sw = result.get("width")
+    sh = result.get("height")
+    if not (sw and sh):
+        return
+    vw = result.get("viewport_width", sw)
+    vh = result.get("viewport_height", sh)
+    key = tab_id or ""
+    _last_screenshot_dims[key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
+    _last_screenshot_dims.move_to_end(key)
+    while len(_last_screenshot_dims) > _MAX_SCREENSHOT_CACHE:
+        _last_screenshot_dims.popitem(last=False)
+
+
 def _read_auth_token() -> str:
     """Read auth token from env var or ~/.zenripple/auth file."""
     from_env = os.environ.get("ZENRIPPLE_AUTH_TOKEN", "").strip()
@@ -82,8 +98,9 @@ _ws_command_lock = asyncio.Lock()
 _session_id: str | None = None  # Populated from X-ZenRipple-Session after connect
 
 # Cache screenshot ↔ viewport dimensions for auto-scaling click coordinates.
-# Keyed by tab_id (empty string for default tab).
-_last_screenshot_dims: dict[str, dict] = {}
+# Keyed by tab_id (empty string for default tab). OrderedDict caps at 64 entries.
+_MAX_SCREENSHOT_CACHE = 64
+_last_screenshot_dims: collections.OrderedDict[str, dict] = collections.OrderedDict()
 
 # ── Session Replay State (Tool Call Logging) ──────────────────────
 _replay_state_loaded: bool = False  # Have we loaded from disk this process?
@@ -97,6 +114,7 @@ REPLAY_DISABLED = os.environ.get("ZENRIPPLE_NO_REPLAY", "").strip().lower() not 
 REPLAY_KEEP = int(os.environ.get("ZENRIPPLE_REPLAY_KEEP", "50"))
 
 _replay_pruned: bool = False  # Have we run pruning this process?
+
 
 
 def _sanitize_session_id(raw: str) -> str:
@@ -228,9 +246,6 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
             notifications = resp.get("_notifications")
             if notifications:
                 _pending_notifications.extend(notifications)
-                # Cap to prevent unbounded growth if drain isn't called
-                if len(_pending_notifications) > 200:
-                    _pending_notifications[:] = _pending_notifications[-200:]
             if "error" in resp:
                 raise Exception(resp["error"].get("message", "Unknown browser error"))
             return resp.get("result", {})
@@ -239,16 +254,15 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
 
 # ── Proactive Notifications ───────────────────────────────────
 
-_pending_notifications: list[dict] = []
+_pending_notifications: collections.deque[dict] = collections.deque(maxlen=50)
 
 
 def _drain_notifications() -> str:
     """Drain accumulated notifications and format as human-readable text."""
-    global _pending_notifications
     if not _pending_notifications:
         return ""
-    notifs = _pending_notifications
-    _pending_notifications = []
+    notifs = list(_pending_notifications)
+    _pending_notifications.clear()
     parts = []
     for n in notifs:
         if n["type"] == "dialog_opened":
@@ -305,6 +319,7 @@ _PRE_SCREENSHOT_TOOLS = frozenset({
     "browser_close_tab", "browser_delete_cookies", "browser_delete_storage",
     "browser_session_close",
 })
+
 
 
 def _prune_old_replays(current_dir: str | None) -> None:
@@ -564,7 +579,7 @@ async def _log_tool_call(tool_name: str, call_args: dict, result, timestamp: str
         target_tab = call_args.get("tab_id", "") if isinstance(call_args, dict) else ""
         if tool_name in _NAVIGATION_TOOLS:
             try:
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.3)
                 await browser_command("wait_for_load", {"tab_id": target_tab or None, "timeout": 5})
             except Exception:
                 pass
@@ -847,13 +862,11 @@ async def browser_screenshot(tab_id: str = "") -> list:
     raw_bytes = base64.b64decode(b64)
 
     # Cache screenshot ↔ viewport dimensions for auto-scaling
+    _cache_screenshot_dims(tab_id, result)
     sw = result.get("width")
     sh = result.get("height")
     vw = result.get("viewport_width", sw)
     vh = result.get("viewport_height", sh)
-    tab_key = tab_id or ""
-    if sw and sh:
-        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
 
     blocks: list = [Image(data=raw_bytes, format=fmt)]
     if sw and sh and vw and vh:
@@ -1069,6 +1082,15 @@ async def browser_click_coordinates(x: int, y: int, tab_id: str = "", frame_id: 
     return _append_notifications(result)
 
 
+# Pre-compiled regex patterns for VLM coordinate parsing (avoid re-compiling per call)
+_RE_QWEN_BOX = re.compile(r"<\|box_start\|>\((\d+),\s*(\d+)\)<\|box_end\|>")
+_RE_POINT_TAG = re.compile(r"<point>(\d+)\s+(\d+)</point>")
+_RE_BBOX = re.compile(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*[\)\]]")
+_RE_NORM_FLOAT = re.compile(r"[\(\[]\s*([01]\.\d+)\s*,\s*([01]\.\d+)\s*[\)\]]")
+_RE_ABS_INT = re.compile(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*[\)\]]")
+_RE_ABS_DEC = re.compile(r"[\(\[]\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)\s*[\)\]]")
+
+
 def _parse_grounding_coordinates(
     text: str, img_w: int, img_h: int, coord_mode: str = "absolute"
 ):
@@ -1091,18 +1113,13 @@ def _parse_grounding_coordinates(
             return round(x * img_w / 1000), round(y * img_h / 1000)
         return x, y
 
-    # Qwen box token format
-    m = re.search(r"<\|box_start\|>\((\d+),\s*(\d+)\)<\|box_end\|>", text)
+    m = _RE_QWEN_BOX.search(text)
     if m:
         return _denorm(int(m.group(1)), int(m.group(2)))
-    # <point>x y</point>
-    m = re.search(r"<point>(\d+)\s+(\d+)</point>", text)
+    m = _RE_POINT_TAG.search(text)
     if m:
         return _denorm(int(m.group(1)), int(m.group(2)))
-    # Bounding box (x1, y1, x2, y2) → center
-    m = re.search(
-        r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text
-    )
+    m = _RE_BBOX.search(text)
     if m:
         x1, y1, x2, y2 = (
             int(m.group(1)), int(m.group(2)),
@@ -1110,16 +1127,13 @@ def _parse_grounding_coordinates(
         )
         cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
         return _denorm(cx, cy)
-    # Normalized floats (0.xx, 0.yy) — already scale to image dims, no denorm needed
-    m = re.search(r"[\(\[]\s*([01]\.\d+)\s*,\s*([01]\.\d+)\s*[\)\]]", text)
+    m = _RE_NORM_FLOAT.search(text)
     if m:
         return round(float(m.group(1)) * img_w), round(float(m.group(2)) * img_h)
-    # Absolute integers (x, y)
-    m = re.search(r"[\(\[]\s*(\d+)\s*,\s*(\d+)\s*[\)\]]", text)
+    m = _RE_ABS_INT.search(text)
     if m:
         return _denorm(int(m.group(1)), int(m.group(2)))
-    # Absolute decimals (x.x, y.y) — some VLMs return non-integer pixel coords
-    m = re.search(r"[\(\[]\s*(\d+\.\d+)\s*,\s*(\d+\.\d+)\s*[\)\]]", text)
+    m = _RE_ABS_DEC.search(text)
     if m:
         x, y = round(float(m.group(1))), round(float(m.group(2)))
         return _denorm(x, y)
@@ -1163,6 +1177,86 @@ async def _ensure_grounding_key() -> str:
     return _GROUNDING_API_KEY
 
 
+async def _grounded_vlm_locate(
+    description: str, b64: str, media_type: str,
+    sw: int, sh: int, api_key: str,
+) -> tuple[int | None, int | None, str | None]:
+    """Send screenshot to grounding VLM and parse pixel coordinates.
+
+    Returns (px, py, None) on success, or (None, None, error_string) on failure.
+    Shared by browser_grounded_click, browser_grounded_hover, browser_grounded_scroll.
+    """
+    prompt = (
+        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
+        f"of {description}. Return ONLY the center point coordinates as (x, y). "
+        f"Nothing else."
+    )
+    payload = {
+        "model": _GROUNDING_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {
+                "url": f"data:{media_type};base64,{b64}"
+            }},
+            {"type": "text", "text": prompt},
+        ]}],
+        "max_tokens": 100,
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    max_retries = 3
+    last_error = None
+    vlm_text = None
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for attempt in range(max_retries):
+            try:
+                resp = await client.post(
+                    _GROUNDING_API_URL, headers=headers, json=payload,
+                )
+                resp.raise_for_status()
+                try:
+                    vlm_text = resp.json()["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError) as e:
+                    return None, None, f"Error: unexpected VLM response format: {e}"
+                break
+            except httpx.HTTPStatusError as e:
+                last_error = e
+                status = e.response.status_code
+                if status >= 500 or status == 429:
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(1.0 * (2 ** attempt))
+                    continue
+                return None, None, f"Error: VLM API returned {status}: {e.response.text[:200]}"
+            except httpx.TransportError as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(1.0 * (2 ** attempt))
+                continue
+
+    if vlm_text is None:
+        return None, None, f"Error: VLM request failed after {max_retries} attempts: {last_error}"
+
+    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
+    if px is None or py is None:
+        return None, None, f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
+
+    # Clamp to screenshot bounds
+    px = max(0, min(px, sw - 1)) if sw else px
+    py = max(0, min(py, sh - 1)) if sh else py
+    return px, py, None
+
+
+def _scale_to_viewport(
+    px: int, py: int, sw: int, sh: int, vw: int, vh: int,
+) -> tuple[int, int]:
+    """Scale coordinates from screenshot-space to viewport-space."""
+    if sw and vw and sw != vw:
+        return round(px * vw / sw), round(py * vh / sh)
+    return px, py
+
+
 @mcp.tool()
 async def browser_grounded_click(
     description: str, tab_id: str = "",
@@ -1204,93 +1298,22 @@ async def browser_grounded_click(
     sh = result.get("height", 0)
     vw = result.get("viewport_width", sw)
     vh = result.get("viewport_height", sh)
+    _cache_screenshot_dims(tab_id, result)
 
-    # Cache dimensions for consistency
-    tab_key = tab_id or ""
-    if sw and sh:
-        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
-
-    # Step 2: Ask the grounding VLM for coordinates
-    prompt = (
-        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
-        f"of {description}. Return ONLY the center point coordinates as (x, y). "
-        f"Nothing else."
+    # Step 2-4: Get VLM coordinates and scale to viewport
+    px, py, vlm_err = await _grounded_vlm_locate(
+        description, b64, media_type, sw, sh, api_key,
     )
+    if vlm_err:
+        return vlm_err
 
-    payload = {
-        "model": _GROUNDING_MODEL,
-        "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {
-                "url": f"data:{media_type};base64,{b64}"
-            }},
-            {"type": "text", "text": prompt},
-        ]}],
-        "max_tokens": 100,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    # Retry with exponential backoff for transient errors (transport failures,
-    # server errors, rate limits). Do NOT retry 4xx client errors (except 429).
-    max_retries = 3
-    last_error = None
-    vlm_text = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    _GROUNDING_API_URL,
-                    headers=headers,
-                    json=payload,
-                )
-                resp.raise_for_status()
-                try:
-                    vlm_text = resp.json()["choices"][0]["message"]["content"]
-                except (KeyError, IndexError, TypeError) as e:
-                    return f"Error: unexpected VLM response format: {e}"
-                break
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                status = e.response.status_code
-                # Only retry 5xx server errors and 429 rate limits
-                if status >= 500 or status == 429:
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1.0 * (2**attempt))
-                    continue
-                # 4xx client errors (auth, bad request, etc.) — fail immediately
-                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
-            except httpx.TransportError as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0 * (2**attempt))
-                continue
-
-    if vlm_text is None:
-        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
-
-    # Step 3: Parse coordinates and validate bounds
-    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
-    if px is None or py is None:
-        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
-    # Clamp to screenshot bounds — VLM may return slightly out-of-range values
-    px = max(0, min(px, sw - 1)) if sw else px
-    py = max(0, min(py, sh - 1)) if sh else py
-
-    # Step 4: Scale from screenshot-space to viewport-space if needed
-    click_x, click_y = px, py
-    if sw and vw and sw != vw:
-        click_x = round(px * vw / sw)
-        click_y = round(py * vh / sh)
+    click_x, click_y = _scale_to_viewport(px, py, sw, sh, vw, vh)
 
     # Step 5: Click using chrome-level native mouse events — routes through
     # iframes exactly like a real user click. No frame_id needed.
     click_result = text_result(await browser_command("click_native", {
         "tab_id": tab_id or None, "x": click_x, "y": click_y,
     }))
-
-
 
     return _append_notifications(
         f"Grounded click: \"{description}\" → VLM predicted ({px},{py}), "
@@ -1418,7 +1441,6 @@ async def browser_grounded_hover(
     if not api_key:
         return "Error: OPENROUTER_API_KEY not set (provide via env var or it will be remembered from a previous session)"
 
-    # Step 1: Take a screenshot
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
     if not data_url:
@@ -1435,83 +1457,19 @@ async def browser_grounded_hover(
     sh = result.get("height", 0)
     vw = result.get("viewport_width", sw)
     vh = result.get("viewport_height", sh)
+    _cache_screenshot_dims(tab_id, result)
 
-    tab_key = tab_id or ""
-    if sw and sh:
-        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
-
-    # Step 2: Ask the grounding VLM for coordinates
-    prompt = (
-        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
-        f"of {description}. Return ONLY the center point coordinates as (x, y). "
-        f"Nothing else."
+    px, py, vlm_err = await _grounded_vlm_locate(
+        description, b64, media_type, sw, sh, api_key,
     )
-    payload = {
-        "model": _GROUNDING_MODEL,
-        "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {
-                "url": f"data:{media_type};base64,{b64}"
-            }},
-            {"type": "text", "text": prompt},
-        ]}],
-        "max_tokens": 100,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    if vlm_err:
+        return vlm_err
 
-    max_retries = 3
-    last_error = None
-    vlm_text = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    _GROUNDING_API_URL, headers=headers, json=payload,
-                )
-                resp.raise_for_status()
-                try:
-                    vlm_text = resp.json()["choices"][0]["message"]["content"]
-                except (KeyError, IndexError, TypeError) as e:
-                    return f"Error: unexpected VLM response format: {e}"
-                break
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                status = e.response.status_code
-                if status >= 500 or status == 429:
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1.0 * (2**attempt))
-                    continue
-                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
-            except httpx.TransportError as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0 * (2**attempt))
-                continue
+    hover_x, hover_y = _scale_to_viewport(px, py, sw, sh, vw, vh)
 
-    if vlm_text is None:
-        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
-
-    # Step 3: Parse coordinates and validate bounds
-    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
-    if px is None or py is None:
-        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
-    px = max(0, min(px, sw - 1)) if sw else px
-    py = max(0, min(py, sh - 1)) if sh else py
-
-    # Step 4: Scale from screenshot-space to viewport-space if needed
-    hover_x, hover_y = px, py
-    if sw and vw and sw != vw:
-        hover_x = round(px * vw / sw)
-        hover_y = round(py * vh / sh)
-
-    # Step 5: Hover using the hover_coordinates command
     hover_result = text_result(await browser_command("hover_coordinates", {
         "tab_id": tab_id or None, "x": hover_x, "y": hover_y,
     }))
-
-
 
     return _append_notifications(
         f"Grounded hover: \"{description}\" -> VLM predicted ({px},{py}), "
@@ -1576,7 +1534,6 @@ async def browser_grounded_scroll(
     if not api_key:
         return "Error: OPENROUTER_API_KEY not set (provide via env var or it will be remembered from a previous session)"
 
-    # Step 1: Take a screenshot
     result = await browser_command("screenshot", {"tab_id": tab_id or None})
     data_url = result.get("image", "")
     if not data_url:
@@ -1593,84 +1550,20 @@ async def browser_grounded_scroll(
     sh = result.get("height", 0)
     vw = result.get("viewport_width", sw)
     vh = result.get("viewport_height", sh)
+    _cache_screenshot_dims(tab_id, result)
 
-    tab_key = tab_id or ""
-    if sw and sh:
-        _last_screenshot_dims[tab_key] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
-
-    # Step 2: Ask the grounding VLM for coordinates
-    prompt = (
-        f"This is a {sw}x{sh} pixel screenshot. Find the exact pixel coordinates "
-        f"of {description}. Return ONLY the center point coordinates as (x, y). "
-        f"Nothing else."
+    px, py, vlm_err = await _grounded_vlm_locate(
+        description, b64, media_type, sw, sh, api_key,
     )
-    payload = {
-        "model": _GROUNDING_MODEL,
-        "messages": [{"role": "user", "content": [
-            {"type": "image_url", "image_url": {
-                "url": f"data:{media_type};base64,{b64}"
-            }},
-            {"type": "text", "text": prompt},
-        ]}],
-        "max_tokens": 100,
-    }
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    if vlm_err:
+        return vlm_err
 
-    max_retries = 3
-    last_error = None
-    vlm_text = None
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        for attempt in range(max_retries):
-            try:
-                resp = await client.post(
-                    _GROUNDING_API_URL, headers=headers, json=payload,
-                )
-                resp.raise_for_status()
-                try:
-                    vlm_text = resp.json()["choices"][0]["message"]["content"]
-                except (KeyError, IndexError, TypeError) as e:
-                    return f"Error: unexpected VLM response format: {e}"
-                break
-            except httpx.HTTPStatusError as e:
-                last_error = e
-                status = e.response.status_code
-                if status >= 500 or status == 429:
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep(1.0 * (2**attempt))
-                    continue
-                return f"Error: VLM API returned {status}: {e.response.text[:200]}"
-            except httpx.TransportError as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1.0 * (2**attempt))
-                continue
+    scroll_x, scroll_y = _scale_to_viewport(px, py, sw, sh, vw, vh)
 
-    if vlm_text is None:
-        return f"Error: VLM request failed after {max_retries} attempts: {last_error}"
-
-    # Step 3: Parse coordinates and validate bounds
-    px, py = _parse_grounding_coordinates(vlm_text, sw, sh, _GROUNDING_COORD_MODE)
-    if px is None or py is None:
-        return f"Error: could not parse coordinates from VLM response: {vlm_text[:200]}"
-    px = max(0, min(px, sw - 1)) if sw else px
-    py = max(0, min(py, sh - 1)) if sh else py
-
-    # Step 4: Scale from screenshot-space to viewport-space if needed
-    scroll_x, scroll_y = px, py
-    if sw and vw and sw != vw:
-        scroll_x = round(px * vw / sw)
-        scroll_y = round(py * vh / sh)
-
-    # Step 5: Scroll using the scroll_at_point command
     scroll_result = text_result(await browser_command("scroll_at_point", {
         "tab_id": tab_id or None, "x": scroll_x, "y": scroll_y,
         "direction": direction, "amount": amount,
     }))
-
-
 
     return _append_notifications(
         f"Grounded scroll: \"{description}\" -> VLM predicted ({px},{py}), "
@@ -1853,13 +1746,9 @@ async def browser_save_screenshot(file_path: str, tab_id: str = "") -> str:
     else:
         b64 = data_url
     raw = base64.b64decode(b64)
-    # Cache screenshot ↔ viewport dimensions (consistent with browser_screenshot)
+    _cache_screenshot_dims(tab_id, result)
     sw = result.get("width")
     sh = result.get("height")
-    vw = result.get("viewport_width", sw)
-    vh = result.get("viewport_height", sh)
-    if sw and sh:
-        _last_screenshot_dims[tab_id or ""] = {"sw": sw, "sh": sh, "vw": vw, "vh": vh}
     # Ensure parent directory exists
     parent = os.path.dirname(os.path.abspath(file_path))
     os.makedirs(parent, exist_ok=True)
@@ -2337,15 +2226,7 @@ async def browser_reflect(goal: str = "", tab_id: str = "") -> list:
                 fmt = "jpeg"
             raw_bytes = base64.b64decode(b64)
             blocks.append(Image(data=raw_bytes, format=fmt))
-            # Cache dimensions for auto-scaling click coordinates
-            sw = screenshot_result.get("width")
-            sh = screenshot_result.get("height")
-            vw = screenshot_result.get("viewport_width", sw)
-            vh = screenshot_result.get("viewport_height", sh)
-            if sw and sh:
-                _last_screenshot_dims[tab_id or ""] = {
-                    "sw": sw, "sh": sh, "vw": vw, "vh": vh,
-                }
+            _cache_screenshot_dims(tab_id, screenshot_result)
     except Exception as e:
         errors.append(f"screenshot: {e}")
 
