@@ -991,6 +991,14 @@
         const notifications = collectSessionNotifications(session);
         const response = { id: msg.id, result };
         if (notifications.length > 0) response._notifications = notifications;
+        // Include active tab URL so the MCP server can log it with each tool call.
+        try {
+          const activeTab = this.currentAgentTab;
+          if (activeTab?.linkedBrowser?.currentURI?.spec) {
+            const spec = activeTab.linkedBrowser.currentURI.spec;
+            if (spec.startsWith('http')) response._tab_url = spec;
+          }
+        } catch (_) {}
         return response;
       } catch (e) {
         log('Error in ' + msg.method + ': ' + e);
@@ -1001,6 +1009,14 @@
           error: { code: -1, message: e.message }
         };
         if (notifications.length > 0) errResponse._notifications = notifications;
+        // Include active tab URL even on errors for replay logging
+        try {
+          const activeTab = this.currentAgentTab;
+          if (activeTab?.linkedBrowser?.currentURI?.spec) {
+            const spec = activeTab.linkedBrowser.currentURI.spec;
+            if (spec.startsWith('http')) errResponse._tab_url = spec;
+          }
+        } catch (_) {}
         return errResponse;
       }
     }
@@ -4342,25 +4358,22 @@
         try {
           manifest = JSON.parse(await IOUtils.readUTF8(manifestPath));
         } catch (_) { continue; }
-        // Parse tool log: only JSON-parse lines that are relevant (navigate,
-        // create_tab, set_session_name) to avoid parsing thousands of lines.
+        // Parse tool log. Every entry has a top-level "tab_url" field set by
+        // the MCP server, so we just collect those. Also grab session name.
         let toolCount = 0;
-        let urls = [];
+        const urlSet = new Set();
         let sessionName = null;
         try {
           const logContent = await IOUtils.readUTF8(PathUtils.join(childPath, 'tool_log.jsonl'));
           const lines = logContent.trim().split('\n').filter(Boolean);
           toolCount = lines.length;
           for (const line of lines) {
-            // Fast string check before expensive JSON.parse
-            if (line.includes('browser_navigate') || line.includes('browser_create_tab') || line.includes('browser_set_session_name')) {
+            // Fast string checks before JSON.parse
+            if (line.includes('tab_url') || line.includes('browser_set_session_name')) {
               try {
                 const entry = JSON.parse(line);
-                if (entry.tool === 'browser_navigate' && entry.args?.url) {
-                  urls.push(entry.args.url);
-                } else if (entry.tool === 'browser_create_tab' && entry.args?.url) {
-                  urls.push(entry.args.url);
-                } else if (entry.tool === 'browser_set_session_name' && entry.args?.name) {
+                if (entry.tab_url) urlSet.add(entry.tab_url);
+                if (entry.tool === 'browser_set_session_name' && entry.args?.name) {
                   sessionName = entry.args.name;
                 }
               } catch (_) {}
@@ -4372,7 +4385,7 @@
           name: sessionName,
           startedAt: manifest.started_at || '',
           toolCount,
-          urls,
+          urls: [...urlSet],
           dir: childPath,
         });
       }
@@ -4406,24 +4419,28 @@
     const allSessions = await discoverAllSessions();
     if (allSessions.length === 0) return null;
 
-    // Score each session by URL overlap
+    // Score each session by URL overlap.
+    // Exact full-URL match is the only strong signal. Hostname-only is
+    // near-worthless (many sessions may share the same site) so it only
+    // breaks ties between sessions that have no exact match at all.
     let bestSession = null;
     let bestScore = 0;
     for (const s of allSessions) {
       if (s.urls.length === 0) continue;
-      let score = 0;
+      let exact = 0;
+      let hostOnly = 0;
       for (const tabUrl of allUrls) {
         for (const sessionUrl of s.urls) {
-          if (tabUrl === sessionUrl) score += 10;
-          else {
-            try {
-              const tHost = new URL(tabUrl).hostname;
-              const sHost = new URL(sessionUrl).hostname;
-              if (tHost === sHost) score += 2;
-            } catch (_) {}
-          }
+          if (tabUrl === sessionUrl) { exact++; continue; }
+          try {
+            const tHost = new URL(tabUrl).hostname;
+            const sHost = new URL(sessionUrl).hostname;
+            if (tHost === sHost) hostOnly++;
+          } catch (_) {}
         }
       }
+      // Exact matches dominate; hostname is a tiebreaker only
+      const score = exact * 1000 + hostOnly;
       // On ties, prefer newer sessions (allSessions is sorted newest-first)
       if (score > bestScore) {
         bestScore = score;
@@ -5180,9 +5197,19 @@
   function handleReplayKeydown(e) {
     if (!_replayModal) return;
 
-    if (e.key === 'Escape') {
+    // Block ALL keyboard input while modal is open — prevent keys from
+    // leaking to the web page underneath (e.g. filling focused inputs).
+    // Let Ctrl+Shift+E through so the shortcut handler can toggle/close.
+    if (!(e.ctrlKey && e.shiftKey && e.code === 'KeyE')) {
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation();
+    }
+
+    // Ignore bare modifier keys
+    if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+
+    if (e.key === 'Escape') {
       if (_sessionBrowserMode) {
         _exitSessionBrowser();
       } else {
@@ -5193,8 +5220,6 @@
 
     // Backspace: go to session browser (or back from it)
     if (e.key === 'Backspace') {
-      e.preventDefault();
-      e.stopPropagation();
       if (_sessionBrowserMode) {
         _exitSessionBrowser();
       } else {
@@ -5206,34 +5231,22 @@
     // Session browser mode: navigate list
     if (_sessionBrowserMode) {
       if (e.key === 'ArrowDown' || e.key === 'j') {
-        e.preventDefault(); e.stopPropagation();
         _navigateSessionBrowser(1);
-        return;
-      }
-      if (e.key === 'ArrowUp' || e.key === 'k') {
-        e.preventDefault(); e.stopPropagation();
+      } else if (e.key === 'ArrowUp' || e.key === 'k') {
         _navigateSessionBrowser(-1);
-        return;
-      }
-      if (e.key === 'Enter') {
-        e.preventDefault(); e.stopPropagation();
+      } else if (e.key === 'Enter') {
         _openSessionFromBrowser(_sessionBrowserIdx);
-        return;
       }
-      return; // Swallow other keys in browser mode
+      return;
     }
 
     // Navigation: ArrowDown/j = older (lower seq), ArrowUp/k = newer (higher seq)
     if (e.key === 'ArrowDown' || e.key === 'j') {
-      e.preventDefault();
-      e.stopPropagation();
       _stopPlayback();
       _navigateReplay(-1);
       return;
     }
     if (e.key === 'ArrowUp' || e.key === 'k') {
-      e.preventDefault();
-      e.stopPropagation();
       _stopPlayback();
       _navigateReplay(1);
       return;
@@ -5241,41 +5254,41 @@
 
     // Playback: Space = play/pause
     if (e.key === ' ') {
-      e.preventDefault();
-      e.stopPropagation();
       _togglePlayback();
       return;
     }
 
     // Speed: [ = slower, ] = faster
     if (e.key === '[') {
-      e.preventDefault();
-      e.stopPropagation();
       _setPlaybackSpeed(_playbackSpeedIdx - 1);
       return;
     }
     if (e.key === ']') {
-      e.preventDefault();
-      e.stopPropagation();
       _setPlaybackSpeed(_playbackSpeedIdx + 1);
       return;
     }
 
     // Home/End: jump to first/last
     if (e.key === 'Home' || e.key === 'g') {
-      e.preventDefault();
-      e.stopPropagation();
       _stopPlayback();
       if (_replayEntries.length > 0) selectReplayEntry(0, _replayReplayDir);
       return;
     }
     if (e.key === 'End' || e.key === 'G') {
-      e.preventDefault();
-      e.stopPropagation();
       _stopPlayback();
       if (_replayEntries.length > 0) selectReplayEntry(_replayEntries.length - 1, _replayReplayDir);
       return;
     }
+  }
+
+  // Block keyup/keypress while the replay modal is open so released keys
+  // don't leak to focused content elements (e.g. space → scrolls page,
+  // characters → typed into an input the agent highlighted).
+  function _blockReplayKeyEvent(e) {
+    if (!_replayModal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
   }
 
   async function openReplayModal(sessionId, session) {
@@ -5312,6 +5325,8 @@
       document.documentElement.appendChild(_replayModal);
 
       window.addEventListener('keydown', handleReplayKeydown, true);
+      window.addEventListener('keyup', _blockReplayKeyEvent, true);
+      window.addEventListener('keypress', _blockReplayKeyEvent, true);
 
       if (openBrowser) {
         // Go straight to session browser
@@ -5339,6 +5354,8 @@
     _stopPlayback();
     _stopLiveUpdates();
     window.removeEventListener('keydown', handleReplayKeydown, true);
+    window.removeEventListener('keyup', _blockReplayKeyEvent, true);
+    window.removeEventListener('keypress', _blockReplayKeyEvent, true);
 
     // Clean up splitter and ResizeObserver listeners
     if (_replayModal._splitterCleanup) _replayModal._splitterCleanup();
