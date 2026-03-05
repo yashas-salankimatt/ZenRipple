@@ -246,6 +246,9 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
             notifications = resp.get("_notifications")
             if notifications:
                 _pending_notifications.extend(notifications)
+            # Stash the active tab URL for replay logging
+            global _last_tab_url
+            _last_tab_url = resp.get("_tab_url", "") or ""
             if "error" in resp:
                 raise Exception(resp["error"].get("message", "Unknown browser error"))
             return resp.get("result", {})
@@ -255,6 +258,9 @@ async def browser_command(method: str, params: dict | None = None) -> dict:
 # ── Proactive Notifications ───────────────────────────────────
 
 _pending_notifications: collections.deque[dict] = collections.deque(maxlen=50)
+
+# Last tab URL returned by the browser, used by replay logging.
+_last_tab_url: str = ""
 
 
 def _drain_notifications() -> str:
@@ -585,7 +591,7 @@ async def _log_tool_call(tool_name: str, call_args: dict, result, timestamp: str
                 pass
         screenshot_file = await _save_replay_screenshot(tool_name, seq, target_tab)
 
-    _append_log_entry({
+    entry = {
         "seq": seq,
         "tool": tool_name,
         "args": _serialize_for_log(call_args),
@@ -594,7 +600,10 @@ async def _log_tool_call(tool_name: str, call_args: dict, result, timestamp: str
         "duration_ms": round(duration_ms, 1),
         "screenshot": screenshot_file,
         "error": error,
-    })
+    }
+    if _last_tab_url:
+        entry["tab_url"] = _last_tab_url
+    _append_log_entry(entry)
 
 
 def _with_call_logging(fn):
