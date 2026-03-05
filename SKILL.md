@@ -353,6 +353,62 @@ If screenshot and viewport dimensions differ, coordinates are auto-scaled from s
 
 ---
 
+## Input Strategy (IMPORTANT)
+
+When you need to enter text into any input field — form fields, search boxes, rich text editors, autocomplete dropdowns, date pickers, custom widgets — use this priority order. **Always start with `browser_fill`** and fall back to native-style input when it doesn't work.
+
+### Priority 1: DOM Fill (fastest)
+
+Use `browser_get_dom` or `browser_get_elements_compact` to find the input's index, then `browser_fill(index, value)`. This clears the field, sets the value, and dispatches `input`/`change` events. Works on standard `<input>`, `<textarea>`, and `<select>` elements.
+
+```bash
+npx -y mcporter call zenripple.browser_fill --args '{"index": 3, "value": "hello@example.com"}'
+```
+
+For `<select>` dropdowns, use `browser_select_option(index, value)` instead.
+
+**When this fails:** Custom widgets (autocomplete, date pickers, tag inputs, rich text editors like Quill/ProseMirror) often ignore programmatic value changes because they listen for native keyboard events, not `input`/`change` events.
+
+### Priority 2: Click + Type (native keyboard simulation)
+
+Click the field to focus it, then use `browser_type(text)` to type character-by-character. This fires real `keydown`/`keypress`/`keyup` events that custom widgets respond to, just like a human typing.
+
+```bash
+# Focus the field
+npx -y mcporter call zenripple.browser_click --args '{"index": 3}'
+# Clear existing content (select all + delete)
+npx -y mcporter call zenripple.browser_press_key --args '{"key": "a", "meta": true}'
+npx -y mcporter call zenripple.browser_press_key --args '{"key": "Backspace"}'
+# Type the new value
+npx -y mcporter call zenripple.browser_type --args '{"text": "hello@example.com"}'
+```
+
+**For autocomplete/search dropdowns:** Type the first few characters, wait for suggestions to appear (`browser_wait_for_element` or a brief `browser_wait`), then click the correct suggestion from the DOM.
+
+```bash
+npx -y mcporter call zenripple.browser_click --args '{"index": 3}'
+npx -y mcporter call zenripple.browser_type --args '{"text": "San Fran"}'
+npx -y mcporter call zenripple.browser_wait --args '{"seconds": 0.5}'
+# Re-fetch DOM to find the suggestion
+npx -y mcporter call zenripple.browser_get_elements_compact --output text
+# Click the matching suggestion
+npx -y mcporter call zenripple.browser_click --args '{"index": 12}'
+```
+
+**For date pickers:** Click the date field, then either type the date in the expected format (e.g., `browser_type(text="03/05/2026")`) or navigate the picker UI with clicks and arrow keys.
+
+### Priority 3: JavaScript Eval (last resort)
+
+If the input is inside Shadow DOM, behind a framework abstraction, or otherwise unreachable by DOM index, use `browser_console_eval` to set the value directly via JavaScript.
+
+```bash
+npx -y mcporter call zenripple.browser_console_eval --args '{"expression": "const el = document.querySelector(\"input[name=email]\"); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, \"value\").set; setter.call(el, \"hello@example.com\"); el.dispatchEvent(new Event(\"input\", {bubbles: true})); el.dispatchEvent(new Event(\"change\", {bubbles: true})); \"done\""}'
+```
+
+For Shadow DOM elements, chain `.shadowRoot.querySelector(...)` to reach nested inputs.
+
+---
+
 ## How To Use Your Tools
 
 All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to active tab) and `frame_id` (defaults to 0, the top frame).
