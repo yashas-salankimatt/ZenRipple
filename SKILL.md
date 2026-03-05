@@ -398,8 +398,8 @@ To visit a URL, create a tab and wait for it to load:
 
 Before interacting, you need to see what's on the page:
 
-- `browser_screenshot` — take a visual screenshot. Use this to see layouts, verify state, or understand visual content.
-- `browser_reflect(goal)` — get a screenshot + page text + metadata in one call. Best for getting a full picture before making decisions. Pass an optional `goal` to focus the analysis.
+- `browser_screenshot` — take a visual screenshot. Returns the image inline — works when called as a direct MCP tool (the model sees the image natively). **MCPorter CLI note:** `browser_screenshot` returns base64 image data in JSON, which is unusable in terminal output. When using MCPorter CLI, use `browser_save_screenshot(file_path)` to save to disk, then read the file with your file-reading tool to view it.
+- `browser_reflect(goal)` — get a screenshot + page text + metadata in one call. Best for getting a full picture before making decisions. Pass an optional `goal` to focus the analysis. Same MCPorter caveat as `browser_screenshot` — the inline image won't render in terminal output.
 - `browser_get_page_info` — get URL, title, loading state, and navigation history.
 - `browser_get_page_text` — get all visible text on the page. Good for reading content.
 - `browser_get_page_html` — get full HTML source. Use when you need raw markup.
