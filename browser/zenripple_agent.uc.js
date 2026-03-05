@@ -4093,13 +4093,35 @@
   let _currentScreenshotBlobURL = null;
   let _replayLoading = false;
 
-  // Persistent splitter positions (survive modal close/reopen).
-  // Separate state for wide and narrow modes.  Values are the "main"
-  // panel percentage (outer) and the screenshot percentage (inner).
-  const _splitterState = {
-    wide:   { outer: null, inner: null },
-    narrow: { outer: null, inner: null },
-  };
+  // Persistent splitter positions (survive modal close/reopen AND browser restarts).
+  // Stored in Firefox prefs as JSON so they persist across sessions.
+  const _SPLITTER_PREF = 'zenripple.replay_splitter_layout';
+  let _splitterState = null; // lazy-loaded from prefs
+
+  function _loadSplitterState() {
+    if (_splitterState) return _splitterState;
+    const defaults = { wide: { outer: null, inner: null }, narrow: { outer: null, inner: null } };
+    try {
+      const raw = Services.prefs.getStringPref(_SPLITTER_PREF, '');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        // Merge with defaults so missing keys don't break anything
+        _splitterState = {
+          wide:   { outer: parsed.wide?.outer ?? null, inner: parsed.wide?.inner ?? null },
+          narrow: { outer: parsed.narrow?.outer ?? null, inner: parsed.narrow?.inner ?? null },
+        };
+        return _splitterState;
+      }
+    } catch (_) {}
+    _splitterState = defaults;
+    return _splitterState;
+  }
+
+  function _saveSplitterPrefs() {
+    try {
+      Services.prefs.setStringPref(_SPLITTER_PREF, JSON.stringify(_splitterState));
+    } catch (_) {}
+  }
 
   // Screenshot prefetch cache: Map<filename, blobURL>
   const _screenshotCache = new Map();
@@ -4955,7 +4977,7 @@
 
       // Apply saved splitter positions for the given mode
       function _restoreLayout(mode) {
-        const s = _splitterState[mode];
+        const s = _loadSplitterState()[mode];
         if (s.outer != null) {
           _main.style.flex = `0 0 ${s.outer}%`;
           _listPanel.style.flex = `0 0 ${100 - s.outer}%`;
@@ -4968,17 +4990,18 @@
 
       // Save current splitter positions for the given mode
       function _saveLayout(mode) {
+        const state = _loadSplitterState();
         const bodyRect = _body.getBoundingClientRect();
         const mainRect = _main.getBoundingClientRect();
         if (bodyRect.width > 0) {
-          _splitterState[mode].outer = (mainRect.width / bodyRect.width) * 100;
+          state[mode].outer = (mainRect.width / bodyRect.width) * 100;
         }
         if (mode === 'narrow' && mainRect.height > 0) {
           const ssRect = _ssPanel.getBoundingClientRect();
-          _splitterState[mode].inner = (ssRect.height / mainRect.height) * 100;
+          state[mode].inner = (ssRect.height / mainRect.height) * 100;
         } else if (mode === 'wide' && mainRect.width > 0) {
           const ssRect = _ssPanel.getBoundingClientRect();
-          _splitterState[mode].inner = (ssRect.width / mainRect.width) * 100;
+          state[mode].inner = (ssRect.width / mainRect.width) * 100;
         }
       }
 
@@ -5019,11 +5042,13 @@
         if (!_dragTarget) return;
         _innerSplit.classList.remove('dragging');
         _outerSplit.classList.remove('dragging');
-        // Save positions for the current mode
+        // Save positions for the current mode and persist to prefs
         const mode = _isNarrow() ? 'narrow' : 'wide';
-        _splitterState[mode].outer = null;
-        _splitterState[mode].inner = null;
+        const state = _loadSplitterState();
+        state[mode].outer = null;
+        state[mode].inner = null;
         _saveLayout(mode);
+        _saveSplitterPrefs();
         _dragTarget = null;
         document.documentElement.style.cursor = '';
         document.documentElement.style.userSelect = '';
