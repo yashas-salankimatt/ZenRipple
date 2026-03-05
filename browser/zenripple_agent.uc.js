@@ -5413,9 +5413,26 @@
       if (!tab) return;
       const sessionId = tab.getAttribute('data-agent-session-id');
       if (sessionId) {
+        // Agent tab: open its replay directly
         if (_replayModal) closeReplayModal();
         const session = sessions.get(sessionId);
         openReplayModal(sessionId, session || null).catch(err => log('Context menu replay error: ' + err));
+      } else {
+        // Non-agent tab: smart match or session browser (same as Ctrl+Shift+E)
+        if (_replayModal) { closeReplayModal(); return; }
+        (async () => {
+          try {
+            const matched = await guessSessionForTab(tab);
+            if (matched) {
+              const session = sessions.get(matched.sessionId) || { name: matched.name };
+              await openReplayModal(matched.sessionId, session);
+            } else {
+              await openReplayModal('_browser_', null);
+            }
+          } catch (err) {
+            log('Context menu replay error: ' + err);
+          }
+        })();
       }
     });
 
@@ -5427,11 +5444,10 @@
       menu.appendChild(menuItem);
     }
 
-    // Show/hide based on whether the right-clicked tab is an agent tab
+    // Show/hide based on whether the tab is in the ZenRipple workspace
     menu.addEventListener('popupshowing', () => {
       const tab = TabContextMenu.contextTab || gBrowser.selectedTab;
-      const isAgent = tab && !!tab.getAttribute('data-agent-session-id');
-      menuItem.hidden = !isAgent;
+      menuItem.hidden = !isTabInAgentWorkspace(tab);
     });
 
     log('Replay context menu item added');
