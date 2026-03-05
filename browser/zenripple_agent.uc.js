@@ -3384,6 +3384,2076 @@
   }
 
   // ============================================
+  // SESSION REPLAY VIEWER (Ctrl+Shift+E)
+  // ============================================
+
+  const REPLAY_MODAL_ID = 'zenripple-replay-modal';
+  const REPLAY_STYLE_ID = 'zenripple-replay-styles';
+
+  const REPLAY_VIEWER_CSS = `
+/* === ZenRipple Session Replay Viewer === */
+
+@keyframes zenripple-modal-enter {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes zr-play-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes zr-progress-glow {
+  0% { box-shadow: 0 0 4px var(--zr-accent); }
+  100% { box-shadow: 0 0 8px var(--zr-accent), 0 0 2px var(--zr-accent); }
+}
+
+#zenripple-replay-modal {
+  --zr-bg-surface: var(--zl-bg-surface, #1e1e2e);
+  --zr-bg-raised: var(--zl-bg-raised, #2a2a3e);
+  --zr-bg-elevated: var(--zl-bg-elevated, #363650);
+  --zr-bg-hover: var(--zl-bg-hover, rgba(255,255,255,0.04));
+  --zr-text-primary: var(--zl-text-primary, #e0e0e6);
+  --zr-text-secondary: var(--zl-text-secondary, #a0a0b0);
+  --zr-text-muted: var(--zl-text-muted, #6b6b80);
+  --zr-accent: var(--zl-accent, #7aa2f7);
+  --zr-accent-dim: var(--zl-accent-dim, rgba(122,162,247,0.1));
+  --zr-accent-20: var(--zl-accent-20, rgba(122,162,247,0.2));
+  --zr-border-subtle: var(--zl-border-subtle, rgba(255,255,255,0.08));
+  --zr-border-default: var(--zl-border-default, rgba(255,255,255,0.12));
+  --zr-border-strong: var(--zl-border-strong, rgba(255,255,255,0.18));
+  --zr-r-xl: var(--zl-r-xl, 20px);
+  --zr-r-md: var(--zl-r-md, 10px);
+  --zr-r-sm: var(--zl-r-sm, 6px);
+  --zr-font-mono: var(--zl-font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
+  --zr-font-ui: var(--zl-font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  --zr-shadow-modal: var(--zl-shadow-modal, 0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06));
+  --zr-success: var(--zl-success, #a6e3a1);
+  --zr-error: var(--zl-error, #f38ba8);
+
+  position: fixed;
+  inset: 0;
+  z-index: 100005;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--zr-font-ui);
+  color: var(--zr-text-primary);
+}
+
+#zenripple-replay-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(14px);
+}
+
+#zenripple-replay-container {
+  position: relative;
+  width: min(96%, 1920px);
+  height: 88vh;
+  max-height: 980px;
+  background: var(--zr-bg-surface);
+  border-radius: var(--zr-r-xl);
+  box-shadow: var(--zr-shadow-modal);
+  border: 1px solid var(--zr-border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: zenripple-modal-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── Header ── */
+.zenripple-replay-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+  letter-spacing: 0.02em;
+}
+
+.zenripple-replay-session-badge {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  padding: 2px 8px;
+  border-radius: var(--zr-r-sm);
+  letter-spacing: 0.02em;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zenripple-replay-close {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 16px;
+  line-height: 1;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+}
+
+.zenripple-replay-close:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+/* ── Main Content (3-panel) ── */
+.zenripple-replay-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Main wrapper: screenshot + details.  flex-direction flips in narrow mode. */
+.zenripple-replay-main {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── Splitters ── */
+.zenripple-replay-splitter {
+  flex-shrink: 0;
+  background: var(--zr-border-subtle);
+  position: relative;
+  z-index: 2;
+  transition: background 0.12s;
+}
+.zenripple-replay-splitter-v {
+  width: 1px;
+  cursor: col-resize;
+}
+.zenripple-replay-splitter-v::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+.zenripple-replay-splitter-h {
+  height: 1px;
+  cursor: row-resize;
+}
+.zenripple-replay-splitter-h::after {
+  content: '';
+  position: absolute;
+  inset: -3px 0;
+}
+.zenripple-replay-splitter:hover,
+.zenripple-replay-splitter.dragging {
+  background: var(--zr-accent);
+}
+
+/* ── Narrow mode ── */
+.zenripple-narrow .zenripple-replay-main {
+  flex-direction: column;
+}
+/* Inner splitter flips to horizontal in narrow mode */
+.zenripple-narrow .zenripple-replay-splitter-inner {
+  width: auto;
+  height: 1px;
+  cursor: row-resize;
+}
+.zenripple-narrow .zenripple-replay-splitter-inner::after {
+  inset: -3px 0;
+}
+
+/* Left: Screenshot viewer — absolute positioning ensures the image
+   never overflows even when the natural image is much taller than the
+   container.  The 16px inset gives a visible margin + room for the
+   border-radius to show. */
+.zenripple-replay-screenshot {
+  flex: 2;
+  min-width: 0;
+  min-height: 0;
+  position: relative;
+  background: var(--zr-bg-raised);
+  overflow: hidden;
+}
+
+.zenripple-replay-screenshot img {
+  position: absolute;
+  inset: 16px;
+  width: calc(100% - 32px);
+  height: calc(100% - 32px);
+  object-fit: contain;
+  border-radius: var(--zr-r-md);
+  border: 1px solid var(--zr-border-default);
+}
+
+/* Center placeholder text when no screenshot is available */
+.zenripple-replay-screenshot .zenripple-replay-no-screenshot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zenripple-replay-no-screenshot {
+  color: var(--zr-text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Center: Tool call details */
+.zenripple-replay-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.zenripple-replay-detail-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+}
+
+.zenripple-replay-tool-name {
+  font-family: var(--zr-font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--zr-accent);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.zenripple-replay-meta {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.zenripple-replay-meta-item {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-elevated);
+  padding: 2px 7px;
+  border-radius: var(--zr-r-sm);
+  letter-spacing: 0.02em;
+}
+
+.zenripple-replay-meta-item.error {
+  color: var(--zr-error);
+  background: rgba(243,139,168,0.1);
+}
+
+.zenripple-replay-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  margin: 12px 0 6px 0;
+}
+
+.zenripple-replay-json {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.zenripple-replay-json.zr-result-json {
+  max-height: 400px;
+}
+
+.zenripple-replay-json .zr-key { color: #89b4fa; }
+.zenripple-replay-json .zr-str { color: #a6e3a1; }
+.zenripple-replay-json .zr-num { color: #fab387; }
+.zenripple-replay-json .zr-bool { color: #cba6f7; }
+.zenripple-replay-json .zr-null { color: #6b6b80; }
+
+/* Right: Tool call list */
+.zenripple-replay-list {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.zenripple-replay-list-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  padding: 12px 14px 8px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 6px;
+}
+
+.zenripple-replay-entry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  min-height: 32px;
+}
+
+.zenripple-replay-entry:hover {
+  background: var(--zr-bg-hover);
+}
+
+.zenripple-replay-entry.selected {
+  background: var(--zr-accent-dim);
+}
+
+.zenripple-replay-entry.selected .zenripple-replay-entry-name {
+  color: var(--zr-accent);
+}
+
+.zenripple-replay-entry-seq {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.zenripple-replay-entry-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  gap: 1px;
+}
+
+.zenripple-replay-entry-name {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--zr-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zenripple-replay-entry-subtitle {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-secondary);
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.3;
+}
+
+.zenripple-replay-entry.selected .zenripple-replay-entry-subtitle {
+  opacity: 0.9;
+}
+
+.zenripple-replay-entry-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--zr-success);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-entry-dot.error {
+  background: var(--zr-error);
+}
+
+.zenripple-replay-entry-time {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Footer / Transport Bar ── */
+.zenripple-replay-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 20px;
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zenripple-replay-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zenripple-replay-transport-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+  transition: all 0.12s;
+  font-size: 12px;
+  padding: 0;
+}
+
+.zenripple-replay-transport-btn:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+.zenripple-replay-transport-btn.active {
+  color: var(--zr-accent);
+}
+
+.zenripple-replay-transport-btn.active:hover {
+  background: var(--zr-accent-dim);
+}
+
+.zenripple-replay-speed {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 28px;
+  text-align: center;
+  transition: color 0.15s;
+}
+
+.zenripple-replay-speed.highlight {
+  color: var(--zr-accent);
+}
+
+/* Progress bar */
+.zenripple-replay-progress {
+  flex: 1;
+  height: 3px;
+  background: var(--zr-bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+  margin: 0 4px;
+}
+
+.zenripple-replay-progress-fill {
+  height: 100%;
+  background: var(--zr-accent);
+  border-radius: 2px;
+  transition: width 0.15s ease-out;
+  min-width: 0;
+}
+
+.zenripple-replay-progress:hover .zenripple-replay-progress-fill {
+  height: 5px;
+  margin-top: -1px;
+}
+
+.zenripple-replay-hint {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.zenripple-replay-kbd {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  background: var(--zr-bg-elevated);
+  padding: 1px 5px;
+  border-radius: 3px;
+  color: var(--zr-text-secondary);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
+
+.zenripple-replay-count {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Empty state ── */
+.zenripple-replay-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--zr-text-muted);
+  font-size: 13px;
+  font-style: italic;
+}
+
+/* ── Scrollbar styling (Firefox/Gecko) ── */
+#zenripple-replay-modal * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--zr-border-strong) transparent;
+}
+
+/* ── Back button ── */
+.zenripple-replay-back {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 16px;
+  line-height: 1;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+  flex-shrink: 0;
+}
+.zenripple-replay-back:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+/* ── Session browser ── */
+#zenripple-replay-container.zenripple-session-browser-mode {
+  width: min(96%, 560px);
+}
+.zenripple-session-browser {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+}
+.zenripple-session-browser-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.zenripple-session-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border-radius: var(--zr-r-md);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.zenripple-session-row:hover {
+  background: var(--zr-bg-hover);
+}
+.zenripple-session-row.selected {
+  background: var(--zr-accent-dim);
+}
+.zenripple-session-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.zenripple-session-row-name {
+  font-family: var(--zr-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+}
+.zenripple-session-row.selected .zenripple-session-row-name {
+  color: var(--zr-accent);
+}
+.zenripple-session-row-count {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-elevated);
+  padding: 1px 6px;
+  border-radius: var(--zr-r-sm);
+}
+.zenripple-session-row-id {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-secondary);
+  opacity: 0.5;
+}
+.zenripple-session-row-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.zenripple-session-row-date {
+  font-size: 11px;
+  color: var(--zr-text-secondary);
+}
+.zenripple-session-row-urls {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.zenripple-session-row-url {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-secondary);
+  opacity: 0.6;
+  background: var(--zr-bg-elevated);
+  padding: 1px 6px;
+  border-radius: var(--zr-r-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 250px;
+}
+`;
+
+  // ── Replay viewer state ──
+  let _replayModal = null;
+  let _replayEntries = [];
+  let _replaySelectedIdx = -1;
+  let _replaySessionId = null;
+  let _replayReplayDir = null;
+  let _selectGeneration = 0;
+  let _currentScreenshotBlobURL = null;
+  let _replayLoading = false;
+
+  // Persistent splitter positions (survive modal close/reopen).
+  // Separate state for wide and narrow modes.  Values are the "main"
+  // panel percentage (outer) and the screenshot percentage (inner).
+  const _splitterState = {
+    wide:   { outer: null, inner: null },
+    narrow: { outer: null, inner: null },
+  };
+
+  // Screenshot prefetch cache: Map<filename, blobURL>
+  const _screenshotCache = new Map();
+  const _CACHE_MAX = 5;
+
+  function _cacheScreenshot(filename, blobURL) {
+    if (!filename || !blobURL) return;
+    _screenshotCache.set(filename, blobURL);
+    // Evict oldest entries beyond max
+    while (_screenshotCache.size > _CACHE_MAX) {
+      const oldest = _screenshotCache.keys().next().value;
+      const oldURL = _screenshotCache.get(oldest);
+      _screenshotCache.delete(oldest);
+      // Don't revoke if it's currently displayed
+      if (oldURL !== _currentScreenshotBlobURL) {
+        try { URL.revokeObjectURL(oldURL); } catch (_) {}
+      }
+    }
+  }
+
+  function _clearScreenshotCache() {
+    for (const [, url] of _screenshotCache) {
+      if (url !== _currentScreenshotBlobURL) {
+        try { URL.revokeObjectURL(url); } catch (_) {}
+      }
+    }
+    _screenshotCache.clear();
+  }
+
+  async function _prefetchScreenshot(replayDir, filename) {
+    if (!filename || _screenshotCache.has(filename)) return;
+    const url = await loadScreenshot(replayDir, filename);
+    if (url) _cacheScreenshot(filename, url);
+  }
+
+  // Playback state
+  let _playbackTimer = null;
+  let _playbackPlaying = false;
+  let _playbackSpeedIdx = 1;  // index into PLAYBACK_SPEEDS
+  const PLAYBACK_SPEEDS = [0.5, 1, 2, 4, 8, 16, 32];
+  const PLAYBACK_BASE_MS = 2000;  // interval at 1x
+
+  // Live update polling
+  let _liveUpdateTimer = null;
+  const _LIVE_POLL_MS = 2000;
+
+  function injectReplayStyles() {
+    if (document.getElementById(REPLAY_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = REPLAY_STYLE_ID;
+    style.textContent = REPLAY_VIEWER_CSS;
+    document.head.appendChild(style);
+  }
+
+  function syntaxHighlightJSON(jsonStr) {
+    if (typeof jsonStr !== 'string') return '';
+    // Single-pass tokenizer to avoid nested-span issues from chained regexes
+    const escaped = jsonStr
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    // Match JSON tokens: strings, numbers, booleans, null, and key-value separators
+    return escaped.replace(
+      /("(?:\\.|[^"\\])*")(\s*:)?|(-?\b\d+\.?\d*(?:[eE][+-]?\d+)?\b)|\b(true|false)\b|\b(null)\b/g,
+      function(match, str, colon, num, bool_, null_) {
+        if (str) {
+          return colon
+            ? '<span class="zr-key">' + str + '</span>' + colon
+            : '<span class="zr-str">' + str + '</span>';
+        }
+        if (num) return '<span class="zr-num">' + num + '</span>';
+        if (bool_) return '<span class="zr-bool">' + bool_ + '</span>';
+        if (null_) return '<span class="zr-null">' + null_ + '</span>';
+        return match;
+      }
+    );
+  }
+
+  function formatJSON(value) {
+    if (typeof value === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        return JSON.stringify(parsed, null, 2);
+      } catch (_) {
+        return value;
+      }
+    }
+    if (typeof value === 'object' && value !== null) {
+      return JSON.stringify(value, null, 2);
+    }
+    return String(value ?? '');
+  }
+
+  function extractTime(timestamp) {
+    if (!timestamp) return '';
+    try {
+      const d = new Date(timestamp);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch (_) { return ''; }
+  }
+
+  function escapeHTML(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function stripToolPrefix(name) {
+    return (name || '').replace(/^browser_/, '');
+  }
+
+  function toolCallSubtitle(tool, args) {
+    if (!args || typeof args !== 'object') return '';
+    const a = args;
+    const stripProto = (u) => String(u || '').replace(/^https?:\/\//, '');
+    const trunc = (s, n) => { s = String(s || ''); return s.length > n ? s.slice(0, n) + '\u2026' : s; };
+    const selectorIdx = () => {
+      let s = a.selector || '';
+      if (a.index != null) s += ' [' + a.index + ']';
+      return trunc(s, 50);
+    };
+    const bare = (tool || '').replace(/^browser_/, '');
+    switch (bare) {
+      case 'navigate':
+      case 'create_tab':
+        return trunc(stripProto(a.url), 50);
+      case 'batch_navigate':
+        return (a.urls || []).map(u => stripProto(u)).join(', ').slice(0, 50);
+      case 'click':
+      case 'hover':
+      case 'select_option':
+      case 'wait_for_element':
+        return selectorIdx();
+      case 'fill':
+        return trunc((a.selector || '') + ' \u2190 ' + (a.value || ''), 50);
+      case 'grounded_click':
+      case 'find_element_by_description':
+        return trunc(a.description, 50);
+      case 'type':
+        return trunc(a.text, 50);
+      case 'press_key': {
+        let parts = [];
+        if (a.ctrl || a.control) parts.push('Ctrl');
+        if (a.alt) parts.push('Alt');
+        if (a.shift) parts.push('Shift');
+        if (a.meta) parts.push('Cmd');
+        parts.push(a.key || '');
+        return parts.join('+');
+      }
+      case 'scroll':
+        return a.direction || '';
+      case 'set_session_name':
+        return trunc(a.name, 50);
+      case 'get_dom':
+      case 'get_elements_compact':
+      case 'get_accessibility_tree':
+        return trunc(a.selector || '*', 50);
+      case 'eval_chrome':
+      case 'console_eval':
+        return trunc(a.expression, 45);
+      case 'wait_for_text':
+        return trunc(a.text, 50);
+      case 'wait':
+        return a.ms != null ? a.ms + 'ms' : '';
+      case 'wait_for_load':
+        return a.state || '';
+      case 'set_cookie':
+        return trunc((a.name || '') + '=' + (a.value || ''), 50);
+      case 'intercept_add_rule':
+        return trunc(a.url_pattern, 50);
+      case 'file_upload':
+        return trunc((a.path || '').split('/').pop(), 50);
+      case 'save_screenshot':
+        return trunc((a.path || '').split('/').pop(), 50);
+      case 'claim_tab':
+        return trunc(a.tab_id, 50);
+      case 'close_tab':
+      case 'switch_tab':
+        return trunc(a.tab_id, 50);
+      case 'set_storage':
+      case 'get_storage':
+      case 'delete_storage':
+        return trunc(a.key, 50);
+      case 'clipboard_write':
+        return trunc(a.text, 50);
+      case 'handle_dialog':
+        return a.action || '';
+      case 'compare_tabs':
+        return trunc((a.tab_id_1 || '') + ' vs ' + (a.tab_id_2 || ''), 50);
+      case 'drag':
+        return trunc((a.source_selector || '') + ' \u2192 ' + (a.target_selector || ''), 50);
+      case 'drag_coordinates':
+        return (a.start_x || 0) + ',' + (a.start_y || 0) + ' \u2192 ' + (a.end_x || 0) + ',' + (a.end_y || 0);
+      case 'click_coordinates':
+      case 'hover_coordinates':
+        return (a.x || 0) + ',' + (a.y || 0);
+      case 'grounded_hover':
+        return trunc(a.description, 50);
+      case 'scroll_at_point':
+        return (a.direction || 'down') + ' @' + (a.x || 0) + ',' + (a.y || 0);
+      case 'grounded_scroll':
+        return trunc((a.direction || 'down') + ' ' + (a.description || ''), 50);
+      case 'reflect':
+        return trunc(a.query, 50);
+      case 'record_replay':
+        return trunc(a.name, 50);
+      default: {
+        // Fallback: find first short string value in args
+        for (const v of Object.values(a)) {
+          if (typeof v === 'string' && v.length > 0 && v.length <= 80) {
+            return trunc(v, 50);
+          }
+        }
+        return '';
+      }
+    }
+  }
+
+  async function loadReplayData(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const logPath = PathUtils.join(replayDir, 'tool_log.jsonl');
+
+    let entries = [];
+    try {
+      const content = await IOUtils.readUTF8(logPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch (_) {}
+      }
+      entries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    } catch (e) {
+      log('Replay viewer: no tool_log.jsonl found for session ' + sessionId);
+    }
+    return { entries, replayDir };
+  }
+
+  // ── Session discovery: scan all replay dirs on disk ──
+
+  async function discoverAllSessions() {
+    const tmpDir = PathUtils.tempDir;
+    const prefix = 'zenripple_replay_';
+    const results = [];
+    try {
+      const children = await IOUtils.getChildren(tmpDir);
+      for (const childPath of children) {
+        const dirName = PathUtils.filename(childPath);
+        if (!dirName.startsWith(prefix)) continue;
+        const sessionId = dirName.slice(prefix.length);
+        if (!sessionId) continue;
+        const manifestPath = PathUtils.join(childPath, 'manifest.json');
+        let manifest = null;
+        try {
+          manifest = JSON.parse(await IOUtils.readUTF8(manifestPath));
+        } catch (_) { continue; }
+        // Parse tool log: only JSON-parse lines that are relevant (navigate,
+        // create_tab, set_session_name) to avoid parsing thousands of lines.
+        let toolCount = 0;
+        let urls = [];
+        let sessionName = null;
+        try {
+          const logContent = await IOUtils.readUTF8(PathUtils.join(childPath, 'tool_log.jsonl'));
+          const lines = logContent.trim().split('\n').filter(Boolean);
+          toolCount = lines.length;
+          for (const line of lines) {
+            // Fast string check before expensive JSON.parse
+            if (line.includes('browser_navigate') || line.includes('browser_create_tab') || line.includes('browser_set_session_name')) {
+              try {
+                const entry = JSON.parse(line);
+                if (entry.tool === 'browser_navigate' && entry.args?.url) {
+                  urls.push(entry.args.url);
+                } else if (entry.tool === 'browser_create_tab' && entry.args?.url) {
+                  urls.push(entry.args.url);
+                } else if (entry.tool === 'browser_set_session_name' && entry.args?.name) {
+                  sessionName = entry.args.name;
+                }
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        results.push({
+          sessionId,
+          name: sessionName,
+          startedAt: manifest.started_at || '',
+          toolCount,
+          urls,
+          dir: childPath,
+        });
+      }
+    } catch (e) {
+      log('discoverAllSessions error: ' + e);
+    }
+    // Sort newest first
+    results.sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || ''));
+    return results;
+  }
+
+  // ── Smart session matching for non-agent tabs ──
+
+  async function guessSessionForTab(tab) {
+    if (!tab?.linkedBrowser) return null;
+    const currentUrl = tab.linkedBrowser.currentURI?.spec || '';
+    // Collect tab history URLs
+    const historyUrls = [];
+    try {
+      const hist = tab.linkedBrowser.sessionHistory;
+      if (hist) {
+        for (let i = 0; i < hist.count; i++) {
+          const entry = hist.getEntryAtIndex(i);
+          if (entry?.URI?.spec) historyUrls.push(entry.URI.spec);
+        }
+      }
+    } catch (_) {}
+    if (!currentUrl && historyUrls.length === 0) return null;
+
+    const allUrls = [currentUrl, ...historyUrls].filter(Boolean);
+    const allSessions = await discoverAllSessions();
+    if (allSessions.length === 0) return null;
+
+    // Score each session by URL overlap
+    let bestSession = null;
+    let bestScore = 0;
+    for (const s of allSessions) {
+      if (s.urls.length === 0) continue;
+      let score = 0;
+      for (const tabUrl of allUrls) {
+        for (const sessionUrl of s.urls) {
+          if (tabUrl === sessionUrl) score += 10;
+          else {
+            try {
+              const tHost = new URL(tabUrl).hostname;
+              const sHost = new URL(sessionUrl).hostname;
+              if (tHost === sHost) score += 2;
+            } catch (_) {}
+          }
+        }
+      }
+      // On ties, prefer newer sessions (allSessions is sorted newest-first)
+      if (score > bestScore) {
+        bestScore = score;
+        bestSession = s;
+      }
+    }
+    return bestSession;
+  }
+
+  // ── Workspace check ──
+
+  function isTabInAgentWorkspace(tab) {
+    if (!tab || !agentWorkspaceId) return false;
+    return tab.getAttribute('zen-workspace-id') === agentWorkspaceId;
+  }
+
+  function isCurrentWorkspaceAgent() {
+    if (!gZenWorkspaces) return false;
+    // Lazily resolve agentWorkspaceId if no session has connected yet
+    if (!agentWorkspaceId) {
+      const workspaces = gZenWorkspaces._workspaceCache;
+      if (workspaces) {
+        const ws = workspaces.find(w => w.name === AGENT_WORKSPACE_NAME);
+        if (ws) agentWorkspaceId = ws.uuid;
+      }
+      if (!agentWorkspaceId) return false;
+    }
+    try {
+      const active = gZenWorkspaces.getActiveWorkspace?.();
+      if (active) return active.uuid === agentWorkspaceId;
+      // Fallback: check selected tab
+      const tab = gBrowser.selectedTab;
+      return tab && tab.getAttribute('zen-workspace-id') === agentWorkspaceId;
+    } catch (_) { return false; }
+  }
+
+  // ── Session browser view ──
+
+  let _sessionBrowserMode = false; // true when showing session list
+
+  function buildSessionBrowserHTML(sessionList) {
+    const rows = sessionList.map((s, i) => {
+      const name = escapeHTML(s.name || s.sessionId.slice(0, 12));
+      const date = s.startedAt ? new Date(s.startedAt) : null;
+      const dateStr = date && !isNaN(date.getTime())
+        ? date.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' +
+          date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        : '';
+      const urlPreview = s.urls.length > 0
+        ? escapeHTML(s.urls[0].replace(/^https?:\/\//, '').slice(0, 40))
+        : '';
+      return `<div class="zenripple-session-row" data-idx="${i}" tabindex="0">
+        <div class="zenripple-session-row-main">
+          <span class="zenripple-session-row-name">${name}</span>
+          <span class="zenripple-session-row-count">${s.toolCount} call${s.toolCount !== 1 ? 's' : ''}</span>
+        </div>
+        <div class="zenripple-session-row-meta">
+          <span class="zenripple-session-row-date">${escapeHTML(dateStr)}</span>
+          ${urlPreview ? `<span class="zenripple-session-row-url">${urlPreview}</span>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+    return `<div class="zenripple-session-browser-scroll">${rows || '<div class="zenripple-replay-empty">No saved session replays found.</div>'}</div>`;
+  }
+
+  async function showSessionBrowser() {
+    _sessionBrowserMode = true;
+    _stopPlayback();
+    _stopLiveUpdates();
+
+    const allSessions = await discoverAllSessions();
+
+    // Update modal content to show session list
+    const container = _replayModal.querySelector('#zenripple-replay-container');
+    if (!container) return;
+
+    // Save reference for navigation
+    _sessionBrowserList = allSessions;
+    _sessionBrowserIdx = 0;
+
+    // Narrow the container for browser mode
+    container.classList.add('zenripple-session-browser-mode');
+
+    // Hide body + footer, show browser
+    const body = container.querySelector('.zenripple-replay-body');
+    const emptyMsg = container.querySelector('.zenripple-replay-empty');
+    const footer = container.querySelector('.zenripple-replay-footer');
+    if (body) body.style.display = 'none';
+    if (emptyMsg) emptyMsg.style.display = 'none';
+    if (footer) footer.style.display = 'none';
+
+    // Remove previous browser if any
+    const oldBrowser = container.querySelector('.zenripple-session-browser');
+    if (oldBrowser) oldBrowser.remove();
+
+    // Update header
+    const title = container.querySelector('.zenripple-replay-title');
+    if (title) title.textContent = 'All Sessions';
+    const badge = container.querySelector('.zenripple-replay-session-badge');
+    if (badge) badge.textContent = allSessions.length + ' saved';
+    const backBtn = container.querySelector('.zenripple-replay-back');
+    if (backBtn) backBtn.style.display = 'none';
+
+    // Build and insert browser
+    const browser = document.createElement('div');
+    browser.className = 'zenripple-session-browser';
+    browser.innerHTML = buildSessionBrowserHTML(allSessions);
+
+    // Insert after header
+    const header = container.querySelector('.zenripple-replay-header');
+    if (header && header.nextSibling) {
+      container.insertBefore(browser, header.nextSibling);
+    } else {
+      container.appendChild(browser);
+    }
+
+    // Click handlers
+    const rows = browser.querySelectorAll('.zenripple-session-row');
+    for (const row of rows) {
+      row.addEventListener('click', () => {
+        const idx = parseInt(row.dataset.idx, 10);
+        _openSessionFromBrowser(idx);
+      });
+    }
+
+    // Highlight first
+    if (rows.length > 0) {
+      rows[0].classList.add('selected');
+    }
+  }
+
+  let _sessionBrowserList = [];
+  let _sessionBrowserIdx = 0;
+
+  function _navigateSessionBrowser(delta) {
+    const browser = _replayModal?.querySelector('.zenripple-session-browser');
+    if (!browser || _sessionBrowserList.length === 0) return;
+    const rows = browser.querySelectorAll('.zenripple-session-row');
+    _sessionBrowserIdx = Math.max(0, Math.min(rows.length - 1, _sessionBrowserIdx + delta));
+    for (const r of rows) r.classList.remove('selected');
+    if (rows[_sessionBrowserIdx]) {
+      rows[_sessionBrowserIdx].classList.add('selected');
+      rows[_sessionBrowserIdx].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }
+
+  async function _openSessionFromBrowser(idx) {
+    const s = _sessionBrowserList[idx];
+    if (!s) return;
+    _sessionBrowserMode = false;
+    // Look up live session data if available
+    const session = sessions.get(s.sessionId) || { name: s.name };
+    closeReplayModal();
+    await openReplayModal(s.sessionId, session);
+  }
+
+  function _exitSessionBrowser() {
+    if (!_sessionBrowserMode || !_replayModal) return;
+    _sessionBrowserMode = false;
+
+    const container = _replayModal.querySelector('#zenripple-replay-container');
+    if (!container) return;
+
+    // Restore container width
+    container.classList.remove('zenripple-session-browser-mode');
+
+    // Remove browser panel
+    const browser = container.querySelector('.zenripple-session-browser');
+    if (browser) browser.remove();
+
+    // Restore body + footer + empty message
+    const body = container.querySelector('.zenripple-replay-body');
+    const emptyMsg = container.querySelector('.zenripple-replay-empty');
+    const footer = container.querySelector('.zenripple-replay-footer');
+    if (body) body.style.display = '';
+    if (emptyMsg) emptyMsg.style.display = '';
+    if (footer) footer.style.display = '';
+
+    // Restore header
+    const title = container.querySelector('.zenripple-replay-title');
+    if (title) title.textContent = 'Session Replay';
+    const badge = container.querySelector('.zenripple-replay-session-badge');
+    if (badge) badge.textContent = escapeHTML(
+      (_replaySessionId ? (sessions.get(_replaySessionId)?.name || _replaySessionId.slice(0, 12)) : '')
+    );
+    const backBtn = container.querySelector('.zenripple-replay-back');
+    if (backBtn) backBtn.style.display = '';
+
+    // Restart live updates
+    _startLiveUpdates();
+  }
+
+  function _startLiveUpdates() {
+    _stopLiveUpdates();
+    _liveUpdateTimer = setInterval(() => _pollForNewEntries(), _LIVE_POLL_MS);
+  }
+
+  function _stopLiveUpdates() {
+    if (_liveUpdateTimer) {
+      clearInterval(_liveUpdateTimer);
+      _liveUpdateTimer = null;
+    }
+  }
+
+  let _lastLogSize = 0;
+
+  async function _pollForNewEntries() {
+    if (!_replayModal || !_replayReplayDir) return;
+    const logPath = PathUtils.join(_replayReplayDir, 'tool_log.jsonl');
+
+    // Skip re-parsing if file size hasn't changed
+    try {
+      const info = await IOUtils.stat(logPath);
+      if (info.size === _lastLogSize) return;
+      _lastLogSize = info.size;
+    } catch (_) {
+      return;
+    }
+    let allEntries = [];
+    try {
+      const content = await IOUtils.readUTF8(logPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { allEntries.push(JSON.parse(line)); } catch (_) {}
+      }
+      allEntries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    } catch (_) {
+      return;
+    }
+
+    if (allEntries.length <= _replayEntries.length) return;
+
+    // New entries found — append them
+    const oldLen = _replayEntries.length;
+    const newEntries = allEntries.slice(oldLen);
+    _replayEntries = allEntries;
+
+    // Add new entries to the list DOM (inserted at top since list is reversed)
+    const listContainer = _replayModal.querySelector('#zenripple-replay-entries');
+    if (listContainer) {
+      for (let j = 0; j < newEntries.length; j++) {
+        const entry = newEntries[j];
+        const i = oldLen + j;
+        const el = document.createElement('div');
+        el.className = 'zenripple-replay-entry';
+        el.dataset.idx = String(i);
+        const subtitle = toolCallSubtitle(entry.tool, entry.args);
+        el.innerHTML = `
+          <span class="zenripple-replay-entry-seq">${escapeHTML(entry.seq ?? i)}</span>
+          <span class="zenripple-replay-entry-dot${entry.error ? ' error' : ''}"></span>
+          <span class="zenripple-replay-entry-col">
+            <span class="zenripple-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+            ${subtitle ? '<span class="zenripple-replay-entry-subtitle">' + escapeHTML(subtitle) + '</span>' : ''}
+          </span>
+          <span class="zenripple-replay-entry-time">${escapeHTML(extractTime(entry.timestamp))}</span>
+        `;
+        el.addEventListener('click', () => {
+          _stopPlayback();
+          selectReplayEntry(i, _replayReplayDir);
+        });
+        // Insert at top (most recent first)
+        listContainer.insertBefore(el, listContainer.firstChild);
+      }
+    }
+
+    // Update header count
+    const listHeader = _replayModal.querySelector('.zenripple-replay-list-header');
+    if (listHeader) listHeader.textContent = 'Tool Calls (' + allEntries.length + ')';
+    const countEl = _replayModal.querySelector('#zenripple-replay-count');
+    if (countEl) countEl.textContent = allEntries.length + ' call' + (allEntries.length !== 1 ? 's' : '');
+
+    // Update progress bar since total changed
+    _updateProgressBar();
+  }
+
+  async function loadScreenshot(replayDir, filename) {
+    if (!filename) return null;
+    if (filename.includes('/') || filename.includes('\\') || filename.includes('..')) return null;
+    const filepath = PathUtils.join(replayDir, filename);
+    try {
+      const bytes = await IOUtils.read(filepath);
+      const blob = new Blob([bytes], { type: 'image/jpeg' });
+      return URL.createObjectURL(blob);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // ── Playback engine ──
+
+  function _playbackInterval() {
+    return PLAYBACK_BASE_MS / PLAYBACK_SPEEDS[_playbackSpeedIdx];
+  }
+
+  function _stopPlayback() {
+    if (_playbackTimer) {
+      clearInterval(_playbackTimer);
+      _playbackTimer = null;
+    }
+    _playbackPlaying = false;
+    _updateTransportUI();
+  }
+
+  function _startPlayback() {
+    _stopPlayback();
+    _playbackPlaying = true;
+    _updateTransportUI();
+    _playbackTimer = setInterval(() => {
+      if (!_replayModal || _replayEntries.length === 0) {
+        _stopPlayback();
+        return;
+      }
+      // Advance with wraparound
+      let next = _replaySelectedIdx + 1;
+      if (next >= _replayEntries.length) next = 0;
+      selectReplayEntry(next, _replayReplayDir);
+    }, _playbackInterval());
+  }
+
+  function _togglePlayback() {
+    if (_playbackPlaying) {
+      _stopPlayback();
+    } else {
+      _startPlayback();
+    }
+  }
+
+  function _setPlaybackSpeed(idx) {
+    _playbackSpeedIdx = Math.max(0, Math.min(PLAYBACK_SPEEDS.length - 1, idx));
+    _updateTransportUI();
+    if (_playbackPlaying) {
+      // Restart timer with new speed
+      _startPlayback();
+    }
+  }
+
+  function _updateTransportUI() {
+    if (!_replayModal) return;
+
+    // Play/pause button
+    const playBtn = _replayModal.querySelector('#zr-play-btn');
+    if (playBtn) {
+      playBtn.innerHTML = _playbackPlaying ? '&#x23F8;' : '&#x25B6;';
+      playBtn.classList.toggle('active', _playbackPlaying);
+      playBtn.title = _playbackPlaying ? 'Pause (Space)' : 'Play (Space)';
+    }
+
+    // Speed display
+    const speedEl = _replayModal.querySelector('#zr-speed');
+    if (speedEl) {
+      const s = PLAYBACK_SPEEDS[_playbackSpeedIdx];
+      speedEl.textContent = s + 'x';
+      speedEl.classList.toggle('highlight', s !== 1);
+    }
+
+    // Progress bar
+    _updateProgressBar();
+  }
+
+  function _updateProgressBar() {
+    if (!_replayModal) return;
+    const fill = _replayModal.querySelector('#zr-progress-fill');
+    if (fill && _replayEntries.length > 0) {
+      const pct = ((_replaySelectedIdx + 1) / _replayEntries.length) * 100;
+      fill.style.width = pct + '%';
+    } else if (fill) {
+      fill.style.width = '0%';
+    }
+  }
+
+  // ── Modal builder ──
+
+  function buildReplayModal(sessionId, session, entries, replayDir) {
+    const modal = document.createElement('div');
+    modal.id = REPLAY_MODAL_ID;
+    modal.dataset.sessionId = sessionId;
+
+    const sessionLabel = escapeHTML((session && session.name) || sessionId.slice(0, 12));
+    const hasEntries = entries.length > 0;
+
+    modal.innerHTML = `
+      <div id="zenripple-replay-backdrop"></div>
+      <div id="zenripple-replay-container">
+        <div class="zenripple-replay-header">
+          <div class="zenripple-replay-back" title="All Sessions (Backspace)">&#x2190;</div>
+          <span class="zenripple-replay-title">Session Replay</span>
+          <span class="zenripple-replay-session-badge">${sessionLabel}</span>
+          <div class="zenripple-replay-close" title="Close (Esc)">&#x2715;</div>
+        </div>
+        ${hasEntries ? `
+        <div class="zenripple-replay-body">
+          <div class="zenripple-replay-main">
+            <div class="zenripple-replay-screenshot" id="zenripple-replay-ss">
+              <span class="zenripple-replay-no-screenshot">Select a tool call</span>
+            </div>
+            <div class="zenripple-replay-splitter zenripple-replay-splitter-v zenripple-replay-splitter-inner" data-splitter="inner"></div>
+            <div class="zenripple-replay-details">
+              <div class="zenripple-replay-detail-scroll" id="zenripple-replay-detail">
+                <div class="zenripple-replay-tool-name" id="zenripple-replay-tname">\u2014</div>
+                <div class="zenripple-replay-meta" id="zenripple-replay-meta"></div>
+                <div class="zenripple-replay-section-label">Arguments</div>
+                <div class="zenripple-replay-json" id="zenripple-replay-args">\u2014</div>
+                <div class="zenripple-replay-section-label">Result</div>
+                <div class="zenripple-replay-json zr-result-json" id="zenripple-replay-result">\u2014</div>
+              </div>
+            </div>
+          </div>
+          <div class="zenripple-replay-splitter zenripple-replay-splitter-v zenripple-replay-splitter-outer" data-splitter="outer"></div>
+          <div class="zenripple-replay-list">
+            <div class="zenripple-replay-list-header">Tool Calls (${entries.length})</div>
+            <div class="zenripple-replay-list-scroll" id="zenripple-replay-entries"></div>
+          </div>
+        </div>
+        ` : `
+        <div class="zenripple-replay-empty">No tool calls recorded for this session yet.</div>
+        `}
+        <div class="zenripple-replay-footer">
+          <div class="zenripple-replay-transport">
+            <div class="zenripple-replay-transport-btn" id="zr-play-btn" title="Play (Space)">&#x25B6;</div>
+            <div class="zenripple-replay-transport-btn" id="zr-slower-btn" title="Slower ([)">&#x2BC7;</div>
+            <span class="zenripple-replay-speed" id="zr-speed">1x</span>
+            <div class="zenripple-replay-transport-btn" id="zr-faster-btn" title="Faster (])">&#x2BC8;</div>
+          </div>
+          <div class="zenripple-replay-progress" id="zr-progress">
+            <div class="zenripple-replay-progress-fill" id="zr-progress-fill"></div>
+          </div>
+          <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">j</span><span class="zenripple-replay-kbd">k</span>
+            nav
+          </span>
+          <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">[</span><span class="zenripple-replay-kbd">]</span>
+            speed
+          </span>
+          <span class="zenripple-replay-hint">
+            <span class="zenripple-replay-kbd">Esc</span>
+            close
+          </span>
+          <span class="zenripple-replay-count" id="zenripple-replay-count">
+            ${entries.length} call${entries.length !== 1 ? 's' : ''}
+          </span>
+        </div>
+      </div>
+    `;
+
+    // Build the entry list — reversed (most recent at top)
+    if (hasEntries) {
+      const listContainer = modal.querySelector('#zenripple-replay-entries');
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        const el = document.createElement('div');
+        el.className = 'zenripple-replay-entry';
+        el.dataset.idx = String(i);
+        const subtitle = toolCallSubtitle(entry.tool, entry.args);
+        el.innerHTML = `
+          <span class="zenripple-replay-entry-seq">${escapeHTML(entry.seq ?? i)}</span>
+          <span class="zenripple-replay-entry-dot${entry.error ? ' error' : ''}"></span>
+          <span class="zenripple-replay-entry-col">
+            <span class="zenripple-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+            ${subtitle ? '<span class="zenripple-replay-entry-subtitle">' + escapeHTML(subtitle) + '</span>' : ''}
+          </span>
+          <span class="zenripple-replay-entry-time">${escapeHTML(extractTime(entry.timestamp))}</span>
+        `;
+        el.addEventListener('click', () => {
+          _stopPlayback();
+          selectReplayEntry(i, replayDir);
+        });
+        listContainer.appendChild(el);
+      }
+    }
+
+    // Close and back handlers
+    modal.querySelector('#zenripple-replay-backdrop').addEventListener('click', closeReplayModal);
+    modal.querySelector('.zenripple-replay-close').addEventListener('click', closeReplayModal);
+    const backBtn = modal.querySelector('.zenripple-replay-back');
+    if (backBtn) backBtn.addEventListener('click', () => showSessionBrowser());
+
+    // Transport button handlers
+    const playBtn = modal.querySelector('#zr-play-btn');
+    if (playBtn) playBtn.addEventListener('click', _togglePlayback);
+    const slowerBtn = modal.querySelector('#zr-slower-btn');
+    if (slowerBtn) slowerBtn.addEventListener('click', () => _setPlaybackSpeed(_playbackSpeedIdx - 1));
+    const fasterBtn = modal.querySelector('#zr-faster-btn');
+    if (fasterBtn) fasterBtn.addEventListener('click', () => _setPlaybackSpeed(_playbackSpeedIdx + 1));
+
+    // Progress bar click-to-seek
+    const progressBar = modal.querySelector('#zr-progress');
+    if (progressBar && hasEntries) {
+      progressBar.addEventListener('click', (ev) => {
+        const rect = progressBar.getBoundingClientRect();
+        const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+        const idx = Math.round(pct * (_replayEntries.length - 1));
+        _stopPlayback();
+        selectReplayEntry(idx, replayDir);
+      });
+    }
+
+    // ── Splitter drag handling ──
+    const _body = modal.querySelector('.zenripple-replay-body');
+    const _main = modal.querySelector('.zenripple-replay-main');
+    const _innerSplit = modal.querySelector('.zenripple-replay-splitter-inner');
+    const _outerSplit = modal.querySelector('.zenripple-replay-splitter-outer');
+    const _ssPanel = modal.querySelector('.zenripple-replay-screenshot');
+    const _detPanel = modal.querySelector('.zenripple-replay-details');
+    const _listPanel = modal.querySelector('.zenripple-replay-list');
+
+    if (_body && _main && _innerSplit && _outerSplit) {
+      let _dragTarget = null; // 'inner' | 'outer'
+      let _wasNarrow = false; // track mode for save/restore on switch
+
+      function _isNarrow() { return _body.classList.contains('zenripple-narrow'); }
+
+      // Apply saved splitter positions for the given mode
+      function _restoreLayout(mode) {
+        const s = _splitterState[mode];
+        if (s.outer != null) {
+          _main.style.flex = `0 0 ${s.outer}%`;
+          _listPanel.style.flex = `0 0 ${100 - s.outer}%`;
+        }
+        if (s.inner != null) {
+          _ssPanel.style.flex = `0 0 ${s.inner}%`;
+          _detPanel.style.flex = `0 0 ${100 - s.inner}%`;
+        }
+      }
+
+      // Save current splitter positions for the given mode
+      function _saveLayout(mode) {
+        const bodyRect = _body.getBoundingClientRect();
+        const mainRect = _main.getBoundingClientRect();
+        if (bodyRect.width > 0) {
+          _splitterState[mode].outer = (mainRect.width / bodyRect.width) * 100;
+        }
+        if (mode === 'narrow' && mainRect.height > 0) {
+          const ssRect = _ssPanel.getBoundingClientRect();
+          _splitterState[mode].inner = (ssRect.height / mainRect.height) * 100;
+        } else if (mode === 'wide' && mainRect.width > 0) {
+          const ssRect = _ssPanel.getBoundingClientRect();
+          _splitterState[mode].inner = (ssRect.width / mainRect.width) * 100;
+        }
+      }
+
+      function _onSplitDown(which, ev) {
+        ev.preventDefault();
+        _dragTarget = which;
+        const el = which === 'inner' ? _innerSplit : _outerSplit;
+        el.classList.add('dragging');
+        const cursor = (_isNarrow() && which === 'inner') ? 'row-resize' : 'col-resize';
+        document.documentElement.style.cursor = cursor;
+        document.documentElement.style.userSelect = 'none';
+        _ssPanel.style.pointerEvents = 'none';
+      }
+
+      function _onSplitMove(ev) {
+        if (!_dragTarget) return;
+        if (_dragTarget === 'outer') {
+          const rect = _body.getBoundingClientRect();
+          const pct = Math.max(30, Math.min(85, ((ev.clientX - rect.left) / rect.width) * 100));
+          _main.style.flex = `0 0 ${pct}%`;
+          _listPanel.style.flex = `0 0 ${100 - pct}%`;
+        } else {
+          if (_isNarrow()) {
+            const rect = _main.getBoundingClientRect();
+            const pct = Math.max(20, Math.min(80, ((ev.clientY - rect.top) / rect.height) * 100));
+            _ssPanel.style.flex = `0 0 ${pct}%`;
+            _detPanel.style.flex = `0 0 ${100 - pct}%`;
+          } else {
+            const rect = _main.getBoundingClientRect();
+            const pct = Math.max(20, Math.min(80, ((ev.clientX - rect.left) / rect.width) * 100));
+            _ssPanel.style.flex = `0 0 ${pct}%`;
+            _detPanel.style.flex = `0 0 ${100 - pct}%`;
+          }
+        }
+      }
+
+      function _onSplitUp() {
+        if (!_dragTarget) return;
+        _innerSplit.classList.remove('dragging');
+        _outerSplit.classList.remove('dragging');
+        // Save positions for the current mode
+        const mode = _isNarrow() ? 'narrow' : 'wide';
+        _splitterState[mode].outer = null;
+        _splitterState[mode].inner = null;
+        _saveLayout(mode);
+        _dragTarget = null;
+        document.documentElement.style.cursor = '';
+        document.documentElement.style.userSelect = '';
+        _ssPanel.style.pointerEvents = '';
+      }
+
+      _innerSplit.addEventListener('mousedown', (ev) => _onSplitDown('inner', ev));
+      _outerSplit.addEventListener('mousedown', (ev) => _onSplitDown('outer', ev));
+      window.addEventListener('mousemove', _onSplitMove);
+      window.addEventListener('mouseup', _onSplitUp);
+
+      modal._splitterCleanup = () => {
+        window.removeEventListener('mousemove', _onSplitMove);
+        window.removeEventListener('mouseup', _onSplitUp);
+      };
+
+      // Observe container size: toggle narrow class and swap saved layouts
+      const container = modal.querySelector('#zenripple-replay-container');
+      if (container) {
+        const ro = new ResizeObserver((entries) => {
+          for (const entry of entries) {
+            const { width, height } = entry.contentRect;
+            const narrow = width < height * 1.1;
+            _body.classList.toggle('zenripple-narrow', narrow);
+
+            // On mode switch, save old layout and restore new mode's layout
+            if (narrow !== _wasNarrow) {
+              // Clear inline flex so CSS defaults apply before restoring
+              _main.style.flex = '';
+              _listPanel.style.flex = '';
+              _ssPanel.style.flex = '';
+              _detPanel.style.flex = '';
+              const newMode = narrow ? 'narrow' : 'wide';
+              _restoreLayout(newMode);
+              _wasNarrow = narrow;
+            }
+          }
+        });
+        ro.observe(container);
+        modal._resizeObserverCleanup = () => { ro.disconnect(); };
+
+        // Initial mode detection + restore
+        const rect = container.getBoundingClientRect();
+        _wasNarrow = rect.width < rect.height * 1.1;
+        _body.classList.toggle('zenripple-narrow', _wasNarrow);
+        _restoreLayout(_wasNarrow ? 'narrow' : 'wide');
+      }
+    }
+
+    return modal;
+  }
+
+  async function selectReplayEntry(idx, replayDir) {
+    if (idx < 0 || idx >= _replayEntries.length) return;
+    _replaySelectedIdx = idx;
+    const generation = ++_selectGeneration;
+    const entry = _replayEntries[idx];
+
+    // Update list selection — entries are rendered reversed in DOM
+    const entryEls = _replayModal.querySelectorAll('.zenripple-replay-entry');
+    for (const el of entryEls) {
+      el.classList.toggle('selected', parseInt(el.dataset.idx, 10) === idx);
+    }
+
+    // Scroll selected entry into view
+    for (const el of entryEls) {
+      if (parseInt(el.dataset.idx, 10) === idx) {
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        break;
+      }
+    }
+
+    // Update tool name
+    const tname = _replayModal.querySelector('#zenripple-replay-tname');
+    if (tname) tname.textContent = entry.tool || '\u2014';
+
+    // Update meta badges — show timestamp, duration, and seq
+    const meta = _replayModal.querySelector('#zenripple-replay-meta');
+    if (meta) {
+      const durationStr = entry.duration_ms != null ? escapeHTML(Math.round(entry.duration_ms) + 'ms') : '\u2014';
+      const timeStr = escapeHTML(extractTime(entry.timestamp)) || '\u2014';
+      const seqStr = escapeHTML('#' + (entry.seq ?? idx));
+      meta.innerHTML = `
+        <span class="zenripple-replay-meta-item">${seqStr}</span>
+        <span class="zenripple-replay-meta-item">${timeStr}</span>
+        <span class="zenripple-replay-meta-item">${durationStr}</span>
+        ${entry.error ? '<span class="zenripple-replay-meta-item error">ERROR</span>' : ''}
+      `;
+    }
+
+    // Update args
+    const argsEl = _replayModal.querySelector('#zenripple-replay-args');
+    if (argsEl) {
+      const formatted = formatJSON(entry.args);
+      argsEl.innerHTML = syntaxHighlightJSON(formatted);
+    }
+
+    // Update result
+    const resultEl = _replayModal.querySelector('#zenripple-replay-result');
+    if (resultEl) {
+      const formatted = formatJSON(entry.result);
+      resultEl.innerHTML = syntaxHighlightJSON(formatted);
+    }
+
+    // Update progress bar
+    _updateProgressBar();
+
+    // Revoke previous screenshot blob URL before loading new one (unless cached)
+    if (_currentScreenshotBlobURL) {
+      let inCache = false;
+      for (const url of _screenshotCache.values()) {
+        if (url === _currentScreenshotBlobURL) { inCache = true; break; }
+      }
+      if (!inCache) try { URL.revokeObjectURL(_currentScreenshotBlobURL); } catch (_) {}
+    }
+    _currentScreenshotBlobURL = null;
+
+    // Load screenshot (check cache first, reuse <img> to avoid flash)
+    const ssContainer = _replayModal.querySelector('#zenripple-replay-ss');
+    if (ssContainer) {
+      if (entry.screenshot) {
+        let url = _screenshotCache.get(entry.screenshot) || null;
+        if (!url) {
+          url = await loadScreenshot(replayDir, entry.screenshot);
+          if (generation !== _selectGeneration) {
+            if (url) try { URL.revokeObjectURL(url); } catch (_) {}
+            return;
+          }
+          if (url) _cacheScreenshot(entry.screenshot, url);
+        }
+        if (url) {
+          _currentScreenshotBlobURL = url;
+          // Reuse existing <img> element to prevent flash
+          let img = ssContainer.querySelector('img');
+          if (img) {
+            img.src = url;
+          } else {
+            ssContainer.innerHTML = '';
+            img = document.createElement('img');
+            img.alt = 'Screenshot';
+            img.src = url;
+            ssContainer.appendChild(img);
+          }
+        } else {
+          ssContainer.innerHTML = '<span class="zenripple-replay-no-screenshot">Screenshot unavailable</span>';
+        }
+      } else {
+        ssContainer.innerHTML = '<span class="zenripple-replay-no-screenshot">No screenshot for this call</span>';
+      }
+    }
+
+    // Prefetch next screenshot for smoother playback
+    const nextIdx = idx + 1 < _replayEntries.length ? idx + 1 : 0;
+    const nextEntry = _replayEntries[nextIdx];
+    if (nextEntry && nextEntry.screenshot) {
+      _prefetchScreenshot(replayDir, nextEntry.screenshot);
+    }
+  }
+
+  function _navigateReplay(direction) {
+    // direction: 1 = next (newer), -1 = previous (older)
+    if (_replayEntries.length === 0) return;
+    let newIdx = _replaySelectedIdx + direction;
+    if (newIdx < 0) newIdx = 0;
+    if (newIdx >= _replayEntries.length) newIdx = _replayEntries.length - 1;
+    if (newIdx !== _replaySelectedIdx) {
+      selectReplayEntry(newIdx, _replayReplayDir);
+    }
+  }
+
+  function handleReplayKeydown(e) {
+    if (!_replayModal) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_sessionBrowserMode) {
+        _exitSessionBrowser();
+      } else {
+        closeReplayModal();
+      }
+      return;
+    }
+
+    // Backspace: go to session browser (or back from it)
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      e.stopPropagation();
+      if (_sessionBrowserMode) {
+        _exitSessionBrowser();
+      } else {
+        showSessionBrowser();
+      }
+      return;
+    }
+
+    // Session browser mode: navigate list
+    if (_sessionBrowserMode) {
+      if (e.key === 'ArrowDown' || e.key === 'j') {
+        e.preventDefault(); e.stopPropagation();
+        _navigateSessionBrowser(1);
+        return;
+      }
+      if (e.key === 'ArrowUp' || e.key === 'k') {
+        e.preventDefault(); e.stopPropagation();
+        _navigateSessionBrowser(-1);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault(); e.stopPropagation();
+        _openSessionFromBrowser(_sessionBrowserIdx);
+        return;
+      }
+      return; // Swallow other keys in browser mode
+    }
+
+    // Navigation: ArrowDown/j = older (lower seq), ArrowUp/k = newer (higher seq)
+    if (e.key === 'ArrowDown' || e.key === 'j') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      _navigateReplay(-1);
+      return;
+    }
+    if (e.key === 'ArrowUp' || e.key === 'k') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      _navigateReplay(1);
+      return;
+    }
+
+    // Playback: Space = play/pause
+    if (e.key === ' ') {
+      e.preventDefault();
+      e.stopPropagation();
+      _togglePlayback();
+      return;
+    }
+
+    // Speed: [ = slower, ] = faster
+    if (e.key === '[') {
+      e.preventDefault();
+      e.stopPropagation();
+      _setPlaybackSpeed(_playbackSpeedIdx - 1);
+      return;
+    }
+    if (e.key === ']') {
+      e.preventDefault();
+      e.stopPropagation();
+      _setPlaybackSpeed(_playbackSpeedIdx + 1);
+      return;
+    }
+
+    // Home/End: jump to first/last
+    if (e.key === 'Home' || e.key === 'g') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      if (_replayEntries.length > 0) selectReplayEntry(0, _replayReplayDir);
+      return;
+    }
+    if (e.key === 'End' || e.key === 'G') {
+      e.preventDefault();
+      e.stopPropagation();
+      _stopPlayback();
+      if (_replayEntries.length > 0) selectReplayEntry(_replayEntries.length - 1, _replayReplayDir);
+      return;
+    }
+  }
+
+  async function openReplayModal(sessionId, session) {
+    if (_replayLoading) return;
+    _replayLoading = true;
+
+    const openBrowser = sessionId === '_browser_';
+    const effectiveId = openBrowser ? '' : sessionId;
+
+    try {
+      closeReplayModal();
+
+      _replaySessionId = effectiveId;
+      _sessionBrowserMode = false;
+      injectReplayStyles();
+
+      let entries = [];
+      let replayDir = '';
+      if (effectiveId) {
+        const data = await loadReplayData(effectiveId);
+        entries = data.entries;
+        replayDir = data.replayDir;
+      }
+      _replayEntries = entries;
+      _replaySelectedIdx = -1;
+      _replayReplayDir = replayDir;
+
+      // Reset playback state
+      _playbackPlaying = false;
+      _playbackSpeedIdx = 1;
+      _playbackTimer = null;
+
+      _replayModal = buildReplayModal(effectiveId || 'browser', session, entries, replayDir);
+      document.documentElement.appendChild(_replayModal);
+
+      window.addEventListener('keydown', handleReplayKeydown, true);
+
+      if (openBrowser) {
+        // Go straight to session browser
+        await showSessionBrowser();
+      } else {
+        // Auto-select the most recent entry
+        if (entries.length > 0) {
+          selectReplayEntry(entries.length - 1, replayDir);
+        }
+        // Start polling for new entries while modal is open
+        _startLiveUpdates();
+      }
+
+      log('Replay viewer opened for session ' + (effectiveId || 'browser') + ' (' + entries.length + ' entries)');
+    } catch (err) {
+      log('Error opening replay modal: ' + err);
+    } finally {
+      _replayLoading = false;
+    }
+  }
+
+  function closeReplayModal() {
+    if (!_replayModal) return;
+
+    _stopPlayback();
+    _stopLiveUpdates();
+    window.removeEventListener('keydown', handleReplayKeydown, true);
+
+    // Clean up splitter and ResizeObserver listeners
+    if (_replayModal._splitterCleanup) _replayModal._splitterCleanup();
+    if (_replayModal._resizeObserverCleanup) _replayModal._resizeObserverCleanup();
+
+    _clearScreenshotCache();
+    if (_currentScreenshotBlobURL) {
+      try { URL.revokeObjectURL(_currentScreenshotBlobURL); } catch (_) {}
+      _currentScreenshotBlobURL = null;
+    }
+
+    _replayModal.remove();
+    _replayModal = null;
+    _replayEntries = [];
+    _replaySelectedIdx = -1;
+    _replaySessionId = null;
+    _replayReplayDir = null;
+    _sessionBrowserMode = false;
+    _lastLogSize = 0;
+    // Note: _replayLoading is managed by openReplayModal's try/finally — don't reset here
+
+    log('Replay viewer closed');
+  }
+
+  function handleReplayShortcut(e) {
+    // Ctrl+Shift+E on all platforms
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyE') {
+      // Only respond in the ZenRipple workspace
+      if (!isCurrentWorkspaceAgent()) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      const currentTab = gBrowser.selectedTab;
+      if (!currentTab) return;
+
+      const sessionId = currentTab.getAttribute('data-agent-session-id');
+
+      if (sessionId) {
+        // Agent tab: toggle or switch to its replay
+        if (_replayModal) {
+          if (_replaySessionId === sessionId) {
+            closeReplayModal();
+            return;
+          }
+          closeReplayModal();
+        }
+        const session = sessions.get(sessionId);
+        openReplayModal(sessionId, session || null).catch(err => log('Replay modal error: ' + err));
+      } else {
+        // Non-agent tab: try smart matching, then fall back to session browser
+        if (_replayModal) { closeReplayModal(); return; }
+        (async () => {
+          try {
+            const matched = await guessSessionForTab(currentTab);
+            if (matched) {
+              const session = sessions.get(matched.sessionId) || { name: matched.name };
+              await openReplayModal(matched.sessionId, session);
+            } else {
+              // No match — open session browser directly
+              await openReplayModal('_browser_', null);
+            }
+          } catch (err) {
+            log('Replay shortcut error: ' + err);
+          }
+        })();
+      }
+    }
+  }
+
+  function setupReplayShortcut() {
+    window.addEventListener('keydown', handleReplayShortcut, true);
+    log('Replay viewer shortcut registered (Ctrl+Shift+E)');
+  }
+
+  // ── Tab context menu: "Session Replay" ──
+
+  function setupReplayContextMenu() {
+    const menu = document.getElementById('tabContextMenu');
+    if (!menu) {
+      log('tabContextMenu not found — skipping context menu setup');
+      return;
+    }
+
+    const menuItem = document.createXULElement('menuitem');
+    menuItem.id = 'zenripple-context-replay';
+    menuItem.setAttribute('label', 'Session Replay');
+    menuItem.setAttribute('accesskey', 'R');
+    menuItem.addEventListener('command', () => {
+      const tab = TabContextMenu.contextTab || gBrowser.selectedTab;
+      if (!tab) return;
+      const sessionId = tab.getAttribute('data-agent-session-id');
+      if (sessionId) {
+        // Agent tab: open its replay directly
+        if (_replayModal) closeReplayModal();
+        const session = sessions.get(sessionId);
+        openReplayModal(sessionId, session || null).catch(err => log('Context menu replay error: ' + err));
+      } else {
+        // Non-agent tab: smart match or session browser (same as Ctrl+Shift+E)
+        if (_replayModal) { closeReplayModal(); return; }
+        (async () => {
+          try {
+            const matched = await guessSessionForTab(tab);
+            if (matched) {
+              const session = sessions.get(matched.sessionId) || { name: matched.name };
+              await openReplayModal(matched.sessionId, session);
+            } else {
+              await openReplayModal('_browser_', null);
+            }
+          } catch (err) {
+            log('Context menu replay error: ' + err);
+          }
+        })();
+      }
+    });
+
+    // Insert before the first direct-child separator or at end
+    const sep = menu.querySelector(':scope > menuseparator');
+    if (sep) {
+      menu.insertBefore(menuItem, sep);
+    } else {
+      menu.appendChild(menuItem);
+    }
+
+    // Show/hide based on whether the tab is in the ZenRipple workspace
+    menu.addEventListener('popupshowing', () => {
+      const tab = TabContextMenu.contextTab || gBrowser.selectedTab;
+      menuItem.hidden = !isTabInAgentWorkspace(tab);
+    });
+
+    log('Replay context menu item added');
+  }
+
+  // ============================================
   // INITIALIZATION
   // ============================================
 
@@ -3404,15 +5474,25 @@
       return;
     }
 
-    startServer(); // async — loads auth token then opens socket
-    injectAgentTabStyles();
-    registerActors();
-    setupNavTracking();
-    setupDialogObserver();
-    setupTabEventTracking();
-    setupPopupBlockedTracking();
+    // Guard against uncaught errors — sine's observe() has no try/catch
+    // around loadSubScriptWithOptions, so a throw here would prevent all
+    // subsequent mods (e.g. ZenLeap) from loading.
+    try {
+      startServer(); // async — loads auth token then opens socket
+      injectAgentTabStyles();
+      registerActors();
+      setupNavTracking();
+      setupDialogObserver();
+      setupTabEventTracking();
+      setupPopupBlockedTracking();
+      setupReplayShortcut();
+      setupReplayContextMenu();
 
-    log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
+      log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
+    } catch (e) {
+      log('Initialization error (non-fatal): ' + e);
+      console.error('[ZenRipple] init() failed:', e);
+    }
   }
 
   // Clean up on window close

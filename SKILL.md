@@ -124,6 +124,21 @@ fi
 - If it says "ACTION REQUIRED: Restart Zen Browser" — tell the user to restart, then re-run the ping check.
 - If it says "no connection" — Zen Browser may not be running or may need a restart.
 
+**Compaction safeguard:** After preflight, check if `~/.claude/CLAUDE.md` contains a ZenRipple compaction reminder. If not, append one:
+
+```bash
+if ! grep -q 'zenripple/SKILL.md' ~/.claude/CLAUDE.md 2>/dev/null; then
+  cat >> ~/.claude/CLAUDE.md <<'ZENRIPPLE_EOF'
+
+## ZenRipple — Re-read after compaction
+If this conversation has been compacted, re-read the ZenRipple skill file before making browser tool calls: `Read ~/.claude/skills/zenripple/SKILL.md`
+ZENRIPPLE_EOF
+  echo "CLAUDE.md: added ZenRipple compaction reminder"
+else
+  echo "CLAUDE.md: ZenRipple reminder already present"
+fi
+```
+
 ### Authentication
 
 WebSocket connections are protected by a shared auth token. **This is fully automatic — no configuration needed.**
@@ -159,17 +174,45 @@ npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researc
 npx -y mcporter call zenripple.browser_session_close --output json
 ```
 
-### Sub-Agent Isolation
+### Sub-Agent Isolation — IMPORTANT
 
-By default, sub-agents share the parent terminal's session and tabs. To give a sub-agent its own isolated session, set `ZENRIPPLE_CALLER_ID` in its environment:
+> **Every sub-agent that uses the browser MUST get its own session.**
+> Sharing a session between agents causes tab conflicts, race conditions, and corrupted replay logs. This is non-negotiable.
 
+**Why this matters:**
+- Each session has its own tabs, replay log, and screenshots
+- Two agents sharing a session will step on each other's tabs and produce an interleaved, unusable replay log
+- The replay viewer (Ctrl+Shift+E) shows one session at a time — separate sessions = separate replay histories
+
+**How to spawn a sub-agent with its own session:**
+
+1. **Generate a fresh session ID** before spawning the sub-agent:
 ```bash
-# Sub-agent shares parent's session (default — no action needed)
-<sub-agent-command>
-
-# Sub-agent gets its own isolated session
-ZENRIPPLE_CALLER_ID=research-agent <sub-agent-command>
+SUB_SID="$(uv run --project ~/zenripple/mcp python ~/zenripple/mcp/zenripple_session.py new)"
 ```
+
+2. **Tell the sub-agent its session ID** in the Agent tool prompt, and instruct it to prefix every MCPorter call with it:
+
+```
+Your ZenRipple session ID is: <the $SUB_SID value>
+
+Prefix EVERY MCPorter browser call with your session ID:
+
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.<tool> --args '...' --output json
+
+Before doing anything else, name your session:
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"research-agent"}' --output json
+
+When finished, close your session:
+  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_session_close --output json
+```
+
+The parent's session is unaffected — the `ZENRIPPLE_SESSION_ID` prefix only applies to that one MCPorter process.
+
+**Common mistakes:**
+- ❌ Sub-agent calling MCPorter without the `ZENRIPPLE_SESSION_ID` prefix — it will get the parent's session
+- ❌ Not naming the sub-agent's session — makes it hard to tell tabs apart in the sidebar
+- ❌ Not closing the sub-agent's session — leaves stale tabs and resources
 
 ### Pinned Session (Advanced)
 
@@ -376,8 +419,12 @@ The general pattern: call `browser_get_dom` (or `browser_get_elements_compact`) 
 - `browser_select_option(index, value)` — select a dropdown option by value or visible text.
 - `browser_type(text)` — type character-by-character into the focused element. Click an element first to focus it.
 - `browser_press_key(key)` — press a key (Enter, Tab, Escape, ArrowDown, etc.) with optional `ctrl`/`shift`/`alt`/`meta` modifiers.
-- `browser_scroll(direction, amount)` — scroll up/down/left/right by pixel amount (default: 500px down).
-- `browser_hover(index)` — hover over an element to reveal tooltips or dropdown menus.
+- `browser_scroll(direction, amount)` — scroll the page up/down/left/right by pixel amount (default: 500px down).
+- `browser_scroll_at_point(x, y, direction, amount)` — scroll a specific element at the given coordinates. Use for overflow containers, dropdowns, or scrollable panels that aren't the main page. Auto-routes into iframes.
+- `browser_grounded_scroll(description, direction, amount)` — scroll at an element described in natural language. Uses VLM grounding to find the coordinates, then scrolls there.
+- `browser_hover(index)` — hover over an element by DOM index to reveal tooltips or dropdown menus.
+- `browser_hover_coordinates(x, y)` — hover at exact pixel coordinates. Use for targets not in the DOM index. Shows a cursor overlay. Auto-routes into iframes.
+- `browser_grounded_hover(description)` — hover at an element described in natural language. Uses VLM grounding to find the coordinates, then hovers. Useful for revealing tooltips, sub-menus, or hover-dependent UI.
 - `browser_drag(source_index, target_index)` — drag one element to another.
 - `browser_drag_coordinates(start_x, start_y, end_x, end_y)` — drag between coordinates.
 - `browser_file_upload(file_path, index)` — upload a file to an `<input type="file">` element.
@@ -460,7 +507,7 @@ browser_batch_navigate(urls="https://a.com,https://b.com", persist=true)
 **MCPorter CLI:**
 ```bash
 npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
-npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":["https://a.com","https://b.com"],"persist":true}' --output json
+npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":"https://a.com,https://b.com","persist":true}' --output json
 ```
 
 **Checking persistence status:**
@@ -514,30 +561,30 @@ Record a sequence of browser actions and replay them later:
 - `browser_record_save(file_path)` — save the recording to a JSON file.
 - `browser_record_replay(file_path, delay)` — replay a recording with optional delay between actions (default 0.5s).
 
-### Session Replay (Video)
+### Session Replay (Tool Call Log)
 
-Automatically captures screenshots after every visual browser action, then stitches them into an MP4 video. **Always-on by default** — replay auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk, not in memory. Requires `ffmpeg` in `PATH` for video assembly. Timestamps and tool names are overlaid on each frame if `Pillow` is installed (optional).
+Automatically logs every tool call with a screenshot, arguments, and result. **Always-on by default** — auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk (JSONL + JPEG files), not in memory.
 
-**Workflow:**
+**How it works:**
 
-1. Replay starts automatically when a session is active. No need to call `browser_replay_start`.
-2. Call `browser_replay_mark_prompt(text)` each time a new user prompt begins — this creates visual prompt-boundary markers in the video.
-3. Perform browser actions as normal — screenshots are captured automatically after every visual tool call (navigate, click, scroll, type, etc.).
-4. Call `browser_replay_save_video(output_path)` to assemble an MP4. Use `scope` to control what's included:
-   - `"session"` (default) — all frames from the entire session
-   - `"last_prompt"` — only frames from the most recent prompt
-   - `"prompt"` + `prompt_index=N` — frames from a specific prompt
-5. Optionally call `browser_replay_stop` to stop capturing. Frame data is preserved, so `save_video` still works after stopping.
+Every tool call is automatically logged to `$TMPDIR/zenripple_replay_{session_id}/tool_log.jsonl`. Each log entry contains the tool name, arguments, result, timestamp, duration, and a reference to a JPEG screenshot captured at the time of the call. Screenshots are saved as individual JPEG files in the same directory.
 
-**Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic replay capture.
+**Viewing the replay:**
+
+Press **Ctrl+Shift+E** while in the ZenRipple workspace in Zen Browser. On agent-owned tabs, it opens that session's replay directly. On other tabs, it attempts smart matching by URL or opens a session browser. This opens a three-panel modal:
+- **Left:** Screenshot viewer — shows the screenshot from the selected tool call.
+- **Center:** Tool call details — tool name, duration, timestamp, arguments, and result JSON.
+- **Right:** Tool call list (fixed 280px) — most recent first, with timestamps, navigable with arrow keys or j/k (vim).
+
+**Playback:** Press **Space** to play/pause auto-advance through entries. Use **[** / **]** to change speed (0.5×, 1×, 2×, 4×, 8×, 16×, 32×). A progress bar in the footer shows current position and supports click-to-seek.
+
+Press Ctrl+Shift+E again or Esc to close.
+
+**Opt-out:** Set `ZENRIPPLE_NO_REPLAY=1` to disable automatic tool call logging.
 
 **Tools:**
 
-- `browser_replay_start(output_dir?)` — backwards-compatible; can resume a stopped session. Not required for normal use.
-- `browser_replay_mark_prompt(text)` — mark the start of a new user prompt. Creates a title card frame in the video.
-- `browser_replay_save_video(output_path, scope?, prompt_index?)` — assemble frames into an MP4 using ffmpeg. Frame durations are computed from real timestamps.
-- `browser_replay_status` — check if replay is active, frame count, prompt count, and storage directory.
-- `browser_replay_stop` — stop capturing. Frame data is preserved for later `save_video` calls.
+- `browser_replay_status` — check if replay logging is active, tool call count, and storage directory.
 
 ### Clipboard
 
@@ -618,6 +665,7 @@ npx -y mcporter call zenripple.browser_session_close --output json
 - **Respect user activity.** If page state changed unexpectedly, the user may have acted. Evaluate whether it helps or blocks you, and adapt accordingly (see Shared Browser section above).
 - Do not claim actively-owned tabs — only unclaimed or stale ones.
 - Close your session (`browser_session_close`) when done to prevent stale resources.
+- **Sub-agents MUST have their own sessions.** See "Sub-Agent Isolation" above — generate a fresh `ZENRIPPLE_SESSION_ID` before spawning any sub-agent that will use the browser.
 - **Stale sessions / wrong tabs**: `rm ~/.zenripple/sessions/*` and retry to force fresh sessions.
 - Close tabs you no longer need (`browser_close_tab`).
 - Do not force-send messages or bypass verification gates.
