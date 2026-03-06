@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import glob
 import os
+import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -153,7 +154,9 @@ class BenchmarkRunner:
         self.collector = collector
         self.verifier = verifier
 
-    def _build_options(self, scenario: Scenario) -> ClaudeAgentOptions:
+    def _build_options(
+        self, scenario: Scenario, *, session_id: str | None = None
+    ) -> ClaudeAgentOptions:
         """Build Claude Agent SDK options for a scenario."""
         system_prompt: dict[str, str] = {
             "type": "preset",
@@ -162,8 +165,12 @@ class BenchmarkRunner:
         if scenario.append_system_prompt:
             system_prompt["append"] = scenario.append_system_prompt
 
+        mcp_config = dict(MCP_CONFIG)
+        if session_id:
+            mcp_config["env"] = {"ZENRIPPLE_SESSION_ID": session_id}
+
         return ClaudeAgentOptions(
-            mcp_servers={"zenripple-browser": MCP_CONFIG},
+            mcp_servers={"zenripple-browser": mcp_config},
             allowed_tools=ALLOWED_TOOLS,
             max_turns=scenario.max_turns,
             max_budget_usd=scenario.max_budget_usd,
@@ -173,32 +180,39 @@ class BenchmarkRunner:
         )
 
     @staticmethod
-    def _last_replay_screenshot(replay_dirs_before: set[str]) -> str:
-        """Find the last screenshot from any new replay directory.
+    def _create_session() -> str:
+        """Create a fresh browser session via zenripple_session.py."""
+        result = subprocess.run(
+            [
+                str(PROJECT_ROOT / "mcp" / ".venv" / "bin" / "python"),
+                str(PROJECT_ROOT / "mcp" / "zenripple_session.py"),
+                "new",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        session_id = result.stdout.strip()
+        if not session_id or result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to create session: {result.stderr.strip()}"
+            )
+        return session_id
 
-        Compares current zenripple_replay_* dirs against the snapshot taken
-        before the agent ran, and looks for the newest screenshot in any new dir.
-        """
-        tmp = tempfile.gettempdir()
-        current = set(glob.glob(os.path.join(tmp, "zenripple_replay_*")))
-        new_dirs = current - replay_dirs_before
-        if not new_dirs:
-            # Fallback: check the most recently modified replay dir
-            all_dirs = sorted(current, key=os.path.getmtime)
-            new_dirs = {all_dirs[-1]} if all_dirs else set()
+    @staticmethod
+    def _replay_dir_for_session(session_id: str) -> str:
+        """Get the replay directory path for a known session ID."""
+        return os.path.join(
+            tempfile.gettempdir(), f"zenripple_replay_{session_id}"
+        )
 
-        # Find the newest screenshot across all new dirs
-        best_path = ""
-        best_mtime = 0.0
-        for d in new_dirs:
-            shots = glob.glob(os.path.join(d, "*.jpg"))
-            if shots:
-                latest = max(shots, key=os.path.getmtime)
-                mt = os.path.getmtime(latest)
-                if mt > best_mtime:
-                    best_mtime = mt
-                    best_path = latest
-        return best_path
+    @staticmethod
+    def _last_screenshot(replay_dir: str) -> str:
+        """Get the last screenshot from a replay directory."""
+        if not replay_dir or not os.path.isdir(replay_dir):
+            return ""
+        shots = glob.glob(os.path.join(replay_dir, "*.jpg"))
+        return max(shots, key=os.path.getmtime) if shots else ""
 
     def _build_result(
         self, scenario: Scenario, run: ScenarioRun
@@ -241,31 +255,34 @@ class BenchmarkRunner:
         return result
 
     async def run_scenario(self, scenario: Scenario) -> RunResult:
-        """Run a single scenario with up to max_attempts tries."""
+        """Run a single scenario with up to max_attempts tries.
+
+        Each run gets its own ZenRipple session via ZENRIPPLE_SESSION_ID,
+        giving it isolated tabs and a deterministic replay directory.
+        This makes parallel execution safe without any locking.
+        """
         result: RunResult | None = None
 
-        # Snapshot replay dirs before run so we can find new screenshots after
-        replay_dirs_before = set(
-            glob.glob(os.path.join(tempfile.gettempdir(), "zenripple_replay_*"))
-        )
-
         for attempt in range(1, scenario.max_attempts + 1):
+            # Each attempt gets a fresh, isolated browser session
+            session_id = self._create_session()
+            replay_dir = self._replay_dir_for_session(session_id)
+
             run = ScenarioRun(
                 scenario_id=scenario.id,
                 attempt=attempt,
                 started_at=time.time(),
             )
             tool_calls: list[ToolCallRecord] = []
-            # Track pending tool uses by ID to match with results
             pending_tools: dict[str, ToolCallRecord] = {}
 
             try:
-                # Setup
                 if scenario.setup_fn:
                     await scenario.setup_fn()
 
-                # Execute via Claude Agent SDK
-                options = self._build_options(scenario)
+                options = self._build_options(
+                    scenario, session_id=session_id
+                )
                 result_msg = None
 
                 async for message in query(
@@ -309,21 +326,18 @@ class BenchmarkRunner:
                 run.tool_calls = tool_calls
                 run.ended_at = time.time()
 
-                # Check for agent error
                 if not result_msg or result_msg.is_error:
                     run.error = (
                         result_msg.result if result_msg else "No result message"
                     )
                     run.failure_category = "agent_error"
                 else:
-                    # Verify browser state
                     browser_state = await self.verifier.capture_state()
                     browser_state["agent_response"] = (
                         result_msg.result if result_msg else ""
                     )
-                    # Grab the last screenshot from any new replay directory
                     browser_state["screenshot_path"] = (
-                        self._last_replay_screenshot(replay_dirs_before)
+                        self._last_screenshot(replay_dir)
                     )
                     for check in scenario.verifications:
                         passed = await check.check_fn(browser_state)
@@ -345,7 +359,6 @@ class BenchmarkRunner:
                 run.error = str(e)
                 run.failure_category = "agent_error"
             finally:
-                # Teardown
                 if scenario.teardown_fn:
                     try:
                         await scenario.teardown_fn()
@@ -354,7 +367,6 @@ class BenchmarkRunner:
 
             result = self._build_result(scenario, run)
 
-            # Retry only on infrastructure failures
             if run.failure_category is None or run.failure_category != "infrastructure":
                 break
             if attempt < scenario.max_attempts:

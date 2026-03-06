@@ -1,17 +1,17 @@
-"""WebVoyager benchmark runner with resume support.
+"""WebVoyager benchmark runner with parallel execution and resume support.
 
 Usage:
-    # Run all 642 tasks
-    uv run --project bench python -m bench.run_webvoyager
-
-    # Run next 10 tasks (from start or resuming)
+    # Run 10 tasks, 5 at a time (default concurrency)
     uv run --project bench python -m bench.run_webvoyager --tasks 10
 
     # Resume from where we left off
     uv run --project bench python -m bench.run_webvoyager --tasks 10 --resume
 
-    # Start fresh (ignore previous progress)
-    uv run --project bench python -m bench.run_webvoyager --tasks 10
+    # Run all remaining tasks
+    uv run --project bench python -m bench.run_webvoyager --resume
+
+    # Adjust concurrency
+    uv run --project bench python -m bench.run_webvoyager --tasks 10 --concurrency 3
 
     # Filter by website
     uv run --project bench python -m bench.run_webvoyager --tasks 5 --site Amazon --resume
@@ -187,7 +187,8 @@ async def run(args: argparse.Namespace):
     for task, scenario in zip(pending_tasks, scenarios):
         task_by_scenario[scenario.id] = task
 
-    # Run
+    # Run — each task gets its own ZenRipple session (no shared state)
+    concurrency = args.concurrency
     collector = MetricsCollector()
     verifier = BrowserVerifier()
     runner = BenchmarkRunner(collector, verifier)
@@ -195,32 +196,34 @@ async def run(args: argparse.Namespace):
     passed_count = 0
     failed_count = 0
     batch_cost = 0.0
+    progress_lock = asyncio.Lock()
+    semaphore = asyncio.Semaphore(concurrency)
 
-    try:
-        for i, scenario in enumerate(scenarios, 1):
-            task = task_by_scenario[scenario.id]
+    async def run_one(i: int, scenario, task):
+        nonlocal passed_count, failed_count, batch_cost
+
+        async with semaphore:
             log(
                 f"[{i}/{len(scenarios)}] {task.website} | {task.task_id}"
             )
             log(f"  {task.intent[:100]}")
 
-            await verifier.cleanup_tabs()
-
             try:
                 result = await runner.run_scenario(scenario)
             except Exception as e:
                 log(f"  ERROR: {e}")
-                progress["completed"][task.task_id] = {
-                    "passed": False,
-                    "website": task.website,
-                    "error": str(e),
-                    "cost_usd": 0,
-                    "duration_ms": 0,
-                    "timestamp": time.time(),
-                }
-                save_progress(progress)
+                async with progress_lock:
+                    progress["completed"][task.task_id] = {
+                        "passed": False,
+                        "website": task.website,
+                        "error": str(e),
+                        "cost_usd": 0,
+                        "duration_ms": 0,
+                        "timestamp": time.time(),
+                    }
+                    save_progress(progress)
                 failed_count += 1
-                continue
+                return
 
             cost = result.total_cost_usd or 0
             batch_cost += cost
@@ -242,18 +245,26 @@ async def run(args: argparse.Namespace):
                 log(f"  Answer: {resp}")
             log()
 
-            # Save progress after each task
-            progress["completed"][task.task_id] = {
-                "passed": result.passed,
-                "website": task.website,
-                "cost_usd": cost,
-                "duration_ms": result.duration_ms,
-                "tool_calls": result.tool_call_count,
-                "error": result.error,
-                "timestamp": time.time(),
-            }
-            save_progress(progress)
+            async with progress_lock:
+                progress["completed"][task.task_id] = {
+                    "passed": result.passed,
+                    "website": task.website,
+                    "cost_usd": cost,
+                    "duration_ms": result.duration_ms,
+                    "tool_calls": result.tool_call_count,
+                    "error": result.error,
+                    "timestamp": time.time(),
+                }
+                save_progress(progress)
 
+    log(f"Concurrency: {concurrency}")
+
+    try:
+        coros = [
+            run_one(i, scenario, task_by_scenario[scenario.id])
+            for i, scenario in enumerate(scenarios, 1)
+        ]
+        await asyncio.gather(*coros)
     except KeyboardInterrupt:
         log("\nInterrupted. Progress saved.")
     finally:
@@ -265,11 +276,12 @@ async def run(args: argparse.Namespace):
 
     log(f"{'=' * 50}")
     log(f"Batch:  {passed_count} passed, {failed_count} failed (${batch_cost:.2f})")
-    log(
-        f"Overall: {total_passed}/{total_done} passed "
-        f"({total_passed / total_done:.0%}), "
-        f"{len(all_tasks) - total_done} remaining"
-    )
+    if total_done > 0:
+        log(
+            f"Overall: {total_passed}/{total_done} passed "
+            f"({total_passed / total_done:.0%}), "
+            f"{len(all_tasks) - total_done} remaining"
+        )
     log(f"Resume with: uv run --project bench python -m bench.run_webvoyager --tasks {args.tasks or 10} --resume")
 
 
@@ -322,6 +334,12 @@ def main():
         type=int,
         default=300,
         help="Timeout per task in seconds (default: 300)",
+    )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=5,
+        help="Number of tasks to run in parallel (default: 5)",
     )
     args = parser.parse_args()
     asyncio.run(run(args))
