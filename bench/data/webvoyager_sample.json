@@ -1,0 +1,20 @@
+[
+  {
+    "task_id": "wiki_0",
+    "web_name": "wikipedia",
+    "task": "Find the population of Tokyo from the Wikipedia article about Tokyo",
+    "url": "https://en.wikipedia.org/wiki/Tokyo"
+  },
+  {
+    "task_id": "example_1",
+    "web_name": "example",
+    "task": "Confirm that the page says 'This domain is for use in illustrative examples in documents'",
+    "url": "https://example.com"
+  },
+  {
+    "task_id": "hackernews_2",
+    "web_name": "hackernews",
+    "task": "Find the title of the #1 post on the front page of Hacker News",
+    "url": "https://news.ycombinator.com/"
+  }
+]

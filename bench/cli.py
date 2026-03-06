@@ -12,6 +12,7 @@ from bench.metrics import MetricsCollector, RunResult
 from bench.report import ReportGenerator
 from bench.runner import BenchmarkRunner
 from bench.scenario import ScenarioSuite
+from bench.loaders.webvoyager import load_tasks, tasks_to_scenarios
 from bench.scenarios import ALL_SCENARIOS
 from bench.verify import BrowserVerifier
 
@@ -75,7 +76,11 @@ async def cmd_run(args: argparse.Namespace):
     suites = get_suites()
 
     # Select scenarios
-    if args.scenario:
+    if args.tasks_file:
+        wv_tasks = load_tasks(args.tasks_file)
+        scenarios = tasks_to_scenarios(wv_tasks)
+        print(f"Loaded {len(scenarios)} WebVoyager tasks from {args.tasks_file}")
+    elif args.scenario:
         scenarios = [s for s in ALL_SCENARIOS if s.id == args.scenario]
         if not scenarios:
             print(f"Scenario '{args.scenario}' not found.")
@@ -233,6 +238,10 @@ def main():
         "--format",
         choices=["text", "json", "markdown"],
         default="text",
+    )
+    run_parser.add_argument(
+        "--tasks-file",
+        help="Path to a WebVoyager JSON tasks file (overrides --suite/--scenario)",
     )
     run_parser.add_argument(
         "--trace",

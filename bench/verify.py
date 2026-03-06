@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from typing import Any
 from uuid import uuid4
 
@@ -14,8 +15,26 @@ WS_URL = "ws://localhost:9876"
 MAX_RECV_ATTEMPTS = 10
 
 
+def _read_auth_token() -> str:
+    """Read auth token from env var or ~/.zenripple/auth file."""
+    from_env = os.environ.get("ZENRIPPLE_AUTH_TOKEN", "").strip()
+    if from_env:
+        return from_env
+    auth_file = os.path.join(os.path.expanduser("~"), ".zenripple", "auth")
+    try:
+        with open(auth_file) as f:
+            return f.read().strip()
+    except (FileNotFoundError, PermissionError):
+        return ""
+
+
 class BrowserVerifier:
-    """Connects to the browser WebSocket to verify state after scenarios."""
+    """Connects to the browser WebSocket to verify state after scenarios.
+
+    Uses list_workspace_tabs to see all tabs in the ZenRipple workspace
+    (not just the verifier's own session), and passes explicit tab_id
+    to commands that need to operate on the agent's tabs.
+    """
 
     def __init__(self, ws_url: str = WS_URL):
         self.ws_url = ws_url
@@ -23,8 +42,12 @@ class BrowserVerifier:
 
     async def _get_ws(self):
         if self._ws is None:
+            token = _read_auth_token()
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
             self._ws = await websockets.connect(
-                self.ws_url, max_size=10 * 1024 * 1024
+                f"{self.ws_url}/new",
+                max_size=10 * 1024 * 1024,
+                additional_headers=headers,
             )
         return self._ws
 
@@ -67,29 +90,54 @@ class BrowserVerifier:
                 raise
         raise Exception(f"{method}: failed after reconnect")
 
+    async def _get_active_tab_id(self) -> str | None:
+        """Find the most recently used tab in the workspace."""
+        try:
+            tabs = await self._send_command("list_workspace_tabs")
+        except Exception:
+            return None
+        if not tabs:
+            return None
+        # Prefer the last tab (most recently opened)
+        return tabs[-1].get("tab_id")
+
     async def capture_state(self) -> dict[str, Any]:
         """Capture full browser state for verification."""
         state: dict[str, Any] = {}
 
-        # List tabs
-        state["tabs"] = await self._send_command("list_tabs")
+        # List ALL workspace tabs (not just our session's)
+        try:
+            state["tabs"] = await self._send_command("list_workspace_tabs")
+        except Exception:
+            state["tabs"] = []
+
+        # Find the active tab to query
+        tab_id = None
+        if state["tabs"]:
+            tab_id = state["tabs"][-1].get("tab_id")
 
         # Get active tab info
         try:
-            state["active_page_info"] = await self._send_command("get_page_info")
+            state["active_page_info"] = await self._send_command(
+                "get_page_info", {"tab_id": tab_id} if tab_id else None
+            )
         except Exception:
             state["active_page_info"] = {}
 
         # Get active tab DOM
         try:
-            dom_result = await self._send_command("get_dom")
+            dom_result = await self._send_command(
+                "get_dom", {"tab_id": tab_id} if tab_id else None
+            )
             state["dom_elements"] = dom_result.get("elements", [])
         except Exception:
             state["dom_elements"] = []
 
         # Get page text
         try:
-            text_result = await self._send_command("get_page_text")
+            text_result = await self._send_command(
+                "get_page_text", {"tab_id": tab_id} if tab_id else None
+            )
             state["page_text"] = text_result.get("text", "")
         except Exception:
             state["page_text"] = ""
@@ -99,7 +147,7 @@ class BrowserVerifier:
     async def cleanup_tabs(self):
         """Close all tabs in the agent workspace (cleanup between scenarios)."""
         try:
-            tabs = await self._send_command("list_tabs")
+            tabs = await self._send_command("list_workspace_tabs")
         except Exception:
             return
         for tab in tabs:

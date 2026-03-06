@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import glob
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -105,6 +108,22 @@ ALLOWED_TOOLS = [
     "mcp__zenripple-browser__browser_session_info",
     "mcp__zenripple-browser__browser_session_close",
     "mcp__zenripple-browser__browser_list_sessions",
+    "mcp__zenripple-browser__browser_set_session_name",
+    "mcp__zenripple-browser__browser_list_workspace_tabs",
+    "mcp__zenripple-browser__browser_claim_tab",
+    # Grounded interaction (VLM-based)
+    "mcp__zenripple-browser__browser_grounded_click",
+    "mcp__zenripple-browser__browser_grounded_hover",
+    "mcp__zenripple-browser__browser_grounded_scroll",
+    # Coordinate-based interaction
+    "mcp__zenripple-browser__browser_hover_coordinates",
+    "mcp__zenripple-browser__browser_scroll_at_point",
+    # Popup & utility
+    "mcp__zenripple-browser__browser_allow_blocked_popup",
+    "mcp__zenripple-browser__browser_get_popup_blocked_events",
+    "mcp__zenripple-browser__browser_ping",
+    # Replay
+    "mcp__zenripple-browser__browser_replay_status",
 ]
 
 
@@ -153,6 +172,34 @@ class BenchmarkRunner:
             cwd=str(PROJECT_ROOT),
         )
 
+    @staticmethod
+    def _last_replay_screenshot(replay_dirs_before: set[str]) -> str:
+        """Find the last screenshot from any new replay directory.
+
+        Compares current zenripple_replay_* dirs against the snapshot taken
+        before the agent ran, and looks for the newest screenshot in any new dir.
+        """
+        tmp = tempfile.gettempdir()
+        current = set(glob.glob(os.path.join(tmp, "zenripple_replay_*")))
+        new_dirs = current - replay_dirs_before
+        if not new_dirs:
+            # Fallback: check the most recently modified replay dir
+            all_dirs = sorted(current, key=os.path.getmtime)
+            new_dirs = {all_dirs[-1]} if all_dirs else set()
+
+        # Find the newest screenshot across all new dirs
+        best_path = ""
+        best_mtime = 0.0
+        for d in new_dirs:
+            shots = glob.glob(os.path.join(d, "*.jpg"))
+            if shots:
+                latest = max(shots, key=os.path.getmtime)
+                mt = os.path.getmtime(latest)
+                if mt > best_mtime:
+                    best_mtime = mt
+                    best_path = latest
+        return best_path
+
     def _build_result(
         self, scenario: Scenario, run: ScenarioRun
     ) -> RunResult:
@@ -196,6 +243,11 @@ class BenchmarkRunner:
     async def run_scenario(self, scenario: Scenario) -> RunResult:
         """Run a single scenario with up to max_attempts tries."""
         result: RunResult | None = None
+
+        # Snapshot replay dirs before run so we can find new screenshots after
+        replay_dirs_before = set(
+            glob.glob(os.path.join(tempfile.gettempdir(), "zenripple_replay_*"))
+        )
 
         for attempt in range(1, scenario.max_attempts + 1):
             run = ScenarioRun(
@@ -266,6 +318,13 @@ class BenchmarkRunner:
                 else:
                     # Verify browser state
                     browser_state = await self.verifier.capture_state()
+                    browser_state["agent_response"] = (
+                        result_msg.result if result_msg else ""
+                    )
+                    # Grab the last screenshot from any new replay directory
+                    browser_state["screenshot_path"] = (
+                        self._last_replay_screenshot(replay_dirs_before)
+                    )
                     for check in scenario.verifications:
                         passed = await check.check_fn(browser_state)
                         run.verification_results[check.description] = passed
