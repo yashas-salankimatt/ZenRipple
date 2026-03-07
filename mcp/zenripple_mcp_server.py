@@ -2402,7 +2402,7 @@ async def browser_ping() -> str:
     result = await browser_command("ping")
     browser_version = result.get("version", "unknown")
     info = {
-        "status": "ok",
+        "status": "pong",
         "browser_agent_version": browser_version,
         "mcp_server_version": MCP_SERVER_VERSION,
         "session_id": result.get("session_id", ""),

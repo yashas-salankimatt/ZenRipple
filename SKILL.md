@@ -12,7 +12,7 @@ All agent tabs live in a dedicated "ZenRipple" workspace inside Zen Browser. Eac
 ## Prerequisites
 
 - macOS or Linux with Zen Browser installed and run at least once.
-- **Python >= 3.13**, `uv`, `node`, `npm`/`npx` available.
+- **Python >= 3.13**, `uv` available.
 - Zen profile has `fx-autoconfig` (ZenRipple includes this).
 
 ## Preflight (Run Every Time)
@@ -48,14 +48,11 @@ REPO="$REPO_DIR"
 uv sync --project "$REPO/mcp" --quiet 2>/dev/null
 echo "DEPS: synced"
 
-# ── 3. Ensure MCPorter knows about zenripple ──
-if npx -y mcporter list --json 2>/dev/null | grep -q zenripple; then
-  echo "MCPORTER: configured"
+# ── 3. Verify CLI is available ──
+if uv run --project "$REPO/mcp" zenripple --help >/dev/null 2>&1; then
+  echo "CLI: ready"
 else
-  npx -y mcporter config add zenripple \
-    --stdio uv --arg run --arg --project --arg "$REPO/mcp" \
-    --arg python --arg "$REPO/mcp/zenripple_mcp_server.py" --scope home
-  echo "MCPORTER: configured (was missing — added)"
+  echo "CLI: ERROR — 'zenripple' command not found after uv sync"
 fi
 
 # ── 4. Ensure browser agent is installed and matches repo ──
@@ -111,7 +108,7 @@ if [ "$NEEDS_RESTART" -eq 1 ]; then
   echo ""
   echo "ACTION REQUIRED: Restart Zen Browser to load the updated agent, then proceed."
 else
-  if MCPORTER_CALL_TIMEOUT=10000 npx -y mcporter call zenripple.browser_ping --output json 2>/dev/null | grep -q pong; then
+  if uv run --project "$REPO/mcp" zenripple ping 2>/dev/null | grep -qE '"status".*pong'; then
     echo "PING: connected — ready to use"
   else
     echo "PING: no connection — is Zen Browser running?"
@@ -155,23 +152,18 @@ WebSocket connections are protected by a shared auth token. **This is fully auto
 
 Sessions are **automatic**. Each terminal (tmux pane, iTerm tab, VS Code terminal, etc.) automatically gets its own browser session — just start using tools. No env vars or manual setup needed.
 
-The MCP server identifies your terminal via env vars like `TMUX_PANE`, `ITERM_SESSION_ID`, `TERM_SESSION_ID`, or `VSCODE_PID`, and persists your session ID to `~/.zenripple/sessions/`. Subsequent calls from the same terminal reuse the same session.
+The CLI identifies your terminal via env vars like `TMUX_PANE`, `ITERM_SESSION_ID`, `TERM_SESSION_ID`, or `VSCODE_PID`, and persists your session ID to `~/.zenripple/sessions/`. Subsequent calls from the same terminal reuse the same session.
 
 ```bash
 # Just start using tools — session is created automatically on first call
-npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
+zenripple create-tab https://example.com
 
 # Name the session (do this right after your first tool call)
-# The name appears as a sublabel under each tab title in Zen's sidebar,
-# so you can see which agent owns which tabs at a glance.
-# First check what names other sessions are using, then pick a unique name.
-npx -y mcporter call zenripple.browser_list_sessions --output json
-# ^ Check the "name" field on each session to avoid duplicates
-npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
-# ^ Returns: {"name": "researcher", "other_session_names": ["coder", ...]}
+zenripple session list          # check existing session names
+zenripple session name researcher  # set your session's display name
 
 # Close when done
-npx -y mcporter call zenripple.browser_session_close --output json
+zenripple session close
 ```
 
 ### Sub-Agent Isolation — IMPORTANT
@@ -186,31 +178,32 @@ npx -y mcporter call zenripple.browser_session_close --output json
 
 **How to spawn a sub-agent with its own session:**
 
-1. **Generate a fresh session ID** before spawning the sub-agent:
+1. **Create a session** using `zenripple session spawn`:
 ```bash
-SUB_SID="$(uv run --project ~/zenripple/mcp python ~/zenripple/mcp/zenripple_session.py new)"
+eval "$(zenripple session spawn --name research-agent)"
+# This prints and evaluates: export ZENRIPPLE_SESSION_ID=<uuid>
 ```
 
-2. **Tell the sub-agent its session ID** in the Agent tool prompt, and instruct it to prefix every MCPorter call with it:
+2. **Tell the sub-agent its session ID** in the Agent tool prompt:
 
 ```
-Your ZenRipple session ID is: <the $SUB_SID value>
+Your ZenRipple session ID is: <the ZENRIPPLE_SESSION_ID value>
 
-Prefix EVERY MCPorter browser call with your session ID:
+Prefix EVERY zenripple call with your session ID:
 
-  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.<tool> --args '...' --output json
+  ZENRIPPLE_SESSION_ID="<SID>" zenripple <command> [args...]
 
-Before doing anything else, name your session:
-  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"research-agent"}' --output json
+Or run this once at the start of your session:
+  export ZENRIPPLE_SESSION_ID="<SID>"
 
 When finished, close your session:
-  ZENRIPPLE_SESSION_ID="<SID>" npx -y mcporter call zenripple.browser_session_close --output json
+  zenripple session close
 ```
 
-The parent's session is unaffected — the `ZENRIPPLE_SESSION_ID` prefix only applies to that one MCPorter process.
+The parent's session is unaffected — the `ZENRIPPLE_SESSION_ID` env var only applies to that sub-agent's calls.
 
 **Common mistakes:**
-- ❌ Sub-agent calling MCPorter without the `ZENRIPPLE_SESSION_ID` prefix — it will get the parent's session
+- ❌ Sub-agent calling zenripple without the `ZENRIPPLE_SESSION_ID` env var — it will get the parent's session
 - ❌ Not naming the sub-agent's session — makes it hard to tell tabs apart in the sidebar
 - ❌ Not closing the sub-agent's session — leaves stale tabs and resources
 
@@ -219,7 +212,9 @@ The parent's session is unaffected — the `ZENRIPPLE_SESSION_ID` prefix only ap
 To force all calls to use a specific session ID (e.g., to share a session across different machines or scripts):
 
 ```bash
-export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
+eval "$(zenripple session spawn --name shared-session)"
+# Or manually:
+export ZENRIPPLE_SESSION_ID="$(zenripple session new | jq -r .session_id)"
 ```
 
 When `ZENRIPPLE_SESSION_ID` is set, it takes priority over auto-session and no session file is written.
@@ -239,9 +234,9 @@ Every session should be named immediately after creation. The name is displayed 
 browser_set_session_name(name="researcher")
 ```
 
-**MCPorter CLI:**
+**CLI:**
 ```bash
-npx -y mcporter call zenripple.browser_set_session_name --args '{"name":"researcher"}' --output json
+zenripple session name researcher
 ```
 
 The name also appears in `browser_session_info` and `browser_list_sessions` responses.
@@ -279,20 +274,20 @@ The session name (set via `browser_set_session_name`) appears as a sublabel unde
 
 ```bash
 # First time — provide the key via env var:
-OPENROUTER_API_KEY="sk-or-v1-..." npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the Submit button"}'
+OPENROUTER_API_KEY="sk-or-v1-..." zenripple gclick "the Submit button"
 
 # Every time after — no env var needed, key is remembered:
-npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the Submit button"}'
+zenripple gclick "the Submit button"
 ```
 
-You can also read/write the stored key directly via `browser_eval_chrome` (the config commands are internal browser commands, not separate MCP tools):
+You can also read/write the stored key directly via `eval-chrome`:
 
 ```bash
 # Check if a key is stored:
-npx -y mcporter call zenripple.browser_eval_chrome --args '{"expression": "Services.prefs.getStringPref(\"zenripple.openrouter_api_key\", \"\")"}'
+zenripple eval-chrome 'Services.prefs.getStringPref("zenripple.openrouter_api_key", "")'
 
 # Store a key manually:
-npx -y mcporter call zenripple.browser_eval_chrome --args '{"expression": "Services.prefs.setStringPref(\"zenripple.openrouter_api_key\", \"sk-or-v1-...\"); \"ok\""}'
+zenripple eval-chrome 'Services.prefs.setStringPref("zenripple.openrouter_api_key", "sk-or-v1-..."); "ok"'
 ```
 
 The grounding model, API URL, and coordinate mode are configurable via env vars, but the defaults work out of the box — you shouldn't need to change any of these:
@@ -311,16 +306,14 @@ When you need to click something on a page, use this priority order. **Always st
 Use `browser_get_dom` or `browser_get_elements_compact` to find the element's index, then `browser_click(index)`.
 
 ```bash
-# Get interactive elements
-npx -y mcporter call zenripple.browser_get_elements_compact --output json
-# Click element at index 5
-npx -y mcporter call zenripple.browser_click --args '{"index": 5}'
+zenripple elements          # get interactive elements
+zenripple click 5           # click element at index 5
 ```
 
 Also try `browser_find_element_by_description` for fuzzy matching:
 
 ```bash
-npx -y mcporter call zenripple.browser_find_element_by_description --args '{"description": "login button"}'
+zenripple find "login button"
 ```
 
 DOM clicks are pixel-perfect and never miss. Use them whenever the target is an interactive element visible in the DOM.
@@ -330,7 +323,7 @@ DOM clicks are pixel-perfect and never miss. Use them whenever the target is an 
 If the element isn't in the DOM index list (e.g., canvas content, custom-rendered UI, elements inside complex frameworks), use `browser_grounded_click(description)`. This takes a screenshot, sends it to a VLM for coordinate prediction, and clicks.
 
 ```bash
-npx -y mcporter call zenripple.browser_grounded_click --args '{"description": "the circular target on the blue background"}'
+zenripple gclick "the circular target on the blue background"
 ```
 
 Grounded clicks are very accurate for medium-to-large targets (buttons, icons, headings, links) but can miss on very dense UIs like spreadsheet cells where rows are only ~11px tall. Requires an OpenRouter API key (see above).
@@ -340,7 +333,7 @@ Grounded clicks are very accurate for medium-to-large targets (buttons, icons, h
 Only use `browser_click_coordinates(x, y)` as a last resort when both DOM clicks and grounded clicks are unavailable. Coordinates are estimated from screenshots and are the least reliable method.
 
 ```bash
-npx -y mcporter call zenripple.browser_click_coordinates --args '{"x": 500, "y": 300}'
+zenripple click-xy 500 300
 ```
 
 If screenshot and viewport dimensions differ, coordinates are auto-scaled from screenshot-space to viewport-space. Take a fresh screenshot before clicking to ensure the dimension cache is current.
@@ -362,7 +355,7 @@ When you need to enter text into any input field — form fields, search boxes, 
 Use `browser_get_dom` or `browser_get_elements_compact` to find the input's index, then `browser_fill(index, value)`. This clears the field, sets the value, and dispatches `input`/`change` events. Works on standard `<input>`, `<textarea>`, and `<select>` elements.
 
 ```bash
-npx -y mcporter call zenripple.browser_fill --args '{"index": 3, "value": "hello@example.com"}'
+zenripple fill 3 "hello@example.com"
 ```
 
 For `<select>` dropdowns, use `browser_select_option(index, value)` instead.
@@ -374,25 +367,20 @@ For `<select>` dropdowns, use `browser_select_option(index, value)` instead.
 Click the field to focus it, then use `browser_type(text)` to type character-by-character. This fires real `keydown`/`keypress`/`keyup` events that custom widgets respond to, just like a human typing.
 
 ```bash
-# Focus the field
-npx -y mcporter call zenripple.browser_click --args '{"index": 3}'
-# Clear existing content (select all + delete)
-npx -y mcporter call zenripple.browser_press_key --args '{"key": "a", "meta": true}'
-npx -y mcporter call zenripple.browser_press_key --args '{"key": "Backspace"}'
-# Type the new value
-npx -y mcporter call zenripple.browser_type --args '{"text": "hello@example.com"}'
+zenripple click 3                    # focus the field
+zenripple key a --meta               # select all
+zenripple key Backspace              # delete
+zenripple type "hello@example.com"   # type the new value
 ```
 
 **For autocomplete/search dropdowns:** Type the first few characters, wait for suggestions to appear (`browser_wait_for_element` or a brief `browser_wait`), then click the correct suggestion from the DOM.
 
 ```bash
-npx -y mcporter call zenripple.browser_click --args '{"index": 3}'
-npx -y mcporter call zenripple.browser_type --args '{"text": "San Fran"}'
-npx -y mcporter call zenripple.browser_wait --args '{"seconds": 0.5}'
-# Re-fetch DOM to find the suggestion
-npx -y mcporter call zenripple.browser_get_elements_compact --output text
-# Click the matching suggestion
-npx -y mcporter call zenripple.browser_click --args '{"index": 12}'
+zenripple click 3
+zenripple type "San Fran"
+zenripple wait 0.5
+zenripple elements              # re-fetch DOM to find the suggestion
+zenripple click 12              # click the matching suggestion
 ```
 
 **For date pickers:** Click the date field, then either type the date in the expected format (e.g., `browser_type(text="03/05/2026")`) or navigate the picker UI with clicks and arrow keys.
@@ -402,7 +390,7 @@ npx -y mcporter call zenripple.browser_click --args '{"index": 12}'
 If the input is inside Shadow DOM, behind a framework abstraction, or otherwise unreachable by DOM index, use `browser_console_eval` to set the value directly via JavaScript.
 
 ```bash
-npx -y mcporter call zenripple.browser_console_eval --args '{"expression": "const el = document.querySelector(\"input[name=email]\"); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, \"value\").set; setter.call(el, \"hello@example.com\"); el.dispatchEvent(new Event(\"input\", {bubbles: true})); el.dispatchEvent(new Event(\"change\", {bubbles: true})); \"done\""}'
+zenripple eval 'const el = document.querySelector("input[name=email]"); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set; setter.call(el, "hello@example.com"); el.dispatchEvent(new Event("input", {bubbles: true})); el.dispatchEvent(new Event("change", {bubbles: true})); "done"'
 ```
 
 For Shadow DOM elements, chain `.shadowRoot.querySelector(...)` to reach nested inputs.
@@ -411,31 +399,33 @@ For Shadow DOM elements, chain `.shadowRoot.querySelector(...)` to reach nested 
 
 ## How To Use Your Tools
 
-All tools are prefixed `browser_`. Most accept an optional `tab_id` (defaults to active tab) and `frame_id` (defaults to 0, the top frame).
+All tools are prefixed `browser_` in MCP. The CLI uses shorter command names (e.g., `zenripple click 5` instead of `browser_click(index=5)`). Most accept an optional `--tab-id` (defaults to active tab) and `--frame-id` (defaults to 0, the top frame).
 
-### MCPorter CLI Syntax (CRITICAL)
-
-**Always use `--args` with a JSON object** for tool parameters. Never use positional arguments or `-- --param` syntax — these break on values containing colons (like URLs).
+### CLI Syntax
 
 ```bash
-# CORRECT — always use --args with JSON:
-npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com"}' --output json
-npx -y mcporter call zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
-npx -y mcporter call zenripple.browser_wait_for_load --args '{"timeout":15}' --output json
-npx -y mcporter call zenripple.browser_click --args '{"index":5}' --output json
-npx -y mcporter call zenripple.browser_fill --args '{"index":3,"value":"hello"}' --output json
+# Positional args for common commands:
+zenripple create-tab https://example.com
+zenripple nav https://example.com
+zenripple wait-load --timeout 15
+zenripple click 5
+zenripple fill 3 "hello"
 
-# WRONG — do NOT use these formats:
-# npx -y mcporter call zenripple.browser_navigate "https://example.com"          # URL colon parsed as key:value
-# npx -y mcporter call zenripple.browser_navigate -- --url "https://example.com" # --url becomes literal text
+# Named args with --key value:
+zenripple click --index 5 --tab-id panel-3-42
+
+# JSON args with -j:
+zenripple click -j '{"index": 5}'
 ```
 
 Sessions are automatic — no need to export `ZENRIPPLE_SESSION_ID`. Each terminal gets its own session on first tool call.
 
+Run `zenripple --help` for the full command list.
+
 Recommended shell alias:
 ```bash
-alias mc='npx -y mcporter call'
-# Then: mc zenripple.browser_navigate --args '{"url":"https://example.com"}' --output json
+alias zr='zenripple'
+# Then: zr nav https://example.com
 ```
 
 ### Opening & Navigating Pages
@@ -454,8 +444,8 @@ To visit a URL, create a tab and wait for it to load:
 
 Before interacting, you need to see what's on the page:
 
-- `browser_screenshot` — take a visual screenshot. Returns the image inline — works when called as a direct MCP tool (the model sees the image natively). **MCPorter CLI note:** `browser_screenshot` returns base64 image data in JSON, which is unusable in terminal output. When using MCPorter CLI, use `browser_save_screenshot(file_path)` to save to disk, then read the file with your file-reading tool to view it.
-- `browser_reflect(goal)` — get a screenshot + page text + metadata in one call. Best for getting a full picture before making decisions. Pass an optional `goal` to focus the analysis. Same MCPorter caveat as `browser_screenshot` — the inline image won't render in terminal output.
+- `browser_screenshot` / `zenripple ss` — take a visual screenshot. Returns the image inline when called as an MCP tool (the model sees it natively). The CLI displays inline images in terminals that support it (iTerm2, WezTerm, Kitty), or saves to a temp file otherwise. Use `zenripple ss --save page.jpg` to save to a specific path.
+- `browser_reflect(goal)` / `zenripple reflect` — get a screenshot + page text + metadata in one call. Best for getting a full picture before making decisions. Pass an optional `--goal` to focus the analysis.
 - `browser_get_page_info` — get URL, title, loading state, and navigation history.
 - `browser_get_page_text` — get all visible text on the page. Good for reading content.
 - `browser_get_page_html` — get full HTML source. Use when you need raw markup.
@@ -560,10 +550,10 @@ browser_create_tab(url="https://example.com", persist=true)
 browser_batch_navigate(urls="https://a.com,https://b.com", persist=true)
 ```
 
-**MCPorter CLI:**
+**CLI:**
 ```bash
-npx -y mcporter call zenripple.browser_create_tab --args '{"url":"https://example.com","persist":true}' --output json
-npx -y mcporter call zenripple.browser_batch_navigate --args '{"urls":"https://a.com,https://b.com","persist":true}' --output json
+zenripple create-tab https://example.com --persist true
+zenripple batch-nav https://a.com https://b.com --persist true
 ```
 
 **Checking persistence status:**
@@ -619,7 +609,7 @@ Record a sequence of browser actions and replay them later:
 
 ### Session Replay (Tool Call Log)
 
-Automatically logs every tool call with a screenshot, arguments, and result. **Always-on by default** — auto-initializes when a session is active (no manual start needed). Works with MCPorter because state is stored on disk (JSONL + JPEG files), not in memory.
+Automatically logs every tool call with a screenshot, arguments, and result. **Always-on by default** — auto-initializes when a session is active (no manual start needed). State is stored on disk (JSONL + JPEG files), not in memory.
 
 **How it works:**
 
@@ -694,7 +684,6 @@ When escalating, provide: current URL, tab title, what the human needs to do, sc
 ```bash
 PYTHONPATH=./mcp uv run --project ./mcp pytest tests/test_zenripple_mcp.py -q
 uv run --project ./bench pytest bench/tests -q
-./scripts/test_mcporter_parallel_sessions.sh  # expect PARALLEL_ISOLATION_TEST=PASS
 ```
 
 ## Uninstall / Cleanup
@@ -706,12 +695,8 @@ cd "$REPO"
 # Remove from profiles
 ./install.sh --uninstall --yes
 
-# Remove MCPorter config
-npx -y mcporter --config ~/.mcporter/mcporter.json config remove zenripple
-
 # Close remaining sessions
-export ZENRIPPLE_SESSION_ID="$(uv run --project "$REPO/mcp" python "$REPO/mcp/zenripple_session.py" new)"
-npx -y mcporter call zenripple.browser_session_close --output json
+zenripple session close
 ```
 
 ## Guardrails
