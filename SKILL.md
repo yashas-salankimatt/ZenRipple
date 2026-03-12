@@ -48,11 +48,20 @@ REPO="$REPO_DIR"
 uv sync --project "$REPO/mcp" --quiet 2>/dev/null
 echo "DEPS: synced"
 
-# ── 3. Verify CLI is available ──
-if uv run --project "$REPO/mcp" zenripple --help >/dev/null 2>&1; then
-  echo "CLI: ready"
+# ── 3. Ensure zenripple CLI is on PATH ──
+if ! type zenripple >/dev/null 2>&1; then
+  MARKER="# >>> zenripple cli >>>"
+  RC_FILE="${ZDOTDIR:-$HOME}/.zshrc"
+  [ -n "$BASH_VERSION" ] && RC_FILE="$HOME/.bashrc"
+  if ! grep -qF "$MARKER" "$RC_FILE" 2>/dev/null; then
+    printf '\n%s\nzenripple() { uv run --project "%s/mcp" zenripple "$@"; }\n# <<< zenripple cli <<<\n' "$MARKER" "$REPO" >> "$RC_FILE"
+    echo "CLI: installed shell function in $(basename "$RC_FILE")"
+  fi
+  # Source it for this session
+  zenripple() { uv run --project "$REPO/mcp" zenripple "$@"; }
+  echo "CLI: ready (restart shell or 'source $RC_FILE' to persist)"
 else
-  echo "CLI: ERROR — 'zenripple' command not found after uv sync"
+  echo "CLI: ready"
 fi
 
 # ── 4. Ensure browser agent is installed and matches repo ──
@@ -108,7 +117,7 @@ if [ "$NEEDS_RESTART" -eq 1 ]; then
   echo ""
   echo "ACTION REQUIRED: Restart Zen Browser to load the updated agent, then proceed."
 else
-  if uv run --project "$REPO/mcp" zenripple ping 2>/dev/null | grep -qE '"status".*pong'; then
+  if zenripple ping 2>/dev/null | grep -qE '"status".*pong'; then
     echo "PING: connected — ready to use"
   else
     echo "PING: no connection — is Zen Browser running?"
@@ -120,6 +129,26 @@ fi
 - If it says "ready to use" — skip to Sessions.
 - If it says "ACTION REQUIRED: Restart Zen Browser" — tell the user to restart, then re-run the ping check.
 - If it says "no connection" — Zen Browser may not be running or may need a restart.
+
+**IMPORTANT — CLI availability after preflight:** The preflight defines `zenripple` as a shell function, but **shell functions do not persist across separate Bash tool calls.** After the preflight block finishes, all subsequent Bash calls start a fresh shell. To use `zenripple` in later Bash calls, you MUST source the shell config first:
+
+```bash
+source ~/.zshrc && zenripple ping
+```
+
+Or define the function inline at the top of each Bash call:
+
+```bash
+zenripple() { uv run --project ~/zenripple/mcp zenripple "$@"; }
+zenripple ping
+```
+
+**Do NOT** try any of these — they will fail:
+- ❌ `uv run zenripple ping` — zenripple is not a standalone uv script
+- ❌ `python -m zenripple ping` — there is no `__main__.py`
+- ❌ `cd ~/zenripple/mcp && uv run zenripple` — same problem
+
+The correct invocation is always `uv run --project ~/zenripple/mcp zenripple <command>`, which is what the shell function wraps.
 
 **Compaction safeguard:** After preflight, check if `~/.claude/CLAUDE.md` contains a ZenRipple compaction reminder. If not, append one:
 
@@ -397,6 +426,39 @@ For Shadow DOM elements, chain `.shadowRoot.querySelector(...)` to reach nested 
 
 ---
 
+## Screenshot-First Workflow (IMPORTANT)
+
+**Take screenshots constantly.** The browser is a visual medium — you cannot reliably infer page state from DOM text alone. Screenshots are your eyes. Without them, you will misclick, miss modals, overlook errors, and waste time on stale assumptions.
+
+**When to screenshot:**
+- **After every navigation** — `wait-load` then `ss`. Confirm the page loaded correctly before interacting.
+- **After every click that changes UI** — Did a modal open? Did a dropdown expand? Did the page navigate? Screenshot to find out.
+- **Before deciding what to click** — Use `elements` or `dom` for indices, but **also screenshot** to see the visual layout. Elements alone don't show modals, overlays, toasts, loading spinners, or visual context.
+- **After filling forms** — Verify fields actually populated. Some custom widgets silently ignore `fill`.
+- **When something seems wrong** — If a click didn't work, if an element wasn't found, if the page looks stuck — screenshot first, debug second.
+- **Before reporting results to the user** — Show your work. A screenshot is worth a thousand tokens.
+
+**The pattern:**
+```bash
+zenripple nav https://example.com
+zenripple wait-load
+zenripple ss                    # ← look at what loaded
+# ... read the screenshot, decide what to do ...
+zenripple click 5
+zenripple ss                    # ← verify the click worked
+```
+
+**Common mistakes from not screenshotting:**
+- Clicking an element behind a modal you didn't see
+- Assuming a form submitted when it actually showed a validation error
+- Navigating away from a page that hadn't finished loading
+- Missing a CAPTCHA, cookie banner, or login wall
+- Thinking a dropdown opened when it didn't
+
+**Rule of thumb:** If you're about to make a decision about what to do next, and you haven't taken a screenshot in your last 2-3 actions, take one now.
+
+---
+
 ## How To Use Your Tools
 
 All tools are prefixed `browser_` in MCP. The CLI uses shorter command names (e.g., `zenripple click 5` instead of `browser_click(index=5)`). Most accept an optional `--tab-id` (defaults to active tab) and `--frame-id` (defaults to 0, the top frame).
@@ -444,7 +506,7 @@ To visit a URL, create a tab and wait for it to load:
 
 Before interacting, you need to see what's on the page:
 
-- `browser_screenshot` / `zenripple ss` — take a visual screenshot. Returns the image inline when called as an MCP tool (the model sees it natively). The CLI displays inline images in terminals that support it (iTerm2, WezTerm, Kitty), or saves to a temp file otherwise. Use `zenripple ss --save page.jpg` to save to a specific path.
+- `browser_screenshot` / `zenripple ss` — take a visual screenshot. Returns the image inline when called as an MCP tool (the model sees it natively). The CLI always saves to a temp file and prints the path as JSON (`{"saved": "/tmp/zenripple_ss_xxx.jpg", ...}`); in terminals that support inline images (iTerm2, WezTerm, Kitty), it also renders visually. Use `zenripple ss --save page.jpg` to save to a specific path instead of a temp file. **Agent pattern:** call `zenripple ss`, parse the `saved` path from the JSON output, then `Read` the file to see the image.
 - `browser_reflect(goal)` / `zenripple reflect` — get a screenshot + page text + metadata in one call. Best for getting a full picture before making decisions. Pass an optional `--goal` to focus the analysis.
 - `browser_get_page_info` — get URL, title, loading state, and navigation history.
 - `browser_get_page_text` — get all visible text on the page. Good for reading content.
@@ -565,6 +627,8 @@ Pages may show alert/confirm/prompt dialogs that block interaction:
 
 - `browser_get_dialogs` — check for pending dialogs. Returns type, message, and default value.
 - `browser_handle_dialog(action, text)` — accept or dismiss the oldest dialog. Use `action="accept"` for OK/Yes, `action="dismiss"` for Cancel/No. Pass `text` for prompt dialogs.
+- `browser_get_popup_blocked_events` — get and drain the queue of popup-blocked events (e.g., when a page tries to open a popup that the browser blocked).
+- `browser_allow_blocked_popup(tab_id, index)` — allow blocked popups for a tab, opening them as new tabs. Use `index` to allow a specific popup, or omit to allow all.
 
 ### Console & JavaScript
 

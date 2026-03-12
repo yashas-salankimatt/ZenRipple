@@ -61,11 +61,14 @@ def write_session_file(session_id: str) -> None:
     key = get_caller_key()
     try:
         SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        SESSIONS_DIR.chmod(0o700)
         tmp = SESSIONS_DIR / f".{key}.tmp"
         tmp.write_text(session_id + "\n")
+        tmp.chmod(0o600)
         tmp.replace(SESSIONS_DIR / key)
-    except (OSError, PermissionError):
-        pass  # Best-effort — don't break if filesystem is weird
+    except (OSError, PermissionError) as e:
+        import sys
+        print(f"Warning: could not write session file: {e}", file=sys.stderr)
 
 
 def delete_session_file() -> None:
@@ -73,5 +76,6 @@ def delete_session_file() -> None:
     key = get_caller_key()
     try:
         (SESSIONS_DIR / key).unlink(missing_ok=True)
-    except (OSError, PermissionError):
-        pass
+    except (OSError, PermissionError) as e:
+        import sys
+        print(f"Warning: could not delete session file: {e}", file=sys.stderr)

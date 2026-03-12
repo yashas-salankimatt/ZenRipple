@@ -427,6 +427,46 @@ install_to_profile() {
     fi
 }
 
+install_cli_function() {
+    # Add zenripple() shell function to the user's rc file so the CLI works from anywhere.
+    # The function delegates to `uv run` pointed at this repo's mcp/ directory.
+    local rc_file=""
+    case "$(basename "$SHELL")" in
+        zsh)  rc_file="$HOME/.zshrc" ;;
+        bash) rc_file="$HOME/.bashrc" ;;
+        *)    rc_file="$HOME/.profile" ;;
+    esac
+
+    local marker="# >>> zenripple cli >>>"
+    local end_marker="# <<< zenripple cli <<<"
+    local func_block
+    func_block="$marker
+zenripple() { uv run --project \"$SCRIPT_DIR/mcp\" zenripple \"\$@\"; }
+$end_marker"
+
+    if [ ! -f "$rc_file" ]; then
+        echo "$func_block" > "$rc_file"
+        echo -e "${GREEN}+${NC} Created $rc_file with zenripple CLI function"
+        return
+    fi
+
+    if grep -qF "$marker" "$rc_file"; then
+        # Replace existing block (handles path changes on reinstall)
+        local tmp_rc
+        tmp_rc=$(mktemp)
+        awk -v start="$marker" -v stop="$end_marker" -v block="$func_block" '
+            $0 == start { skip=1; print block; next }
+            $0 == stop  { skip=0; next }
+            !skip
+        ' "$rc_file" > "$tmp_rc"
+        mv "$tmp_rc" "$rc_file"
+        echo -e "${GREEN}+${NC} Updated zenripple CLI function in $rc_file"
+    else
+        printf '\n%s\n' "$func_block" >> "$rc_file"
+        echo -e "${GREEN}+${NC} Added zenripple CLI function to $rc_file"
+    fi
+}
+
 do_install() {
     detect_os
     check_python3
@@ -464,18 +504,20 @@ do_install() {
     echo -e "${GREEN}======================================================${NC}"
     echo -e "${GREEN}  ZenRipple v$installed_v installed successfully!${NC}"
     echo -e "${GREEN}======================================================${NC}"
+    # Install CLI shell function
+    install_cli_function
+
     echo ""
     echo -e "${BLUE}Next steps:${NC}"
     echo "  1. Restart Zen Browser"
-    echo "  2. Set up the MCP server for Claude Code:"
-    echo "     cd \"$SCRIPT_DIR/mcp\" && uv sync"
-    echo "  3. Add to your Claude Code project's .mcp.json:"
+    echo "  2. Add to your Claude Code project's .mcp.json:"
     echo "     {\"mcpServers\": {\"zenripple-browser\": {"
     echo "       \"command\": \"uv\","
     echo "       \"args\": [\"run\", \"--project\", \"$SCRIPT_DIR/mcp\", \"python\", \"$SCRIPT_DIR/mcp/zenripple_mcp_server.py\"]"
     echo "     }}}"
     echo ""
     echo -e "${DIM}The agent runs a WebSocket server on localhost:9876${NC}"
+    echo -e "${DIM}CLI available as 'zenripple' — run 'zenripple --help' to get started${NC}"
     echo ""
 
     # Relaunch if it was running, or offer to open
@@ -643,6 +685,17 @@ do_uninstall() {
     done
 
     clear_cache
+
+    # Remove CLI shell function
+    for rc_file in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.profile"; do
+        if [ -f "$rc_file" ] && grep -qF "# >>> zenripple cli >>>" "$rc_file"; then
+            local tmp_rc
+            tmp_rc=$(mktemp)
+            awk '/^# >>> zenripple cli >>>/{skip=1;next} /^# <<< zenripple cli <<</{skip=0;next} !skip' "$rc_file" > "$tmp_rc"
+            mv "$tmp_rc" "$rc_file"
+            echo -e "  ${GREEN}+${NC} Removed zenripple CLI function from $(basename "$rc_file")"
+        fi
+    done
 
     echo ""
     echo -e "${GREEN}Uninstallation complete.${NC}"
