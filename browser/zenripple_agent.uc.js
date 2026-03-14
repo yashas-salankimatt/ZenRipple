@@ -7358,6 +7358,7 @@
       log('Dashboard claude-send: pgrep found: ' + pgrepOut.trim().split('\n').length + ' PIDs, convoPath=' + convoPath.slice(-60));
       const pids = pgrepOut.trim().split('\n').filter(Boolean);
 
+      log('Dashboard claude-send: checking PIDs: ' + pids.join(','));
       for (const pidStr of pids) {
         const pid = parseInt(pidStr, 10);
         if (isNaN(pid)) continue;
@@ -7366,10 +7367,11 @@
           'lsof -a -p ' + pid + ' -d cwd -Fn 2>/dev/null | grep ^n/ | head -1'
         );
         const cwd = lsofOut.trim().replace(/^n/, '');
+        log('Dashboard claude-send: PID ' + pid + ' lsof cwd=' + (cwd || '(empty)'));
         if (!cwd) continue;
         // Check if CWD matches the project
         const pathHash = cwd.replace(/[^a-zA-Z0-9-]/g, '-');
-        log('Dashboard claude-send: PID ' + pid + ' cwd=' + cwd.slice(-40) + ' pathHash match=' + convoPath.includes(pathHash));
+        log('Dashboard claude-send: PID ' + pid + ' pathHash=' + pathHash.slice(-40) + ' match=' + convoPath.includes(pathHash));
         if (convoPath.includes(pathHash)) {
           // Found the Claude process — get its tmux pane
           const ttyOut = await _runShellCommand(
@@ -7406,12 +7408,11 @@
         log('Dashboard: tmux send failed: ' + e);
       }
     } else if (convoSessionId) {
-      log('Dashboard: sending via --resume fork (session ' + convoSessionId + ')');
+      const resumeCmd = 'echo ' + _shellQuote(text) + ' | claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1';
+      log('Dashboard: sending via --resume fork: ' + resumeCmd.slice(0, 120));
       try {
-        const response = await _runShellCommand(
-          'echo ' + _shellQuote(text) + ' | timeout 120 claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1'
-        );
-        log('Dashboard: resume response: ' + response.slice(0, 200));
+        const response = await _runShellCommand(resumeCmd);
+        log('Dashboard: resume response (' + response.length + ' chars): ' + response.slice(0, 200));
       } catch (e) {
         log('Dashboard: resume fork failed: ' + e);
       }
