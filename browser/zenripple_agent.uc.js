@@ -5875,7 +5875,7 @@
 
 /* Replay Preview Column */
 .zd-replay-col {
-  width: 240px;
+  width: 320px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -5884,11 +5884,11 @@
 }
 
 .zd-replay-screenshot {
-  height: 180px;
+  flex: 0 0 45%;
+  min-height: 120px;
   background: var(--zr-bg-raised);
   position: relative;
   overflow: hidden;
-  flex-shrink: 0;
   border-bottom: 1px solid var(--zr-border-subtle);
 }
 .zd-replay-screenshot img {
@@ -5907,10 +5907,166 @@
   font-style: italic;
 }
 
+/* Replay transport bar */
+.zd-replay-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zd-transport-btn {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+  transition: all 0.12s;
+  font-size: 11px;
+  padding: 0;
+}
+.zd-transport-btn:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+.zd-transport-btn.active {
+  color: var(--zr-accent);
+}
+
+.zd-transport-speed {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 24px;
+  text-align: center;
+}
+.zd-transport-speed.highlight {
+  color: var(--zr-accent);
+}
+
+.zd-transport-progress {
+  flex: 1;
+  height: 3px;
+  background: var(--zr-bg-elevated);
+  border-radius: 2px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.zd-transport-progress-fill {
+  height: 100%;
+  background: var(--zr-accent);
+  border-radius: 2px;
+  transition: width 0.15s ease-out;
+}
+
+.zd-transport-count {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+}
+
 .zd-replay-list {
   flex: 1;
   overflow-y: auto;
   padding: 4px;
+}
+
+/* Conversation column tabs */
+.zd-convo-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+.zd-convo-tab {
+  padding: 6px 14px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all 0.12s;
+}
+.zd-convo-tab:hover {
+  color: var(--zr-text-secondary);
+}
+.zd-convo-tab.active {
+  color: var(--zr-accent);
+  border-bottom-color: var(--zr-accent);
+}
+
+/* Tool detail view (inside conversation column) */
+.zd-tool-detail-view {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: none;
+}
+.zd-tool-detail-view.visible {
+  display: block;
+}
+
+.zd-detail-tool-name {
+  font-family: var(--zr-font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--zr-accent);
+  margin-bottom: 10px;
+  word-break: break-all;
+}
+
+.zd-detail-meta {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.zd-detail-meta-item {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-elevated);
+  padding: 2px 7px;
+  border-radius: var(--zr-r-sm);
+}
+.zd-detail-meta-item.error {
+  color: var(--zr-error);
+  background: rgba(243,139,168,0.1);
+}
+
+.zd-detail-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  margin: 12px 0 6px 0;
+}
+
+.zd-detail-json {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 .zd-replay-entry {
@@ -6845,12 +7001,27 @@
           <div class="zd-replay-screenshot" id="zd-replay-ss">
             <span class="zd-no-screenshot">No screenshot</span>
           </div>
+          <div class="zd-replay-transport" id="zd-transport">
+            <div class="zd-transport-btn" id="zd-play-btn" title="Play (Space)">\u25B6</div>
+            <div class="zd-transport-btn" id="zd-slower-btn" title="Slower ([)">\u2BC7</div>
+            <span class="zd-transport-speed" id="zd-speed">1x</span>
+            <div class="zd-transport-btn" id="zd-faster-btn" title="Faster (])">\u2BC8</div>
+            <div class="zd-transport-progress" id="zd-progress">
+              <div class="zd-transport-progress-fill" id="zd-progress-fill"></div>
+            </div>
+            <span class="zd-transport-count" id="zd-count">0</span>
+          </div>
           <div class="zd-splitter zd-splitter-h" data-split="replay-inner"></div>
           <div class="zd-replay-list" id="zd-replay-entries"></div>
         </div>
         <div class="zd-splitter zd-splitter-v" data-split="left"></div>
         <div class="zd-conversation-col" id="zd-conversation-col">
+          <div class="zd-convo-tabs">
+            <div class="zd-convo-tab active" data-tab="conversation">Conversation</div>
+            <div class="zd-convo-tab" data-tab="tool-detail">Tool Details</div>
+          </div>
           <div class="zd-conversation-scroll" id="zd-conversation"></div>
+          <div class="zd-tool-detail-view" id="zd-tool-detail"></div>
         </div>
         <div class="zd-splitter zd-splitter-v" data-split="right"></div>
         <div class="zd-right-col" id="zd-right-col">
@@ -6886,10 +7057,31 @@
       });
     }
 
+    // Tab switching
+    const tabs = body.querySelectorAll('.zd-convo-tab');
+    const convoScroll = body.querySelector('#zd-conversation');
+    const toolDetailView = body.querySelector('#zd-tool-detail');
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        for (const t of tabs) t.classList.remove('active');
+        tab.classList.add('active');
+        const which = tab.dataset.tab;
+        if (convoScroll) convoScroll.style.display = which === 'conversation' ? '' : 'none';
+        if (toolDetailView) {
+          toolDetailView.classList.toggle('visible', which === 'tool-detail');
+          if (which === 'tool-detail') _updateToolDetailView();
+        }
+      });
+    }
+
+    // Transport controls
+    _setupTransportControls(body);
+
     // Load data
     _dashboardConvoReadBytes = _CONVO_CHUNK_SIZE; // Reset on session switch
     await _loadDetailData(sessionId);
     _setupConversationScrollLoader();
+    _updateTransport();
 
     // Update footer
     _updateDashboardFooter(sessionId);
@@ -6928,7 +7120,7 @@
       const rect = detail.getBoundingClientRect();
 
       if (dragTarget === 'left') {
-        const pct = Math.max(150, Math.min(rect.width * 0.4, e.clientX - rect.left));
+        const pct = Math.max(100, Math.min(rect.width * 0.5, e.clientX - rect.left));
         replayCol.style.width = pct + 'px';
       } else if (dragTarget === 'right') {
         const fromRight = rect.right - e.clientX;
@@ -7027,6 +7219,172 @@
 
     // Refresh messages display
     await _loadMessages(sessionId);
+  }
+
+  // ── Playback engine ──
+
+  let _zdPlaybackTimer = null;
+  let _zdPlaybackPlaying = false;
+  let _zdPlaybackSpeedIdx = 1;
+  const _ZD_PLAYBACK_SPEEDS = [0.5, 1, 2, 4, 8, 16];
+  const _ZD_PLAYBACK_BASE_MS = 2000;
+
+  function _zdPlaybackInterval() {
+    return _ZD_PLAYBACK_BASE_MS / _ZD_PLAYBACK_SPEEDS[_zdPlaybackSpeedIdx];
+  }
+
+  function _stopDashboardPlayback() {
+    if (_zdPlaybackTimer) { clearInterval(_zdPlaybackTimer); _zdPlaybackTimer = null; }
+    _zdPlaybackPlaying = false;
+    _updateTransport();
+  }
+
+  function _startDashboardPlayback() {
+    _stopDashboardPlayback();
+    _zdPlaybackPlaying = true;
+    _updateTransport();
+    _zdPlaybackTimer = setInterval(() => {
+      if (!_dashboardModal || _dashboardReplayEntries.length === 0) {
+        _stopDashboardPlayback(); return;
+      }
+      let next = _dashboardSelectedReplayIdx + 1;
+      if (next >= _dashboardReplayEntries.length) next = 0;
+      _selectDashboardReplayEntry(next);
+    }, _zdPlaybackInterval());
+  }
+
+  function _toggleDashboardPlayback() {
+    if (_zdPlaybackPlaying) _stopDashboardPlayback();
+    else _startDashboardPlayback();
+  }
+
+  function _setDashboardPlaybackSpeed(idx) {
+    _zdPlaybackSpeedIdx = Math.max(0, Math.min(_ZD_PLAYBACK_SPEEDS.length - 1, idx));
+    _updateTransport();
+    if (_zdPlaybackPlaying) _startDashboardPlayback();
+  }
+
+  function _setupTransportControls(body) {
+    const playBtn = body.querySelector('#zd-play-btn');
+    const slowerBtn = body.querySelector('#zd-slower-btn');
+    const fasterBtn = body.querySelector('#zd-faster-btn');
+    const progress = body.querySelector('#zd-progress');
+
+    if (playBtn) playBtn.addEventListener('click', _toggleDashboardPlayback);
+    if (slowerBtn) slowerBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_playbackSpeedIdx - 1));
+    if (fasterBtn) fasterBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_playbackSpeedIdx + 1));
+    if (progress) progress.addEventListener('click', (ev) => {
+      const rect = progress.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+      const idx = Math.round(pct * (_dashboardReplayEntries.length - 1));
+      _stopDashboardPlayback();
+      _selectDashboardReplayEntry(idx);
+    });
+  }
+
+  function _updateTransport() {
+    if (!_dashboardModal) return;
+    const playBtn = _dashboardModal.querySelector('#zd-play-btn');
+    if (playBtn) {
+      playBtn.textContent = _zdPlaybackPlaying ? '\u23F8' : '\u25B6';
+      playBtn.classList.toggle('active', _zdPlaybackPlaying);
+    }
+    const speedEl = _dashboardModal.querySelector('#zd-speed');
+    if (speedEl) {
+      const s = _ZD_PLAYBACK_SPEEDS[_zdPlaybackSpeedIdx];
+      speedEl.textContent = s + 'x';
+      speedEl.classList.toggle('highlight', s !== 1);
+    }
+    const fill = _dashboardModal.querySelector('#zd-progress-fill');
+    if (fill && _dashboardReplayEntries.length > 0) {
+      fill.style.width = ((_dashboardSelectedReplayIdx + 1) / _dashboardReplayEntries.length * 100) + '%';
+    } else if (fill) {
+      fill.style.width = '0%';
+    }
+    const countEl = _dashboardModal.querySelector('#zd-count');
+    if (countEl) {
+      countEl.textContent = _dashboardReplayEntries.length + ' calls';
+    }
+  }
+
+  // ── Tool detail view ──
+
+  function _updateToolDetailView() {
+    const detailEl = _dashboardModal?.querySelector('#zd-tool-detail');
+    if (!detailEl || !detailEl.classList.contains('visible')) return;
+    if (_dashboardSelectedReplayIdx < 0 || _dashboardSelectedReplayIdx >= _dashboardReplayEntries.length) {
+      detailEl.textContent = '';
+      const empty = document.createElement('div');
+      empty.className = 'zd-empty';
+      empty.textContent = 'Select a tool call';
+      detailEl.appendChild(empty);
+      return;
+    }
+
+    const entry = _dashboardReplayEntries[_dashboardSelectedReplayIdx];
+    detailEl.textContent = ''; // Clear
+
+    // Tool name
+    const nameEl = document.createElement('div');
+    nameEl.className = 'zd-detail-tool-name';
+    nameEl.textContent = entry.tool || '\u2014';
+    detailEl.appendChild(nameEl);
+
+    // Meta badges
+    const meta = document.createElement('div');
+    meta.className = 'zd-detail-meta';
+    const seqBadge = document.createElement('span');
+    seqBadge.className = 'zd-detail-meta-item';
+    seqBadge.textContent = '#' + (entry.seq ?? _dashboardSelectedReplayIdx);
+    meta.appendChild(seqBadge);
+    const timeBadge = document.createElement('span');
+    timeBadge.className = 'zd-detail-meta-item';
+    timeBadge.textContent = extractTime(entry.timestamp) || '\u2014';
+    meta.appendChild(timeBadge);
+    if (entry.duration_ms != null) {
+      const durBadge = document.createElement('span');
+      durBadge.className = 'zd-detail-meta-item';
+      durBadge.textContent = Math.round(entry.duration_ms) + 'ms';
+      meta.appendChild(durBadge);
+    }
+    if (entry.error) {
+      const errBadge = document.createElement('span');
+      errBadge.className = 'zd-detail-meta-item error';
+      errBadge.textContent = 'ERROR';
+      meta.appendChild(errBadge);
+    }
+    if (entry.tab_url) {
+      const urlBadge = document.createElement('span');
+      urlBadge.className = 'zd-detail-meta-item';
+      urlBadge.textContent = entry.tab_url.replace(/^https?:\/\//, '').slice(0, 40);
+      urlBadge.title = entry.tab_url;
+      meta.appendChild(urlBadge);
+    }
+    detailEl.appendChild(meta);
+
+    // Arguments
+    if (entry.args && Object.keys(entry.args).length > 0) {
+      const argsLabel = document.createElement('div');
+      argsLabel.className = 'zd-detail-section-label';
+      argsLabel.textContent = 'Arguments';
+      detailEl.appendChild(argsLabel);
+      const argsJson = document.createElement('div');
+      argsJson.className = 'zd-detail-json';
+      argsJson.textContent = formatJSON(entry.args);
+      detailEl.appendChild(argsJson);
+    }
+
+    // Result
+    if (entry.result) {
+      const resultLabel = document.createElement('div');
+      resultLabel.className = 'zd-detail-section-label';
+      resultLabel.textContent = 'Result';
+      detailEl.appendChild(resultLabel);
+      const resultJson = document.createElement('div');
+      resultJson.className = 'zd-detail-json';
+      resultJson.textContent = typeof entry.result === 'string' ? entry.result : formatJSON(entry.result);
+      detailEl.appendChild(resultJson);
+    }
   }
 
   async function _loadDetailData(sessionId) {
@@ -7153,6 +7511,10 @@
         _loadConversationUntilMatch(entry);
       }
     }
+
+    // Update transport bar and tool detail view
+    _updateTransport();
+    _updateToolDetailView();
   }
 
   // ── Conversation loading and rendering ──
@@ -8230,6 +8592,7 @@
     if (!_dashboardModal) return;
 
     _stopDashboardPolling();
+    _stopDashboardPlayback();
     if (_detailSplitterCleanup) _detailSplitterCleanup();
     if (_scrollSyncRafId) { cancelAnimationFrame(_scrollSyncRafId); _scrollSyncRafId = null; }
     window.removeEventListener('keydown', handleDashboardKeydown, true);
@@ -8380,9 +8743,11 @@
       return;
     }
 
-    // j/k navigation in detail view (replay entries)
+    // Detail view shortcuts
     if (_dashboardView === 'detail') {
+      // j/k navigation (replay entries)
       if (e.key === 'j' || e.key === 'ArrowDown') {
+        _stopDashboardPlayback();
         if (_dashboardReplayEntries.length > 0) {
           const newIdx = Math.max(0, _dashboardSelectedReplayIdx - 1);
           _selectDashboardReplayEntry(newIdx);
@@ -8390,10 +8755,30 @@
         return;
       }
       if (e.key === 'k' || e.key === 'ArrowUp') {
+        _stopDashboardPlayback();
         if (_dashboardReplayEntries.length > 0) {
           const newIdx = Math.min(_dashboardReplayEntries.length - 1, _dashboardSelectedReplayIdx + 1);
           _selectDashboardReplayEntry(newIdx);
         }
+        return;
+      }
+      // Space = play/pause
+      if (e.key === ' ') {
+        _toggleDashboardPlayback();
+        return;
+      }
+      // [ / ] = speed
+      if (e.key === '[') { _setDashboardPlaybackSpeed(_zdPlaybackSpeedIdx - 1); return; }
+      if (e.key === ']') { _setDashboardPlaybackSpeed(_zdPlaybackSpeedIdx + 1); return; }
+      // Home/End = first/last
+      if (e.key === 'Home' || e.key === 'g') {
+        _stopDashboardPlayback();
+        if (_dashboardReplayEntries.length > 0) _selectDashboardReplayEntry(0);
+        return;
+      }
+      if (e.key === 'End' || e.key === 'G') {
+        _stopDashboardPlayback();
+        if (_dashboardReplayEntries.length > 0) _selectDashboardReplayEntry(_dashboardReplayEntries.length - 1);
         return;
       }
     }
