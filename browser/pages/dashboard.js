@@ -3,39 +3,94 @@
 
 'use strict';
 
-// ── Bridge Client ──────────────────────────────────────────
+// ── WebSocket Bridge Client ────────────────────────────────
 
 let _bridgeReady = false;
+let _ws = null;
+let _pendingRequests = new Map();
+let _reqCounter = 0;
+let _reconnectTimer = null;
+
+function _getToken() {
+  return new URLSearchParams(window.location.search).get('token') || '';
+}
+
+function _connectWebSocket() {
+  const token = _getToken();
+  const wsUrl = 'ws://localhost:9876/dashboard' + (token ? '?token=' + encodeURIComponent(token) : '');
+
+  try {
+    _ws = new WebSocket(wsUrl);
+  } catch (e) {
+    console.error('[ZenRipple] WebSocket creation failed:', e);
+    _scheduleReconnect();
+    return;
+  }
+
+  _ws.onopen = () => {
+    console.log('[ZenRipple] WebSocket connected to dashboard endpoint');
+    if (!_bridgeReady) {
+      _bridgeReady = true;
+      _init();
+    }
+  };
+
+  _ws.onmessage = (event) => {
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.id && _pendingRequests.has(msg.id)) {
+        const { resolve, reject, timeout } = _pendingRequests.get(msg.id);
+        clearTimeout(timeout);
+        _pendingRequests.delete(msg.id);
+        if (msg.error) {
+          reject(new Error(typeof msg.error === 'object' ? msg.error.message : String(msg.error)));
+        } else {
+          resolve(msg.result);
+        }
+      }
+    } catch (e) {
+      console.error('[ZenRipple] Message parse error:', e);
+    }
+  };
+
+  _ws.onclose = () => {
+    console.log('[ZenRipple] WebSocket closed');
+    _ws = null;
+    _scheduleReconnect();
+  };
+
+  _ws.onerror = (e) => {
+    console.error('[ZenRipple] WebSocket error:', e);
+  };
+}
+
+function _scheduleReconnect() {
+  if (_reconnectTimer) return;
+  _reconnectTimer = setTimeout(() => {
+    _reconnectTimer = null;
+    _connectWebSocket();
+  }, 3000);
+}
 
 function bridgeCall(method, params = {}) {
   return new Promise((resolve, reject) => {
-    if (typeof window.__zenrippleBridge !== 'function') {
-      reject(new Error('Bridge not ready'));
+    if (!_ws || _ws.readyState !== WebSocket.OPEN) {
+      reject(new Error('WebSocket not connected'));
       return;
     }
-    try {
-      window.__zenrippleBridge(method, JSON.stringify(params), function(responseStr) {
-        try {
-          const { result, error } = JSON.parse(responseStr);
-          if (error) reject(new Error(error));
-          else resolve(result);
-        } catch (e) {
-          reject(new Error('Bridge parse error: ' + e));
-        }
-      });
-    } catch (e) {
-      reject(new Error('Bridge call error: ' + e));
-    }
+    const id = 'req_' + (++_reqCounter);
+    const timeout = setTimeout(() => {
+      _pendingRequests.delete(id);
+      reject(new Error('Bridge timeout: ' + method));
+    }, 30000);
+    _pendingRequests.set(id, { resolve, reject, timeout });
+    _ws.send(JSON.stringify({
+      id,
+      method: 'dashboard_' + method,
+      params,
+    }));
   });
 }
-
-// Listen for bridge-ready event from chrome
-window.addEventListener('zenripple-bridge-ready', () => {
-  if (_bridgeReady) return;
-  _bridgeReady = true;
-  console.log('[ZenRipple] Bridge connected via Cu.exportFunction');
-  _init();
-});
 
 // ── Utility Functions ──────────────────────────────────────
 
@@ -650,20 +705,5 @@ async function _init() {
   startPolling();
 }
 
-// If bridge is already available (exported before page JS loaded), init immediately
-// Otherwise wait for the 'zenripple-bridge-ready' CustomEvent
-function _tryConnect() {
-  if (_bridgeReady) return;
-  if (typeof window.__zenrippleBridge === 'function') {
-    _bridgeReady = true;
-    console.log('[ZenRipple] Bridge found (poll)');
-    _init();
-    return;
-  }
-  console.log('[ZenRipple] Waiting for bridge...');
-}
-// Poll a few times in case the event was missed
-setTimeout(_tryConnect, 300);
-setTimeout(_tryConnect, 1000);
-setTimeout(_tryConnect, 3000);
-setTimeout(_tryConnect, 5000);
+// Connect to the WebSocket server
+_connectWebSocket();

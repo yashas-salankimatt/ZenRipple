@@ -632,10 +632,15 @@
         return;
       }
 
-      // Validate auth token
+      // Validate auth token (supports both Authorization header and ?token= query param)
       if (authToken) {
         const authMatch = request.match(/Authorization:\s*Bearer\s+(\S+)/i);
-        const clientToken = authMatch ? authMatch[1].trim() : null;
+        let clientToken = authMatch ? authMatch[1].trim() : null;
+        // Fallback: check URL query param (for browser WebSocket API which can't send headers)
+        if (!clientToken) {
+          const tokenParam = path.match(/[?&]token=([^&\s]+)/);
+          if (tokenParam) clientToken = decodeURIComponent(tokenParam[1]);
+        }
         if (!clientToken || clientToken !== authToken) {
           log('Auth failed from ' + this.connectionId + ' — invalid or missing token');
           const errResp =
@@ -648,9 +653,37 @@
         }
       }
 
+      // Strip query string from path for routing
+      const routePath = path.split('?')[0];
+
+      // Route: dashboard connection (no session)
+      if (routePath === '/dashboard') {
+        this.isDashboard = true;
+        this.sessionId = null;
+
+        // Complete handshake (same pattern as normal session handshake)
+        const key = keyMatch[1].trim();
+        const acceptKey = this.#computeAcceptKey(key + WS_MAGIC);
+        const handshakeResp =
+          'HTTP/1.1 101 Switching Protocols\r\n' +
+          'Upgrade: websocket\r\n' +
+          'Connection: Upgrade\r\n' +
+          'Sec-WebSocket-Accept: ' + acceptKey + '\r\n\r\n';
+        this.#writeRaw(handshakeResp);
+        this.#handshakeComplete = true;
+        log('Dashboard WebSocket connected: ' + this.connectionId);
+
+        if (remaining.length > 0) {
+          const remainingBytes = new Uint8Array(remaining.length);
+          for (let i = 0; i < remaining.length; i++) remainingBytes[i] = remaining.charCodeAt(i);
+          this.#handleWebSocketData(remainingBytes);
+        }
+        return;
+      }
+
       // Route: determine session
       let session;
-      const sessionMatch = path.match(/^\/session\/([a-f0-9-]+)/i);
+      const sessionMatch = routePath.match(/^\/session\/([a-f0-9-]+)/i);
       if (sessionMatch) {
         // Join existing session
         const existingId = sessionMatch[1];
@@ -914,6 +947,16 @@
     }
 
     async #handleCommand(msg) {
+      // Dashboard commands don't need a session
+      if (this.isDashboard && msg.method?.startsWith('dashboard_')) {
+        try {
+          const result = await _handleBridgeMethod(msg.method.replace('dashboard_', ''), msg.params || {});
+          return { id: msg.id, result };
+        } catch (e) {
+          return { id: msg.id, error: { code: -1, message: String(e) } };
+        }
+      }
+
       const handler = commandHandlers[msg.method];
       if (!handler) {
         return {
@@ -9554,14 +9597,15 @@
     // Check existing tabs for the dashboard page
     for (const tab of gBrowser.tabs) {
       const url = tab.linkedBrowser?.currentURI?.spec || '';
-      if (url.startsWith(DASHBOARD_PAGE_URL) || url === DASHBOARD_PAGE_URL) {
+      if (url.startsWith(DASHBOARD_PAGE_URL)) {
         if (!tab.pinned) gBrowser.pinTab(tab);
         return tab;
       }
     }
 
-    // Create new tab
-    const tab = gBrowser.addTab(DASHBOARD_PAGE_URL, {
+    // Create new tab with auth token in URL
+    const tokenParam = authToken ? '?token=' + encodeURIComponent(authToken) : '';
+    const tab = gBrowser.addTab(DASHBOARD_PAGE_URL + tokenParam, {
       triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
     });
     if (wsId && gZenWorkspaces) {
@@ -9575,7 +9619,8 @@
   // Open a session detail tab
   async function _openSessionDetailTab(sessionId) {
     const wsId = await ensureAgentWorkspace();
-    const url = SESSION_PAGE_URL + '?id=' + encodeURIComponent(sessionId);
+    const tokenParam = authToken ? '&token=' + encodeURIComponent(authToken) : '';
+    const url = SESSION_PAGE_URL + '?id=' + encodeURIComponent(sessionId) + tokenParam;
 
     // Check if already open
     for (const tab of gBrowser.tabs) {
@@ -9599,7 +9644,8 @@
   // Open a merged conversation tab
   async function _openMergedDetailTab(convoPath) {
     const wsId = await ensureAgentWorkspace();
-    const url = SESSION_PAGE_URL + '?merged=' + encodeURIComponent(convoPath);
+    const tokenParam = authToken ? '&token=' + encodeURIComponent(authToken) : '';
+    const url = SESSION_PAGE_URL + '?merged=' + encodeURIComponent(convoPath) + tokenParam;
 
     for (const tab of gBrowser.tabs) {
       const tabUrl = tab.linkedBrowser?.currentURI?.spec || '';
@@ -9622,164 +9668,9 @@
   // ── Message Bridge: Chrome ↔ Content ──
 
   function _setupDashboardBridge() {
-    // Expose a bridge function on dashboard pages using Cu.exportFunction.
-    // This is the standard Firefox API for chrome→content function exposure.
-    const _bridgedTabs = new WeakSet();
-
-    function _tryInjectBridge(tab) {
-      if (!tab?.linkedBrowser) return;
-      if (_bridgedTabs.has(tab)) return;
-      const url = tab.linkedBrowser.currentURI?.spec || '';
-      if (!url.startsWith('resource://zenripple-pages/')) return;
-
-      const win = tab.linkedBrowser.contentWindow;
-      log('Dashboard bridge: tab found url=' + url.slice(-30) + ' contentWindow=' + !!win +
-          ' readyState=' + (win?.document?.readyState || 'N/A'));
-
-      if (!win) {
-        // contentWindow is null — page is in a content process.
-        // Use message manager frame script instead of Cu.exportFunction.
-        _tryInjectBridgeViaFrameScript(tab);
-        return;
-      }
-      if (!win.document || win.document.readyState === 'uninitialized') return;
-
-      try {
-        _bridgedTabs.add(tab);
-
-        // Export bridge function: content calls __zenrippleBridge(method, paramsJSON, callback)
-        // The callback receives a JSON string with {result} or {error}
-        Cu.exportFunction(function(method, paramsStr, callback) {
-          const params = paramsStr ? JSON.parse(paramsStr) : {};
-          _handleBridgeMethod(method, params).then(
-            result => {
-              try { callback(JSON.stringify({ result })); } catch (_) {}
-            },
-            error => {
-              try { callback(JSON.stringify({ error: String(error) })); } catch (_) {}
-            }
-          );
-        }, win, { defineAs: '__zenrippleBridge' });
-
-        // Signal that bridge is ready
-        win.dispatchEvent(new win.CustomEvent('zenripple-bridge-ready'));
-
-        log('Dashboard bridge exported for tab: ' + url);
-      } catch (e) {
-        log('Dashboard bridge export failed: ' + e);
-        _bridgedTabs.delete(tab); // Allow retry
-      }
-    }
-
-    // Listen for new tabs and page loads
-    gBrowser.tabContainer.addEventListener('TabOpen', (e) => {
-      setTimeout(() => _tryInjectBridge(e.target), 500);
-      setTimeout(() => _tryInjectBridge(e.target), 1500);
-    });
-
-    // Check existing tabs
-    for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
-
-    // Poll to catch tabs that load after init
-    let bridgePollCount = 0;
-    const bridgePollTimer = setInterval(() => {
-      for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
-      bridgePollCount++;
-      if (bridgePollCount > 30) clearInterval(bridgePollTimer);
-    }, 2000);
-
-    // Fallback for out-of-process tabs: use message manager frame script
-    function _tryInjectBridgeViaFrameScript(tab) {
-      if (_bridgedTabs.has(tab)) return;
-      try {
-        const mm = tab.linkedBrowser.messageManager;
-        if (!mm) return;
-        _bridgedTabs.add(tab);
-
-        mm.addMessageListener('ZenRipple:Request', {
-          receiveMessage: function(msg) {
-            const { id, method, params } = msg.data;
-            _handleBridgeMethod(method, params || {}).then(
-              result => {
-                try {
-                  mm.sendAsyncMessage('ZenRipple:Response', {
-                    type: 'zenripple-response', id,
-                    result: JSON.parse(JSON.stringify(result)), // Ensure serializable
-                  });
-                } catch (e) {
-                  mm.sendAsyncMessage('ZenRipple:Response', {
-                    type: 'zenripple-response', id,
-                    error: 'Serialize error: ' + String(e),
-                  });
-                }
-              },
-              error => {
-                mm.sendAsyncMessage('ZenRipple:Response', {
-                  type: 'zenripple-response', id, error: String(error),
-                });
-              }
-            );
-          }
-        });
-
-        // Inject relay script into content process
-        mm.loadFrameScript('data:,(' + encodeURIComponent(`
-          (function() {
-            // Expose bridge function on content window
-            var Cu = Components.utils || {};
-            var win = content.wrappedJSObject || content;
-
-            // Create bridge function that content JS can call
-            function bridgeFn(method, paramsStr, callback) {
-              var id = 'req_' + Math.random().toString(36).slice(2);
-              // Listen for response
-              var handler = {
-                receiveMessage: function(msg) {
-                  if (msg.data.id === id) {
-                    removeMessageListener('ZenRipple:Response', handler);
-                    callback(JSON.stringify({ result: msg.data.result, error: msg.data.error }));
-                  }
-                }
-              };
-              addMessageListener('ZenRipple:Response', handler);
-              sendAsyncMessage('ZenRipple:Request', { id: id, method: method, params: JSON.parse(paramsStr || '{}') });
-            }
-
-            // Export to content window
-            try {
-              if (typeof Cu.exportFunction === 'function') {
-                Cu.exportFunction(bridgeFn, content, { defineAs: '__zenrippleBridge' });
-              } else {
-                // Fallback: set directly (may work for resource:// pages)
-                content.__zenrippleBridge = bridgeFn;
-              }
-            } catch(e) {
-              // Last resort: set on wrappedJSObject
-              try { content.wrappedJSObject.__zenrippleBridge = bridgeFn; } catch(e2) {}
-            }
-
-            // Signal ready
-            try {
-              content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready'));
-            } catch(e) {}
-            // Retry signals
-            content.setTimeout(function() {
-              try { content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready')); } catch(e) {}
-            }, 500);
-            content.setTimeout(function() {
-              try { content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready')); } catch(e) {}
-            }, 2000);
-          })();
-        `) + ')', true);
-
-        log('Dashboard bridge (frame script) injected for tab: ' + (tab.linkedBrowser.currentURI?.spec || '').slice(-40));
-      } catch (e) {
-        log('Dashboard bridge frame script injection failed: ' + e);
-        _bridgedTabs.delete(tab);
-      }
-    }
-
-    log('Dashboard bridge listener registered');
+    // Dashboard pages connect via WebSocket to /dashboard endpoint.
+    // No chrome-side injection needed — the WS server handles dashboard_* commands.
+    log('Dashboard bridge: pages use WebSocket to ws://localhost:' + AGENT_PORT + '/dashboard');
   }
 
   // ── Bridge Method Dispatcher ──
