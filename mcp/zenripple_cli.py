@@ -986,8 +986,6 @@ def _find_claude_code_conversation() -> str | None:
 
     Returns the absolute path to the conversation file, or None if not found.
     """
-    import subprocess
-
     try:
         pid = os.getpid()
         # Walk up the process tree (max 20 levels)
@@ -998,15 +996,22 @@ def _find_claude_code_conversation() -> str | None:
             cmdline = _get_process_cmdline(pid)
             if not cmdline:
                 continue
-            # Claude Code runs as a Node.js process with "claude" in the command
-            cmdline_str = " ".join(cmdline).lower()
-            if "claude" in cmdline_str and ("node" in cmdline_str or "claude" in cmdline[0].lower()):
+            # Claude Code's binary is named "claude" — match the executable name,
+            # not just any command line containing "claude" (which would match
+            # shell snapshots like /Users/.../.claude/shell-snapshots/...)
+            exe_name = os.path.basename(cmdline[0]).lower()
+            if exe_name == "claude":
                 # Found Claude Code process — resolve its working directory
                 cwd = _get_process_cwd(pid)
                 if cwd:
-                    return _find_conversation_jsonl(cwd)
-    except Exception:
-        pass
+                    result = _find_conversation_jsonl(cwd)
+                    if result:
+                        return result
+                    # CWD found but no JSONL — log for debugging and continue
+                    print(f"zenripple: found Claude at PID {pid} cwd={cwd} but no JSONL",
+                          file=sys.stderr)
+    except Exception as e:
+        print(f"zenripple: conversation linking error: {e}", file=sys.stderr)
 
     # Fallback: check CLAUDE_PROJECT_DIR env var if set
     project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
@@ -1089,10 +1094,14 @@ def _find_conversation_jsonl(project_cwd: str) -> str | None:
     """Find the most recent Claude Code conversation JSONL for a project directory."""
     home = Path.home()
     # Claude Code stores conversations at ~/.claude/projects/<path-hash>/<uuid>.jsonl
-    # The path hash replaces / with - and prepends -
-    path_hash = "-" + project_cwd.replace("/", "-")
+    # The path hash replaces all non-alphanumeric-non-dash chars with dashes.
+    # e.g. /Users/foo/my_project → -Users-foo-my-project
+    path_hash = re.sub(r"[^a-zA-Z0-9-]", "-", project_cwd)
     projects_dir = home / ".claude" / "projects" / path_hash
+
     if not projects_dir.is_dir():
+        print(f"zenripple: conversation linking: project dir not found: {projects_dir}",
+              file=sys.stderr)
         return None
 
     # Find the most recently modified .jsonl file
@@ -1111,6 +1120,11 @@ def _find_conversation_jsonl(project_cwd: str) -> str | None:
     # Only return if modified within last 5 minutes (active conversation)
     if best_path and (time.time() - best_mtime) < 300:
         return best_path
+
+    if best_path:
+        age = int(time.time() - best_mtime)
+        print(f"zenripple: conversation JSONL found but too old ({age}s): {best_path}",
+              file=sys.stderr)
 
     return None
 
@@ -1149,6 +1163,10 @@ def _try_link_conversation(session_id: str) -> None:
     conversation_path = _find_claude_code_conversation()
     if conversation_path:
         _write_conversation_link(session_id, conversation_path)
+        print(f"zenripple: linked conversation: {conversation_path}", file=sys.stderr)
+    else:
+        print("zenripple: conversation linking failed — no Claude Code conversation found",
+              file=sys.stderr)
 
 
 # ── Approval Gates ────────────────────────────────────────────
