@@ -775,3 +775,89 @@ zenripple session close
 - Close tabs you no longer need (`browser_close_tab`).
 - Do not force-send messages or bypass verification gates.
 - If blocked by a human-required step, stop and ask for human action.
+
+## Live Agent Dashboard
+
+The Live Agent Dashboard (Ctrl+Shift+D in Zen Browser) provides real-time visibility into all active agent sessions. It shows the conversation transcript, browser screenshots, tool call history, and enables human-agent communication.
+
+### Dashboard Features
+- **Session Overview**: Grid of session cards with status (Active/Thinking/Idle/Ended)
+- **Session Detail**: Three-column layout — replay preview | conversation | approvals+messages
+- **Conversation View**: Renders Claude Code JSONL transcripts as a chat UI
+- **Replay Preview**: Screenshots and tool call list with playback controls
+- **Bidirectional Sync**: Scrolling conversation updates replay; clicking replay scrolls conversation
+- **Direct Claude Interaction**: Send messages directly to a running Claude Code session from the browser
+
+### Approval Gates
+
+Before performing sensitive actions (purchases, submissions, deletions), request human approval:
+
+```bash
+# Send a notification first (non-blocking)
+zenripple notify "Found item X for $Y. About to request approval."
+
+# Request approval (BLOCKS until human responds in dashboard)
+zenripple approve "Add item X ($Y) to cart"
+```
+
+The `approve` command:
+1. Takes a screenshot automatically for context
+2. Writes an approval request to `approvals.jsonl`
+3. Blocks (polls every 500ms) until the human approves or denies in the dashboard
+4. Returns `{"approved": true}` or `{"approved": false, "message": "reason"}`
+5. Times out after 5 minutes by default (configurable with `--timeout`)
+
+**MCP tools**: `browser_approve`, `browser_notify`
+
+**Dashboard UI**: Approvals appear in the right panel with Approve/Deny buttons. Deny opens a text input for the reason. All approval events appear in the unified Messages timeline.
+
+### Agent Messages (notify)
+
+Send non-blocking messages to the human operator:
+
+```bash
+zenripple notify "Starting checkout flow"
+zenripple notify "Found 3 results, picking the cheapest"
+```
+
+Messages appear in the dashboard's Messages panel immediately.
+
+### Human → Agent Messages
+
+Messages sent by the human from the dashboard are injected into the agent's next tool call output as a `[HUMAN_MESSAGE]` prefix:
+
+```
+[HUMAN_MESSAGE at 10:24:00] Actually pick the one with free returns
+---
+{"success": true, "tag": "button", ...}
+```
+
+The agent sees this in its tool result and can adjust its behavior accordingly.
+
+### Recommended Flow for Sensitive Actions
+
+```bash
+# 1. Navigate and find the item
+zenripple nav "https://amazon.com"
+# ... search, click, etc.
+
+# 2. Notify the human what you found
+zenripple notify "Found Widget X for $29.99 — requesting approval"
+
+# 3. Request approval (blocks until response)
+RESULT=$(zenripple approve "Purchase Widget X for $29.99")
+
+# 4. Check response
+if echo "$RESULT" | grep -q '"approved": true'; then
+  # Proceed with purchase
+  zenripple click <add-to-cart-index>
+  zenripple notify "Done! Widget X added to cart."
+else
+  # Denied — check for human message with instructions
+  zenripple notify "Approval denied. Standing by for instructions."
+fi
+```
+
+### Session Name Persistence
+
+Session names set via `zenripple session name "my-name"` are persisted to `manifest.json` in the replay directory and survive browser restarts. Always name your sessions for easy identification in the dashboard.
