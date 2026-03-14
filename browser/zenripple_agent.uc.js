@@ -7483,12 +7483,78 @@
 
     // Add click-to-sync on ZenRipple tool blocks in conversation → selects replay entry
     _setupConversationClickSync(scrollEl);
+
+    // Add scroll-based sync: scrolling past ZenRipple tool blocks updates replay selection
+    _setupConversationScrollSync(scrollEl);
+  }
+
+  // Scroll-based conversation→replay sync with debounce
+  let _scrollSyncTimer = null;
+  let _scrollSyncPaused = false; // Paused during programmatic scrolls from replay clicks
+
+  function _pauseScrollSync() {
+    _scrollSyncPaused = true;
+    // Resume after animation completes
+    setTimeout(() => { _scrollSyncPaused = false; }, 800);
+  }
+
+  function _setupConversationScrollSync(scrollEl) {
+    // Build reverse map: toolUseId → replayIdx
+    const reverseSync = new Map();
+    for (const [replaySeq, syncInfo] of _dashboardSyncMap) {
+      if (syncInfo.toolUseId) {
+        const replayIdx = _dashboardReplayEntries.findIndex(e => (e.seq ?? 0) === replaySeq);
+        if (replayIdx >= 0) reverseSync.set(syncInfo.toolUseId, replayIdx);
+      }
+    }
+    if (reverseSync.size === 0) return;
+
+    scrollEl.addEventListener('scroll', () => {
+      if (_scrollSyncPaused) return;
+      if (_scrollSyncTimer) clearTimeout(_scrollSyncTimer);
+      _scrollSyncTimer = setTimeout(() => {
+        _doScrollSync(scrollEl, reverseSync);
+      }, 150); // 150ms debounce
+    });
+  }
+
+  function _doScrollSync(scrollEl, reverseSync) {
+    if (_scrollSyncPaused || !_dashboardModal) return;
+
+    // Find the ZenRipple tool block closest to the center of the viewport
+    const toolBlocks = scrollEl.querySelectorAll('.zd-zenripple-tool[data-tool-use-id]');
+    const viewCenter = scrollEl.getBoundingClientRect().top + scrollEl.clientHeight / 2;
+    let bestBlock = null;
+    let bestDist = Infinity;
+
+    for (const block of toolBlocks) {
+      const rect = block.getBoundingClientRect();
+      const blockCenter = rect.top + rect.height / 2;
+      const dist = Math.abs(blockCenter - viewCenter);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestBlock = block;
+      }
+    }
+
+    if (!bestBlock || bestDist > scrollEl.clientHeight / 2) return; // No block near center
+
+    const toolUseId = bestBlock.getAttribute('data-tool-use-id');
+    const replayIdx = reverseSync.get(toolUseId);
+    if (replayIdx != null && replayIdx !== _dashboardSelectedReplayIdx) {
+      // Update replay selection WITHOUT triggering a scroll-back to conversation
+      _scrollSyncPaused = true;
+      _selectDashboardReplayEntry(replayIdx);
+      // Don't call scrollIntoView from the replay side — just update selection + screenshot
+      setTimeout(() => { _scrollSyncPaused = false; }, 100);
+    }
   }
 
   function _scrollToSyncedBlock(syncInfo) {
     const convoEl = _dashboardModal?.querySelector(`[data-tool-use-id="${syncInfo.toolUseId}"]`)
                  || _dashboardModal?.querySelector(`[data-conv-idx="${syncInfo.convoIdx}"]`);
     if (convoEl) {
+      _pauseScrollSync(); // Prevent scroll sync from firing during programmatic scroll
       convoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       convoEl.classList.add('zd-sync-highlight');
       setTimeout(() => convoEl.classList.remove('zd-sync-highlight'), 500);
@@ -8133,6 +8199,7 @@
 
     _stopDashboardPolling();
     if (_detailSplitterCleanup) _detailSplitterCleanup();
+    if (_scrollSyncTimer) { clearTimeout(_scrollSyncTimer); _scrollSyncTimer = null; }
     window.removeEventListener('keydown', handleDashboardKeydown, true);
     window.removeEventListener('keyup', _blockDashboardKeyEvent, true);
     window.removeEventListener('keypress', _blockDashboardKeyEvent, true);
