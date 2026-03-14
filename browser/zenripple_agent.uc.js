@@ -6456,6 +6456,14 @@
     return PathUtils.join(PathUtils.tempDir, 'zenripple_replay_' + _sanitizeSessionId(sessionId));
   }
 
+  // Strip characters illegal in XML 1.0 (Firefox chrome context uses XHTML).
+  // Illegal: U+0000-U+0008, U+000B, U+000C, U+000E-U+001F, U+FFFE, U+FFFF
+  // Legal control chars: U+0009 (tab), U+000A (newline), U+000D (CR)
+  function sanitizeForXHTML(str) {
+    // eslint-disable-next-line no-control-regex
+    return str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\uFFFE\uFFFF]/g, '');
+  }
+
   function injectDashboardStyles() {
     if (document.getElementById(DASHBOARD_STYLE_ID)) return;
     const style = document.createElement('style');
@@ -6469,10 +6477,13 @@
   function renderMarkdown(text) {
     if (!text) return '';
 
+    // Use XHTML-safe placeholders (not \x00 which is illegal in XML)
+    const PH = '\uFDD0'; // Unicode noncharacter, safe in strings but won't appear in real text
+
     // Extract code blocks BEFORE HTML escaping to avoid double-encoding
     const codeBlocks = [];
     let processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-      const placeholder = '\x00CB' + codeBlocks.length + '\x00';
+      const placeholder = PH + 'CB' + codeBlocks.length + PH;
       codeBlocks.push(`<pre><code class="lang-${escapeHTML(lang || 'text')}">${escapeHTML(code.trim())}</code></pre>`);
       return placeholder;
     });
@@ -6480,7 +6491,7 @@
     // Extract inline code before escaping
     const inlineCodes = [];
     processed = processed.replace(/`([^`]+)`/g, (_, code) => {
-      const placeholder = '\x00IC' + inlineCodes.length + '\x00';
+      const placeholder = PH + 'IC' + inlineCodes.length + PH;
       inlineCodes.push(`<code>${escapeHTML(code)}</code>`);
       return placeholder;
     });
@@ -6510,10 +6521,10 @@
 
     // Restore code blocks and inline code
     for (let i = 0; i < codeBlocks.length; i++) {
-      html = html.replace('\x00CB' + i + '\x00', codeBlocks[i]);
+      html = html.replace(PH + 'CB' + i + PH, codeBlocks[i]);
     }
     for (let i = 0; i < inlineCodes.length; i++) {
-      html = html.replace('\x00IC' + i + '\x00', inlineCodes[i]);
+      html = html.replace(PH + 'IC' + i + PH, inlineCodes[i]);
     }
 
     return html;
@@ -7187,7 +7198,7 @@
     // Preserve scroll position if user has scrolled up; auto-scroll if at bottom
     const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
 
-    scrollEl.innerHTML = html;
+    scrollEl.innerHTML = sanitizeForXHTML(html);
 
     // Add toggle handlers for tool blocks
     const toggles = scrollEl.querySelectorAll('[data-toggle="tool"]');
@@ -7739,13 +7750,16 @@
 
   function _isDashboardInput(e) {
     // Allow typing in contenteditable inputs (message input, deny reason).
-    // Check both e.target and document.activeElement — in Firefox chrome context,
-    // capture-phase listeners may have e.target set to a parent element rather
-    // than the focused contenteditable div.
+    // In Firefox chrome context (XHTML), isContentEditable may not work
+    // reliably on innerHTML-created elements. Use multiple detection methods.
     for (const el of [e.target, document.activeElement]) {
-      if (el && (el.isContentEditable || el.getAttribute?.('contenteditable') === 'true')) {
-        return true;
-      }
+      if (!el) continue;
+      // Standard check
+      if (el.isContentEditable) return true;
+      // Attribute check (XHTML)
+      if (el.getAttribute?.('contenteditable') === 'true') return true;
+      // Class-based fallback — our known input elements
+      if (el.classList?.contains('zd-message-input') || el.classList?.contains('zd-deny-input')) return true;
     }
     return false;
   }
