@@ -7353,33 +7353,30 @@
     // Find Claude PID and tmux pane
     let tmuxPane = null;
     try {
-      // Debug: test if shell commands work at all
-      const debugOut = await _runShellCommand('echo "SHELL_OK" ; echo "HOME=$HOME" ; which pgrep ; pgrep -x claude 2>&1 ; echo "EXIT=$?"');
-      log('Dashboard claude-send: shell debug: ' + debugOut.trim().replace(/\n/g, ' | '));
+      // Use ~/.claude/sessions/<PID>.json to match the exact Claude process
+      // by conversation session ID (not just CWD)
+      const findCmd = 'for f in $HOME/.claude/sessions/*.json; do cat "$f" 2>/dev/null; echo; done';
+      const sessionsOut = await _runShellCommand(findCmd);
 
-      // Find all Claude PIDs
-      const pgrepOut = await _runShellCommand('pgrep -x claude 2>/dev/null || true');
-      log('Dashboard claude-send: pgrep raw output: [' + pgrepOut + '] length=' + pgrepOut.length);
-      const pids = pgrepOut.trim().split('\n').filter(Boolean);
+      let matchedPid = null;
+      for (const line of sessionsOut.trim().split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const sess = JSON.parse(line);
+          if (sess.sessionId === convoSessionId && sess.pid) {
+            matchedPid = sess.pid;
+            break;
+          }
+        } catch (_) {}
+      }
 
-      log('Dashboard claude-send: checking PIDs: ' + pids.join(','));
-      for (const pidStr of pids) {
-        const pid = parseInt(pidStr, 10);
-        if (isNaN(pid)) continue;
-        // Get CWD
-        const lsofOut = await _runShellCommand(
-          'lsof -a -p ' + pid + ' -d cwd -Fn 2>/dev/null | grep ^n/ | head -1'
-        );
-        const cwd = lsofOut.trim().replace(/^n/, '');
-        log('Dashboard claude-send: PID ' + pid + ' lsof cwd=' + (cwd || '(empty)'));
-        if (!cwd) continue;
-        // Check if CWD matches the project
-        const pathHash = cwd.replace(/[^a-zA-Z0-9-]/g, '-');
-        log('Dashboard claude-send: PID ' + pid + ' pathHash=' + pathHash.slice(-40) + ' match=' + convoPath.includes(pathHash));
-        if (convoPath.includes(pathHash)) {
-          // Found the Claude process — get its tmux pane
+      if (matchedPid) {
+        // Verify process is still running
+        const checkOut = await _runShellCommand('kill -0 ' + matchedPid + ' 2>/dev/null && echo alive || echo dead');
+        if (checkOut.trim() === 'alive') {
+          // Find tmux pane via TTY
           const ttyOut = await _runShellCommand(
-            'lsof -a -p ' + pid + ' -d 0 -Fn 2>/dev/null | grep ^n/dev/ | head -1'
+            'lsof -a -p ' + matchedPid + ' -d 0 -Fn 2>/dev/null | grep ^n/dev/ | head -1'
           );
           const tty = ttyOut.trim().replace(/^n/, '');
           if (tty) {
@@ -7391,8 +7388,12 @@
               if (paneTty === tty) { tmuxPane = paneId; break; }
             }
           }
-          break;
+          log('Dashboard claude-send: matched PID ' + matchedPid + ' pane=' + (tmuxPane || 'none'));
+        } else {
+          log('Dashboard claude-send: PID ' + matchedPid + ' no longer running');
         }
+      } else {
+        log('Dashboard claude-send: no PID in ~/.claude/sessions/ matches session ' + convoSessionId);
       }
     } catch (e) {
       log('Dashboard: error finding Claude process: ' + e);
