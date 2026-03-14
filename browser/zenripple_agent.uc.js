@@ -7437,11 +7437,12 @@
       proc.init(file);
 
       const tmpFile = PathUtils.join(PathUtils.tempDir, 'zenripple_cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.tmp');
-      // Ensure HOME and PATH are set (nsIProcess may not inherit user environment)
+      // Ensure HOME and PATH are set (nsIProcess may not inherit user environment).
+      // Wrap in subshell ( ) so the redirect captures ALL output, not just the last command.
       const home = PathUtils.profileDir.split('/Library/')[0] || '/Users/' + (Cc['@mozilla.org/process/environment;1'].getService(Ci.nsIEnvironment).get('USER') || 'unknown');
-      const fullCmd = 'export HOME=' + _shellQuote(home) + ' ; ' +
+      const fullCmd = '( export HOME=' + _shellQuote(home) + ' ; ' +
                       'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" ; ' +
-                      cmd + ' > ' + _shellQuote(tmpFile) + ' 2>&1';
+                      cmd + ' ) > ' + _shellQuote(tmpFile) + ' 2>&1';
 
       proc.runAsync(['-c', fullCmd], 2, {
         observe: async (subject, topic) => {
