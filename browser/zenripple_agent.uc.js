@@ -6654,6 +6654,29 @@
   padding: 20px;
 }
 
+/* ── Conversation groups in overview ── */
+.zd-convo-group { margin-bottom: 20px; }
+.zd-convo-group-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 0; margin-bottom: 8px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+}
+.zd-convo-group-name { font-family: var(--zr-font-mono); font-size: 12px; font-weight: 600; color: var(--zr-text-primary); }
+.zd-convo-group-id { font-family: var(--zr-font-mono); font-size: 10px; color: var(--zr-text-muted); background: var(--zr-bg-elevated); padding: 1px 5px; border-radius: var(--zr-r-sm); }
+.zd-convo-group-count { font-family: var(--zr-font-mono); font-size: 10px; color: var(--zr-text-muted); margin-left: auto; }
+.zd-convo-group-viewall {
+  font-family: var(--zr-font-mono); font-size: 10px; font-weight: 600;
+  color: var(--zr-accent); cursor: pointer; padding: 2px 8px;
+  border-radius: var(--zr-r-sm); border: 1px solid var(--zr-accent-20); transition: all 0.12s;
+}
+.zd-convo-group-viewall:hover { background: var(--zr-accent-dim); }
+
+/* ── Merged view ── */
+.zd-merged-legend { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--zr-border-subtle); flex-shrink: 0; }
+.zd-merged-session-chip { display: flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: var(--zr-r-sm); background: var(--zr-bg-elevated); font-family: var(--zr-font-mono); font-size: 9px; color: var(--zr-text-secondary); }
+.zd-merged-chip-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.zd-replay-entry-session-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+
 /* ── Splitters ── */
 .zd-splitter {
   flex-shrink: 0;
@@ -6718,6 +6741,8 @@
   let _dashboardSyncMap = new Map(); // replaySeq → conversationBlockIdx
   let _dashboardScreenshotCache = new Map();
   let _dashboardCurrentScreenshotURL = null;
+  let _dashboardMergedSessionIds = null; // Array of session IDs for merged view
+  let _dashboardMergedConvoPath = null; // Conversation path for merged view
   let _dashboardConvoFileSize = 0; // Track conversation file size for incremental updates
   let _dashboardReplayFileSize = 0; // Track replay log file size for incremental updates
   let _dashboardConvoReadBytes = 2 * 1024 * 1024; // How many bytes from end to read (grows on scroll-up)
@@ -6894,6 +6919,8 @@
     // Live sessions from the sessions map
     for (const [sessionId, session] of sessions) {
       const replayDir = _replayDirForSession(sessionId);
+      let conversationPath = '';
+      try { conversationPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim(); } catch (_) {}
       let toolCount = 0;
       let lastAction = '';
       let lastScreenshotFile = '';
@@ -6928,6 +6955,7 @@
         hasPendingApproval: _dashboardApprovalCache.get(sessionId) || false,
         isLive: true,
         lastActivity: session.lastActivity,
+        conversationPath,
       });
     }
 
@@ -6935,6 +6963,8 @@
     const discovered = await discoverAllSessions();
     for (const s of discovered) {
       if (sessions.has(s.sessionId)) continue; // Already included
+      let conversationPath = '';
+      try { conversationPath = (await IOUtils.readUTF8(PathUtils.join(s.dir, 'conversation.link'))).trim(); } catch (_) {}
       cards.push({
         sessionId: s.sessionId,
         name: s.name || s.sessionId.slice(0, 12),
@@ -6948,6 +6978,7 @@
         hasPendingApproval: false,
         isLive: false,
         lastActivity: 0,
+        conversationPath,
       });
     }
 
@@ -6966,31 +6997,61 @@
   // ── Build overview HTML ──
 
   function buildOverviewHTML(cards) {
-    const activeCards = cards.filter(c => c.status !== 'ended');
-    const endedCards = cards.filter(c => c.status === 'ended');
+    if (cards.length === 0) return '<div class="zd-empty">No agent sessions found.</div>';
+
+    // Group cards by conversation path
+    const convoGroups = new Map();
+    const ungrouped = [];
+
+    for (const card of cards) {
+      if (card.conversationPath) {
+        if (!convoGroups.has(card.conversationPath)) {
+          // Derive a human-readable project name from the path
+          const parts = card.conversationPath.split('/');
+          const projectDir = parts[parts.length - 2] || '';
+          const projectParts = projectDir.split('-').filter(Boolean);
+          const convoName = projectParts.length > 0 ? projectParts[projectParts.length - 1] : 'Project';
+          const convoId = parts[parts.length - 1]?.replace('.jsonl', '').slice(0, 8) || '';
+          convoGroups.set(card.conversationPath, { name: convoName, convoId, cards: [], hasActive: false });
+        }
+        const group = convoGroups.get(card.conversationPath);
+        group.cards.push(card);
+        if (card.status !== 'ended') group.hasActive = true;
+      } else {
+        ungrouped.push(card);
+      }
+    }
 
     let html = '';
 
-    if (activeCards.length > 0) {
-      html += '<div class="zd-section-label">Active Sessions</div>';
-      html += '<div class="zd-cards">';
-      for (const card of activeCards) {
-        html += buildCardHTML(card);
+    // Sort groups: active first, then by most recent activity
+    const sortedGroups = [...convoGroups.entries()].sort((a, b) => {
+      if (a[1].hasActive !== b[1].hasActive) return a[1].hasActive ? -1 : 1;
+      const aMax = Math.max(0, ...a[1].cards.map(c => c.lastActivity || 0));
+      const bMax = Math.max(0, ...b[1].cards.map(c => c.lastActivity || 0));
+      return bMax - aMax;
+    });
+
+    for (const [convoPath, group] of sortedGroups) {
+      html += '<div class="zd-convo-group">';
+      html += '<div class="zd-convo-group-header">';
+      html += '<span class="zd-convo-group-name">' + escapeHTML(group.name) + '</span>';
+      html += '<span class="zd-convo-group-id">' + escapeHTML(group.convoId) + '</span>';
+      html += '<span class="zd-convo-group-count">' + group.cards.length + ' session' + (group.cards.length !== 1 ? 's' : '') + '</span>';
+      if (group.cards.length > 1) {
+        html += '<div class="zd-convo-group-viewall" data-convo-path="' + escapeHTML(convoPath) + '">View All</div>';
       }
       html += '</div>';
-    }
-
-    if (endedCards.length > 0) {
-      html += '<div class="zd-section-label">Recent Sessions</div>';
       html += '<div class="zd-cards">';
-      for (const card of endedCards) {
-        html += buildCardHTML(card);
-      }
-      html += '</div>';
+      for (const card of group.cards) html += buildCardHTML(card);
+      html += '</div></div>';
     }
 
-    if (cards.length === 0) {
-      html = '<div class="zd-empty">No agent sessions found.</div>';
+    if (ungrouped.length > 0) {
+      html += '<div class="zd-section-label">Unlinked Sessions</div>';
+      html += '<div class="zd-cards">';
+      for (const card of ungrouped) html += buildCardHTML(card);
+      html += '</div>';
     }
 
     return html;
@@ -7151,8 +7212,12 @@
       });
     }
     if (claudeStop) {
-      claudeStop.addEventListener('click', () => _stopClaudeFork());
+      claudeStop.addEventListener('click', () => _stopClaude());
     }
+
+    // Check for existing fork process or tmux pane
+    _checkForkProcessAlive(sessionId);
+    _detectAndShowTmux(sessionId);
 
     // Tab switching
     const tabs = body.querySelectorAll('.zd-convo-tab');
@@ -7351,55 +7416,29 @@
   // ── Claude Code direct interaction ──
 
   let _dashboardForkPidFile = null;
+  let _dashboardTmuxPane = null; // Cached tmux pane ID for the current session
 
-  async function _stopClaudeFork() {
-    if (!_dashboardForkPidFile) return;
-    log('Dashboard: stopping fork via PID file ' + _dashboardForkPidFile);
-    try {
-      const pidStr = await _runShellCommand('cat ' + _shellQuote(_dashboardForkPidFile) + ' 2>/dev/null');
-      const pid = parseInt(pidStr.trim(), 10);
-      if (pid > 0) {
-        await _runShellCommand('kill ' + pid + ' 2>/dev/null ; kill -9 ' + pid + ' 2>/dev/null');
-        log('Dashboard: killed fork PID ' + pid);
-      }
-    } catch (_) {}
-    const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
-    const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
-    if (statusEl) statusEl.textContent = 'Fork stopped';
-    if (stopBtn) stopBtn.style.display = 'none';
-    _dashboardForkPidFile = null;
-  }
-
-  async function _sendToClaudeCode(sessionId, inputEl) {
-    const text = (inputEl.textContent || '').trim();
-    if (!text) return;
-    inputEl.textContent = '';
-
+  // Read convoSessionId and convoPath for a given ZenRipple session
+  async function _getConvoInfo(sessionId) {
     const replayDir = _replayDirForSession(sessionId);
-
-    // Read conversation.link to get Claude session ID
     let convoPath = '';
     let convoSessionId = '';
     try {
       convoPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim();
       convoSessionId = convoPath.split('/').pop().replace('.jsonl', '');
     } catch (_) {}
+    return { convoPath, convoSessionId };
+  }
 
-    if (!convoSessionId) {
-      log('Dashboard: no conversation link — cannot send to Claude Code');
-      return;
-    }
-
-    // Find Claude PID and tmux pane
-    let tmuxPane = null;
+  // Find the Claude Code PID and tmux pane for a conversation session ID
+  async function _detectClaudeProcess(convoSessionId) {
+    let matchedPid = null;
     let matchedCwd = '';
+    let tmuxPane = null;
     try {
-      // Use ~/.claude/sessions/<PID>.json to match the exact Claude process
-      // by conversation session ID (not just CWD)
       const findCmd = 'for f in $HOME/.claude/sessions/*.json; do cat "$f" 2>/dev/null; echo; done';
       const sessionsOut = await _runShellCommand(findCmd);
 
-      let matchedPid = null;
       for (const line of sessionsOut.trim().split('\n')) {
         if (!line.trim()) continue;
         try {
@@ -7413,10 +7452,8 @@
       }
 
       if (matchedPid) {
-        // Verify process is still running
         const checkOut = await _runShellCommand('kill -0 ' + matchedPid + ' 2>/dev/null && echo alive || echo dead');
         if (checkOut.trim() === 'alive') {
-          // Find tmux pane via TTY
           const ttyOut = await _runShellCommand(
             'lsof -a -p ' + matchedPid + ' -d 0 -Fn 2>/dev/null | grep ^n/dev/ | head -1'
           );
@@ -7425,46 +7462,130 @@
             const panesOut = await _runShellCommand(
               "tmux list-panes -a -F '#{pane_id} #{pane_tty}' 2>/dev/null || true"
             );
-            for (const line of panesOut.trim().split('\n')) {
-              const [paneId, paneTty] = line.split(' ');
+            for (const pLine of panesOut.trim().split('\n')) {
+              const [paneId, paneTty] = pLine.split(' ');
               if (paneTty === tty) { tmuxPane = paneId; break; }
             }
           }
-          log('Dashboard claude-send: matched PID ' + matchedPid + ' pane=' + (tmuxPane || 'none'));
         } else {
-          log('Dashboard claude-send: PID ' + matchedPid + ' no longer running');
+          matchedPid = null; // Dead process
         }
-      } else {
-        log('Dashboard claude-send: no PID in ~/.claude/sessions/ matches session ' + convoSessionId);
       }
-    } catch (e) {
-      log('Dashboard: error finding Claude process: ' + e);
+    } catch (_) {}
+    return { pid: matchedPid, cwd: matchedCwd, tmuxPane };
+  }
+
+  // Check for a running fork process and restore stop button
+  async function _checkForkProcessAlive(sessionId) {
+    _dashboardForkPidFile = null; // Reset before checking current session
+    const { convoSessionId } = await _getConvoInfo(sessionId);
+    if (!convoSessionId) return;
+    const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + convoSessionId + '.pid');
+    let pidStr = '';
+    try { pidStr = (await IOUtils.readUTF8(pidFile)).trim(); } catch (_) { return; }
+    const pid = parseInt(pidStr, 10);
+    if (!(pid > 0)) return;
+    const checkOut = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+    if (checkOut.trim() === 'alive') {
+      _dashboardForkPidFile = pidFile;
+      const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
+      const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
+      if (statusEl) { statusEl.textContent = 'Fork running (PID ' + pid + ')'; statusEl.style.display = ''; }
+      if (stopBtn) { stopBtn.style.display = ''; }
+    } else {
+      try { await IOUtils.remove(pidFile); } catch (_) {}
+    }
+  }
+
+  // Detect tmux pane for a session and show stop button if found
+  async function _detectAndShowTmux(sessionId) {
+    _dashboardTmuxPane = null;
+    const { convoSessionId } = await _getConvoInfo(sessionId);
+    if (!convoSessionId) return;
+    const info = await _detectClaudeProcess(convoSessionId);
+    if (info.tmuxPane) {
+      _dashboardTmuxPane = info.tmuxPane;
+      const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
+      const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
+      if (stopBtn) { stopBtn.style.display = ''; stopBtn.title = 'Interrupt Claude (Esc x3)'; }
+      if (statusEl) { statusEl.textContent = 'Claude running in tmux ' + info.tmuxPane; statusEl.style.display = ''; }
+    }
+  }
+
+  // Unified stop: kills fork process AND/OR sends Escape to tmux pane
+  async function _stopClaude() {
+    if (_dashboardForkPidFile) {
+      log('Dashboard: stopping fork via PID file ' + _dashboardForkPidFile);
+      try {
+        const pidStr = await _runShellCommand('cat ' + _shellQuote(_dashboardForkPidFile) + ' 2>/dev/null');
+        const pid = parseInt(pidStr.trim(), 10);
+        if (pid > 0) {
+          await _runShellCommand('kill ' + pid + ' 2>/dev/null ; kill -9 ' + pid + ' 2>/dev/null');
+          log('Dashboard: killed fork PID ' + pid);
+        }
+      } catch (_) {}
+      try { await IOUtils.remove(_dashboardForkPidFile); } catch (_) {}
+      _dashboardForkPidFile = null;
+    }
+    if (_dashboardTmuxPane) {
+      log('Dashboard: sending Escape x3 to tmux pane ' + _dashboardTmuxPane);
+      try {
+        for (let i = 0; i < 3; i++) {
+          await _runShellCommand('tmux send-keys -t ' + _dashboardTmuxPane + ' Escape');
+          if (i < 2) await new Promise(r => setTimeout(r, 100));
+        }
+      } catch (e) {
+        log('Dashboard: tmux interrupt failed: ' + e);
+      }
+    }
+    const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
+    const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
+    if (statusEl) statusEl.textContent = 'Stopped';
+    if (stopBtn) stopBtn.style.display = 'none';
+  }
+
+  async function _sendToClaudeCode(sessionId, inputEl) {
+    const text = (inputEl.textContent || '').trim();
+    if (!text) return;
+    inputEl.textContent = '';
+
+    const { convoPath, convoSessionId } = await _getConvoInfo(sessionId);
+    if (!convoSessionId) {
+      log('Dashboard: no conversation link — cannot send to Claude Code');
+      return;
+    }
+
+    // Use cached tmux pane or detect fresh
+    let tmuxPane = _dashboardTmuxPane;
+    let matchedCwd = '';
+    if (!tmuxPane) {
+      const info = await _detectClaudeProcess(convoSessionId);
+      tmuxPane = info.tmuxPane;
+      matchedCwd = info.cwd;
+      if (tmuxPane) _dashboardTmuxPane = tmuxPane;
     }
 
     if (tmuxPane) {
       log('Dashboard: sending to Claude via tmux pane ' + tmuxPane);
       try {
-        await _runShellCommand(
-          'tmux send-keys -l -t ' + tmuxPane + ' ' + _shellQuote(text)
-        );
-        await _runShellCommand(
-          'tmux send-keys -t ' + tmuxPane + ' Enter'
-        );
+        await _runShellCommand('tmux send-keys -l -t ' + tmuxPane + ' ' + _shellQuote(text));
+        await _runShellCommand('tmux send-keys -t ' + tmuxPane + ' Enter');
         log('Dashboard: tmux send succeeded');
       } catch (e) {
         log('Dashboard: tmux send failed: ' + e);
       }
     } else if (convoSessionId) {
-      // cd to the project directory so claude --resume can find the session
+      if (!matchedCwd) {
+        const info = await _detectClaudeProcess(convoSessionId);
+        matchedCwd = info.cwd;
+      }
       const cdPrefix = matchedCwd ? 'cd ' + _shellQuote(matchedCwd) + ' && ' : '';
-      // Use a PID file so we can stop the fork
       const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + convoSessionId + '.pid');
       const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
         ' | claude -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
         ' --output-format text 2>&1 & echo $! > ' + _shellQuote(pidFile) + ' ; wait';
       log('Dashboard: sending via --resume fork: ' + resumeCmd.slice(0, 150));
 
-      // Show status and stop button
       const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
       const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
       if (statusEl) { statusEl.textContent = 'Fork running...'; statusEl.style.display = ''; }
@@ -7478,6 +7599,9 @@
         log('Dashboard: resume fork failed: ' + e);
         if (statusEl) { statusEl.textContent = 'Fork failed: ' + e; }
       }
+      // Clean up PID file after fork completes to prevent stale PID kills
+      _dashboardForkPidFile = null;
+      try { await IOUtils.remove(pidFile); } catch (_) {}
       if (stopBtn) stopBtn.style.display = 'none';
     } else {
       log('Dashboard: no tmux pane and no conversation link');
@@ -7568,8 +7692,8 @@
     const progress = body.querySelector('#zd-progress');
 
     if (playBtn) playBtn.addEventListener('click', _toggleDashboardPlayback);
-    if (slowerBtn) slowerBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_playbackSpeedIdx - 1));
-    if (fasterBtn) fasterBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_playbackSpeedIdx + 1));
+    if (slowerBtn) slowerBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_zdPlaybackSpeedIdx - 1));
+    if (fasterBtn) fasterBtn.addEventListener('click', () => _setDashboardPlaybackSpeed(_zdPlaybackSpeedIdx + 1));
     if (progress) progress.addEventListener('click', (ev) => {
       const rect = progress.getBoundingClientRect();
       const pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
@@ -7778,13 +7902,15 @@
       }
     }
 
-    // Load screenshot
+    // Load screenshot (use entry's source dir in merged view, or global replay dir)
+    const ssReplayDir = entry._sourceReplayDir || _dashboardReplayDir;
     const ssContainer = _dashboardModal?.querySelector('#zd-replay-ss');
     if (ssContainer && entry.screenshot) {
-      let url = _dashboardScreenshotCache.get(entry.screenshot);
+      const cacheKey = (ssReplayDir || '') + '/' + entry.screenshot;
+      let url = _dashboardScreenshotCache.get(cacheKey);
       if (!url) {
-        url = await loadScreenshot(_dashboardReplayDir, entry.screenshot);
-        if (url) _dashboardScreenshotCache.set(entry.screenshot, url);
+        url = await loadScreenshot(ssReplayDir, entry.screenshot);
+        if (url) _dashboardScreenshotCache.set(cacheKey, url);
       }
       if (url) {
         // Don't revoke here — cached URLs are reused across entry selection.
@@ -8134,17 +8260,6 @@
       }
     }
 
-    // Add toggle handlers for tool blocks (for any non-programmatic ones)
-    const toggles = scrollEl.querySelectorAll('[data-toggle="tool"]');
-    for (const toggle of toggles) {
-      toggle.addEventListener('click', () => {
-        const body = toggle.nextElementSibling;
-        const arrow = toggle.querySelector('.zd-tool-toggle');
-        if (body) body.classList.toggle('expanded');
-        if (arrow) arrow.classList.toggle('expanded');
-      });
-    }
-
     // Auto-expand error tool results
     const errorDots = scrollEl.querySelectorAll('.zd-tool-result-dot.error');
     for (const dot of errorDots) {
@@ -8183,15 +8298,22 @@
     setTimeout(() => { _scrollSyncPaused = false; }, 800);
   }
 
+  let _scrollSyncListener = null;
+
   function _setupConversationScrollSync(scrollEl) {
-    scrollEl.addEventListener('scroll', () => {
+    // Remove previous listener to prevent accumulation across re-renders
+    if (_scrollSyncListener && scrollEl) {
+      scrollEl.removeEventListener('scroll', _scrollSyncListener);
+    }
+    _scrollSyncListener = () => {
       if (_scrollSyncPaused) return;
-      if (_scrollSyncRafId) return; // Already scheduled for this frame
+      if (_scrollSyncRafId) return;
       _scrollSyncRafId = requestAnimationFrame(() => {
         _scrollSyncRafId = null;
         _doScrollSync(scrollEl);
       });
-    });
+    };
+    scrollEl.addEventListener('scroll', _scrollSyncListener);
   }
 
   function _doScrollSync(scrollEl) {
@@ -8786,9 +8908,260 @@
     return modal;
   }
 
+  // ── Merged detail view (all sessions for one conversation) ──
+
+  async function _buildMergedDetailView(convoPath, allCards) {
+    const matchingCards = allCards.filter(c => c.conversationPath === convoPath);
+    if (matchingCards.length === 0) return;
+
+    const sessionIds = matchingCards.map(c => c.sessionId);
+    _dashboardView = 'merged-detail';
+    _dashboardDetailSession = sessionIds[0];
+    _dashboardMergedSessionIds = sessionIds;
+    _dashboardMergedConvoPath = convoPath;
+    _dashboardConvoFileSize = 0;
+    _dashboardReplayFileSize = 0;
+
+    const container = _dashboardModal.querySelector('#zenripple-dashboard-container');
+    if (!container) return;
+
+    // Derive conversation name
+    const parts = convoPath.split('/');
+    const projectDir = parts[parts.length - 2] || '';
+    const projectParts = projectDir.split('-').filter(Boolean);
+    const convoName = projectParts.length > 0 ? projectParts[projectParts.length - 1] : 'Conversation';
+    const convoId = (parts[parts.length - 1] || '').replace('.jsonl', '').slice(0, 8);
+
+    // Update header
+    const title = container.querySelector('.zd-title');
+    if (title) title.textContent = convoName + ' (merged)';
+    const badge = container.querySelector('.zd-session-badge');
+    if (badge) { badge.textContent = sessionIds.length + ' sessions'; badge.style.color = ''; badge.style.background = ''; }
+    const backBtn = container.querySelector('.zd-back');
+    if (backBtn) backBtn.style.display = '';
+
+    // Build session legend
+    let legendHTML = '';
+    for (const card of matchingCards) {
+      legendHTML += `<div class="zd-merged-session-chip"><span class="zd-merged-chip-dot" style="background:rgb(${card.color})"></span>${escapeHTML(card.name)}</div>`;
+    }
+
+    // Build detail layout (same structure as buildDetailView)
+    const body = container.querySelector('.zd-body');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="zd-detail">
+        <div class="zd-replay-col" id="zd-replay-col">
+          <div class="zd-replay-screenshot" id="zd-replay-ss">
+            <span class="zd-no-screenshot">No screenshot</span>
+          </div>
+          <div class="zd-replay-transport" id="zd-transport">
+            <div class="zd-transport-btn" id="zd-play-btn" title="Play (Space)">\u25B6</div>
+            <div class="zd-transport-btn" id="zd-slower-btn" title="Slower ([)">\u2BC7</div>
+            <span class="zd-transport-speed" id="zd-speed">1x</span>
+            <div class="zd-transport-btn" id="zd-faster-btn" title="Faster (])">\u2BC8</div>
+            <div class="zd-transport-progress" id="zd-progress">
+              <div class="zd-transport-progress-fill" id="zd-progress-fill"></div>
+            </div>
+            <span class="zd-transport-count" id="zd-count">0</span>
+          </div>
+          <div class="zd-merged-legend">${legendHTML}</div>
+          <div class="zd-splitter zd-splitter-h" data-split="replay-inner"></div>
+          <div class="zd-replay-list" id="zd-replay-entries"></div>
+        </div>
+        <div class="zd-splitter zd-splitter-v" data-split="left"></div>
+        <div class="zd-conversation-col" id="zd-conversation-col">
+          <div class="zd-convo-tabs">
+            <div class="zd-convo-tab active" data-tab="conversation">Conversation</div>
+            <div class="zd-convo-tab" data-tab="tool-detail">Tool Details</div>
+          </div>
+          <div class="zd-conversation-scroll" id="zd-conversation"></div>
+          <div class="zd-tool-detail-view" id="zd-tool-detail"></div>
+          <div class="zd-claude-status" id="zd-claude-status" style="display:none"></div>
+          <div class="zd-claude-input-wrapper" id="zd-claude-input-wrapper">
+            <div class="zd-claude-input" id="zd-claude-input" contenteditable="true" data-placeholder="Send to Claude Code..."></div>
+            <div class="zd-claude-send" id="zd-claude-send">\u2192</div>
+            <div class="zd-claude-stop" id="zd-claude-stop" style="display:none" title="Stop">\u25A0</div>
+          </div>
+        </div>
+        <div class="zd-splitter zd-splitter-v" data-split="right"></div>
+        <div class="zd-right-col" id="zd-right-col">
+          <div class="zd-right-section zd-approvals-section">
+            <div class="zd-right-section-header">Approvals</div>
+            <div class="zd-approvals-scroll" id="zd-approvals"></div>
+          </div>
+          <div class="zd-right-section zd-messages-section">
+            <div class="zd-right-section-header">Messages</div>
+            <div class="zd-messages-scroll" id="zd-messages"></div>
+            <div class="zd-message-input-wrapper">
+              <div class="zd-message-input" id="zd-msg-input" contenteditable="true" data-placeholder="Send message..."></div>
+              <div class="zd-message-send" id="zd-msg-send">\u2192</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    _setupDetailSplitters(body);
+    _setupTransportControls(body);
+
+    // Tab switching
+    const tabs = body.querySelectorAll('.zd-convo-tab');
+    const convoScroll = body.querySelector('#zd-conversation');
+    const toolDetailView = body.querySelector('#zd-tool-detail');
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        for (const t of tabs) t.classList.remove('active');
+        tab.classList.add('active');
+        const which = tab.dataset.tab;
+        if (convoScroll) convoScroll.style.display = which === 'conversation' ? '' : 'none';
+        if (toolDetailView) {
+          toolDetailView.classList.toggle('visible', which === 'tool-detail');
+          if (which === 'tool-detail') _updateToolDetailView();
+        }
+      });
+    }
+
+    // Claude send + stop
+    const claudeInput = body.querySelector('#zd-claude-input');
+    const claudeSend = body.querySelector('#zd-claude-send');
+    const claudeStop = body.querySelector('#zd-claude-stop');
+    if (claudeInput && claudeSend) {
+      claudeSend.addEventListener('click', () => _sendToClaudeCode(sessionIds[0], claudeInput));
+      claudeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _sendToClaudeCode(sessionIds[0], claudeInput); }
+      });
+    }
+    if (claudeStop) claudeStop.addEventListener('click', () => _stopClaude());
+
+    // Check for existing fork process or tmux pane
+    _checkForkProcessAlive(sessionIds[0]);
+    _detectAndShowTmux(sessionIds[0]);
+
+    // Message send
+    const sendBtn = body.querySelector('#zd-msg-send');
+    const msgInput = body.querySelector('#zd-msg-input');
+    if (sendBtn && msgInput) {
+      sendBtn.addEventListener('click', () => _sendHumanMessage(sessionIds[0], msgInput));
+      msgInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _sendHumanMessage(sessionIds[0], msgInput); }
+      });
+    }
+
+    // Load merged data
+    _dashboardConvoReadBytes = _CONVO_CHUNK_SIZE;
+    await _loadMergedDetailData(sessionIds);
+    _setupConversationScrollLoader();
+    _setupConversationScrollSync(body.querySelector('#zd-conversation'));
+    _updateTransport();
+    _updateDashboardFooter(sessionIds[0]);
+  }
+
+  async function _loadMergedDetailData(sessionIds) {
+    await Promise.all([
+      _loadMergedReplayData(sessionIds),
+      _loadConversation(sessionIds[0]), // All sessions share same conversation
+      _loadMergedApprovals(sessionIds),
+      _loadMergedMessages(sessionIds),
+    ]);
+    _buildSyncMap();
+  }
+
+  async function _loadMergedReplayData(sessionIds) {
+    // Skip re-parse if no log files changed (sum of all file sizes)
+    let totalSize = 0;
+    for (const sid of sessionIds) {
+      const logPath = PathUtils.join(_replayDirForSession(sid), 'tool_log.jsonl');
+      try { const info = await IOUtils.stat(logPath); totalSize += info.size; } catch (_) {}
+    }
+    if (totalSize === _dashboardReplayFileSize && _dashboardReplayEntries.length > 0) return;
+    _dashboardReplayFileSize = totalSize;
+
+    _dashboardReplayEntries = [];
+
+    for (const sid of sessionIds) {
+      const replayDir = _replayDirForSession(sid);
+      const logPath = PathUtils.join(replayDir, 'tool_log.jsonl');
+      const session = sessions.get(sid);
+      const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+      const name = (session && session.name) || sid.slice(0, 12);
+
+      try {
+        const content = await IOUtils.readUTF8(logPath);
+        for (const line of content.trim().split('\n').filter(Boolean)) {
+          try {
+            const entry = JSON.parse(line);
+            entry._sourceSessionId = sid;
+            entry._sourceColor = color;
+            entry._sourceName = name;
+            entry._sourceReplayDir = replayDir;
+            _dashboardReplayEntries.push(entry);
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    // Sort by timestamp
+    _dashboardReplayEntries.sort((a, b) => {
+      const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+      const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+      return tA !== tB ? tA - tB : (a.seq ?? 0) - (b.seq ?? 0);
+    });
+
+    // Render replay list
+    const listEl = _dashboardModal?.querySelector('#zd-replay-entries');
+    if (!listEl) return;
+    listEl.innerHTML = '';
+
+    for (let i = _dashboardReplayEntries.length - 1; i >= 0; i--) {
+      const entry = _dashboardReplayEntries[i];
+      const el = document.createElement('div');
+      el.className = 'zd-replay-entry';
+      el.dataset.idx = String(i);
+      // Show session color dot in merged view
+      const sessionDot = document.createElement('span');
+      sessionDot.className = 'zd-replay-entry-session-dot';
+      sessionDot.style.background = 'rgb(' + (entry._sourceColor || '34,211,238') + ')';
+      sessionDot.title = entry._sourceName || '';
+      el.appendChild(sessionDot);
+
+      el.innerHTML += `
+        <span class="zd-replay-entry-seq">#${escapeHTML(String(entry.seq ?? i))}</span>
+        <span class="zd-replay-entry-dot${entry.error ? ' error' : ''}"></span>
+        <span class="zd-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+      `;
+      el.addEventListener('click', () => _selectDashboardReplayEntry(i));
+      listEl.appendChild(el);
+    }
+
+    if (_dashboardReplayEntries.length > 0) {
+      _selectDashboardReplayEntry(_dashboardReplayEntries.length - 1, { scrollConversation: false });
+    }
+  }
+
+  async function _loadMergedApprovals(sessionIds) {
+    const approvalsEl = _dashboardModal?.querySelector('#zd-approvals');
+    if (!approvalsEl) return;
+    // Delegate to first session for now (approvals are per-session)
+    await _loadApprovals(sessionIds[0]);
+  }
+
+  async function _loadMergedMessages(sessionIds) {
+    const messagesEl = _dashboardModal?.querySelector('#zd-messages');
+    if (!messagesEl) return;
+    // Delegate to first session (messages share the conversation)
+    await _loadMessages(sessionIds[0]);
+  }
+
   async function _showOverview() {
     _dashboardView = 'overview';
     _dashboardDetailSession = null;
+    _dashboardMergedSessionIds = null;
+    _dashboardMergedConvoPath = null;
+    _dashboardTmuxPane = null;
+    _dashboardForkPidFile = null;
+    _stopDashboardPlayback();
 
     const container = _dashboardModal?.querySelector('#zenripple-dashboard-container');
     if (!container) return;
@@ -8829,6 +9202,16 @@
           if (sid) buildDetailView(sid);
         });
       }
+
+      // Add "View All" merged view click handlers
+      const viewAllBtns = overviewEl.querySelectorAll('.zd-convo-group-viewall');
+      for (const btn of viewAllBtns) {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const convoPath = btn.dataset.convoPath;
+          if (convoPath) _buildMergedDetailView(convoPath, cards);
+        });
+      }
     }
   }
 
@@ -8863,6 +9246,9 @@
         await _refreshOverview();
       } else if (_dashboardView === 'detail' && _dashboardDetailSession) {
         await _loadDetailData(_dashboardDetailSession);
+        _updateDashboardFooter(_dashboardDetailSession);
+      } else if (_dashboardView === 'merged-detail' && _dashboardMergedSessionIds) {
+        await _loadMergedDetailData(_dashboardMergedSessionIds);
         _updateDashboardFooter(_dashboardDetailSession);
       }
     } catch (e) {
@@ -8928,6 +9314,10 @@
     _dashboardConvoReadBytes = _CONVO_CHUNK_SIZE;
     _dashboardConvoHasMore = false;
     _toolResultMap.clear();
+    _dashboardMergedSessionIds = null;
+    _dashboardMergedConvoPath = null;
+    _dashboardTmuxPane = null;
+    _dashboardForkPidFile = null;
 
     log('Dashboard closed');
   }
@@ -8945,7 +9335,7 @@
       // Attribute check (XHTML)
       if (el.getAttribute?.('contenteditable') === 'true') return true;
       // Class-based fallback — our known input elements
-      if (el.classList?.contains('zd-message-input') || el.classList?.contains('zd-deny-input')) return true;
+      if (el.classList?.contains('zd-message-input') || el.classList?.contains('zd-deny-input') || el.classList?.contains('zd-claude-input')) return true;
     }
     return false;
   }
@@ -9014,8 +9404,10 @@
     e.stopPropagation();
     e.stopImmediatePropagation();
 
+    const isDetailView = _dashboardView === 'detail' || _dashboardView === 'merged-detail';
+
     if (e.key === 'Escape') {
-      if (_dashboardView === 'detail') {
+      if (isDetailView) {
         _showOverview();
       } else {
         closeDashboardModal();
@@ -9023,20 +9415,20 @@
       return;
     }
 
-    if (e.key === 'Backspace' && _dashboardView === 'detail') {
+    if (e.key === 'Backspace' && isDetailView) {
       _showOverview();
       return;
     }
 
     // Focus message input
-    if (e.key === 'm' && _dashboardView === 'detail') {
+    if (e.key === 'm' && isDetailView) {
       const input = _dashboardModal.querySelector('#zd-msg-input');
       if (input) input.focus();
       return;
     }
 
     // Focus approval
-    if (e.key === 'a' && _dashboardView === 'detail') {
+    if (e.key === 'a' && isDetailView) {
       const approveBtn = _dashboardModal.querySelector('.zd-approval-btn.approve');
       if (approveBtn) approveBtn.click();
       return;
@@ -9051,7 +9443,7 @@
     }
 
     // Detail view shortcuts
-    if (_dashboardView === 'detail') {
+    if (isDetailView) {
       // j/k navigation (replay entries)
       if (e.key === 'j' || e.key === 'ArrowDown') {
         _stopDashboardPlayback();
