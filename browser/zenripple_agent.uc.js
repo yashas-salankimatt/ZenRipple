@@ -6998,13 +6998,29 @@
 
     _dashboardConversationEntries = [];
     try {
-      const content = await IOUtils.readUTF8(conversationPath);
+      // For large files (>2MB), read only the last portion to avoid choking
+      // the browser. 2MB of JSONL is roughly 200-500 messages — plenty for
+      // the dashboard view.
+      const MAX_READ_BYTES = 2 * 1024 * 1024;
+      let content;
+      if (_dashboardConvoFileSize > MAX_READ_BYTES) {
+        // Read the tail of the file
+        const bytes = await IOUtils.read(conversationPath, { offset: _dashboardConvoFileSize - MAX_READ_BYTES });
+        content = new TextDecoder().decode(bytes);
+        // Skip the first partial line
+        const firstNewline = content.indexOf('\n');
+        if (firstNewline >= 0) content = content.slice(firstNewline + 1);
+        log('Dashboard: large conversation (' + Math.round(_dashboardConvoFileSize / 1024) + 'KB), reading last ' + Math.round(MAX_READ_BYTES / 1024) + 'KB');
+      } else {
+        content = await IOUtils.readUTF8(conversationPath);
+      }
       const lines = content.trim().split('\n').filter(Boolean);
       for (const line of lines) {
         try { _dashboardConversationEntries.push(JSON.parse(line)); } catch (_) {}
       }
+      log('Dashboard: parsed ' + _dashboardConversationEntries.length + ' conversation entries');
     } catch (e) {
-      log('Dashboard: failed to read conversation file: ' + e);
+      log('Dashboard: failed to read conversation file (' + Math.round(_dashboardConvoFileSize / 1024) + 'KB): ' + e);
     }
 
     _buildToolResultMap();
@@ -7026,7 +7042,16 @@
     let html = '';
     let blockIdx = 0;
 
-    for (const entry of _dashboardConversationEntries) {
+    // For very long conversations, only render the last N entries
+    const MAX_RENDER = 200;
+    const startIdx = Math.max(0, _dashboardConversationEntries.length - MAX_RENDER);
+    if (startIdx > 0) {
+      html += `<div class="zd-empty" style="padding:8px;font-size:11px">Showing last ${MAX_RENDER} of ${_dashboardConversationEntries.length} entries</div>`;
+      blockIdx = startIdx;
+    }
+
+    for (let ei = startIdx; ei < _dashboardConversationEntries.length; ei++) {
+      const entry = _dashboardConversationEntries[ei];
       // Claude Code JSONL format:
       //   entry.type = "user" | "assistant" | "file-history-snapshot" | ...
       //   entry.message = { role: "user"|"assistant", content: string | array }
@@ -7713,10 +7738,14 @@
   // ── Keyboard handling ──
 
   function _isDashboardInput(e) {
-    // Allow typing in contenteditable inputs (message input, deny reason)
-    const target = e.target;
-    if (target && (target.isContentEditable || target.getAttribute('contenteditable') === 'true')) {
-      return true;
+    // Allow typing in contenteditable inputs (message input, deny reason).
+    // Check both e.target and document.activeElement — in Firefox chrome context,
+    // capture-phase listeners may have e.target set to a parent element rather
+    // than the focused contenteditable div.
+    for (const el of [e.target, document.activeElement]) {
+      if (el && (el.isContentEditable || el.getAttribute?.('contenteditable') === 'true')) {
+        return true;
+      }
     }
     return false;
   }
