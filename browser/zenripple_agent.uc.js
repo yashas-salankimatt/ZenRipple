@@ -7025,28 +7025,44 @@
     let blockIdx = 0;
 
     for (const entry of _dashboardConversationEntries) {
-      const role = entry.role || '';
-      const content = entry.content;
+      // Claude Code JSONL format:
+      //   entry.type = "user" | "assistant" | "file-history-snapshot" | ...
+      //   entry.message = { role: "user"|"assistant", content: string | array }
+      const entryType = entry.type || '';
+      const msg = entry.message;
+
+      // Skip non-message entries (snapshots, metadata, etc.)
+      if (!msg || (entryType !== 'user' && entryType !== 'assistant')) {
+        blockIdx++;
+        continue;
+      }
+
+      const role = msg.role || entryType;
+      const content = msg.content;
 
       if (role === 'user') {
         if (typeof content === 'string') {
-          // Check for system messages (compaction notices, etc.)
-          // Only skip if it looks like a system-internal tag, not user text
-          if (content.includes('<system-reminder>') || content.includes('<context-window-compacted>')) {
+          // Skip system-injected content (command caveats, reminders, etc.)
+          if (content.includes('<system-reminder>') || content.includes('<context-window-compacted>')
+              || content.includes('<local-command-caveat>') || content.includes('<command-name>')) {
+            blockIdx++;
+            continue;
+          }
+          // Skip empty or very short content
+          const trimmed = content.trim();
+          if (!trimmed || trimmed.length < 2) {
             blockIdx++;
             continue;
           }
           html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}">
             <div class="zd-msg-label user-label">You</div>
-            <div class="zd-msg-content">${renderMarkdown(content)}</div>
+            <div class="zd-msg-content">${renderMarkdown(trimmed)}</div>
           </div>`;
         } else if (Array.isArray(content)) {
-          // Tool results
+          // Tool results or user text blocks
           for (const block of content) {
             if (block.type === 'tool_result') {
               const resultContent = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
-              const isError = block.is_error || false;
-
               // Check for human message injection
               if (resultContent.startsWith('[HUMAN_MESSAGE')) {
                 html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}" style="border-left: 3px solid var(--zd-status-approval)">
@@ -7056,10 +7072,13 @@
               }
               // Tool results are rendered inline with their tool_use blocks
             } else if (block.type === 'text') {
-              html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}">
-                <div class="zd-msg-label user-label">You</div>
-                <div class="zd-msg-content">${renderMarkdown(block.text || '')}</div>
-              </div>`;
+              const text = (block.text || '').trim();
+              if (text && !text.includes('<system-reminder>') && !text.includes('<local-command-caveat>')) {
+                html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}">
+                  <div class="zd-msg-label user-label">You</div>
+                  <div class="zd-msg-content">${renderMarkdown(text)}</div>
+                </div>`;
+              }
             }
           }
         }
@@ -7076,6 +7095,9 @@
           }
         } else if (Array.isArray(content)) {
           for (const block of content) {
+            // Skip thinking blocks — internal reasoning not shown to user
+            if (block.type === 'thinking') continue;
+
             if (block.type === 'text' && (block.text || '').trim()) {
               html += `<div class="zd-msg zd-msg-assistant" data-conv-idx="${blockIdx}">
                 <div class="zd-msg-label agent-label">
@@ -7119,12 +7141,10 @@
       blockIdx++;
     }
 
-    // Streaming indicator
+    // Streaming indicator — show typing dots if last entry is from user (agent thinking)
     if (_dashboardConversationEntries.length > 0) {
       const lastEntry = _dashboardConversationEntries[_dashboardConversationEntries.length - 1];
-      // We can't easily check file mtime from chrome context, so show typing
-      // if last message is from user (agent is likely thinking)
-      if (lastEntry.role === 'user') {
+      if (lastEntry.type === 'user') {
         const session = sessions.get(_dashboardDetailSession);
         if (session && session.connections.size > 0) {
           const color = SESSION_COLOR_PALETTE[session.colorIndex];
@@ -7210,8 +7230,10 @@
   function _buildToolResultMap() {
     _toolResultMap.clear();
     for (const entry of _dashboardConversationEntries) {
-      if (entry.role !== 'user' || !Array.isArray(entry.content)) continue;
-      for (const block of entry.content) {
+      // Claude Code JSONL: entry.type = "user"|"assistant", entry.message = {role, content}
+      const msg = entry.message;
+      if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
         if (block.type === 'tool_result' && block.tool_use_id) {
           _toolResultMap.set(block.tool_use_id, block);
         }
@@ -7244,8 +7266,10 @@
 
       for (let ci = 0; ci < _dashboardConversationEntries.length; ci++) {
         const ce = _dashboardConversationEntries[ci];
-        if (ce.role !== 'assistant' || !Array.isArray(ce.content)) continue;
-        for (const block of ce.content) {
+        // Claude Code JSONL: ce.type = "assistant", ce.message.content = [...]
+        const msg = ce.message;
+        if (ce.type !== 'assistant' || !msg || !Array.isArray(msg.content)) continue;
+        for (const block of msg.content) {
           if (block.type !== 'tool_use') continue;
           // Match by tool name
           const toolName = block.name || '';
