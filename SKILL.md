@@ -91,10 +91,15 @@ else
     diff -q "$REPO/browser/actors/ZenRippleAgentChild.sys.mjs" "$INSTALLED_ACTOR" >/dev/null 2>&1 || STALE=1
   fi
   if [ "$STALE" -eq 1 ]; then
-    echo "BROWSER AGENT: out of date — reinstalling..."
-    "$REPO/install.sh" --yes
+    # Hot-copy files WITHOUT closing Zen Browser (install.sh --yes kills Zen).
+    # The agent will load the new code on next browser restart.
+    cp "$REPO/browser/zenripple_agent.uc.js" "$INSTALLED_UC"
+    ACTOR_DIR="$(dirname "$INSTALLED_UC")/actors"
+    if [ -d "$ACTOR_DIR" ]; then
+      cp "$REPO/browser/actors/"*.mjs "$ACTOR_DIR/" 2>/dev/null
+    fi
     NEEDS_RESTART=1
-    echo "BROWSER AGENT: updated"
+    echo "BROWSER AGENT: updated (hot-copy, restart Zen when convenient)"
   else
     echo "BROWSER AGENT: up to date"
   fi
