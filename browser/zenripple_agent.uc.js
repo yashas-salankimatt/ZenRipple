@@ -7209,7 +7209,7 @@
       html += `<div class="zd-load-more">\u2191 Scroll up to load earlier messages</div>`;
     }
 
-    for (let ei = startIdx; ei < _dashboardConversationEntries.length; ei++) {
+    for (let ei = 0; ei < _dashboardConversationEntries.length; ei++) {
       const entry = _dashboardConversationEntries[ei];
       // Claude Code JSONL format:
       //   entry.type = "user" | "assistant" | "file-history-snapshot" | ...
