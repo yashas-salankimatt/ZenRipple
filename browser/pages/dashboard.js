@@ -812,6 +812,16 @@ function _updateTransport() {
 
 // ── Splitters ──────────────────────────────────────────────
 
+const _SPLITTER_KEY = 'zenripple_dashboard_splitters';
+
+function _loadSplitterState() {
+  try { return JSON.parse(localStorage.getItem(_SPLITTER_KEY)) || {}; } catch (_) { return {}; }
+}
+
+function _saveSplitterState(state) {
+  try { localStorage.setItem(_SPLITTER_KEY, JSON.stringify(state)); } catch (_) {}
+}
+
 function _setupSplitters() {
   const detail = document.querySelector('.zd-detail');
   if (!detail) return;
@@ -819,6 +829,12 @@ function _setupSplitters() {
   const rightCol = document.getElementById('zd-right-col');
   const ssPanel = document.getElementById('zd-replay-ss');
   let dragTarget = null;
+
+  // Restore saved positions
+  const saved = _loadSplitterState();
+  if (saved.leftWidth && replayCol) replayCol.style.width = saved.leftWidth + 'px';
+  if (saved.rightWidth && rightCol) rightCol.style.width = saved.rightWidth + 'px';
+  if (saved.ssHeight && ssPanel) { ssPanel.style.flex = 'none'; ssPanel.style.height = saved.ssHeight + 'px'; }
 
   for (const s of detail.querySelectorAll('.zd-splitter')) {
     s.addEventListener('mousedown', (e) => {
@@ -846,6 +862,13 @@ function _setupSplitters() {
 
   document.addEventListener('mouseup', () => {
     if (!dragTarget) return;
+    // Save positions on release
+    const state = {};
+    if (replayCol) state.leftWidth = Math.round(replayCol.getBoundingClientRect().width);
+    if (rightCol) state.rightWidth = Math.round(rightCol.getBoundingClientRect().width);
+    if (ssPanel && ssPanel.style.height) state.ssHeight = parseInt(ssPanel.style.height, 10);
+    _saveSplitterState(state);
+
     for (const s of detail.querySelectorAll('.zd-splitter')) s.classList.remove('dragging');
     dragTarget = null;
     document.body.style.cursor = '';
