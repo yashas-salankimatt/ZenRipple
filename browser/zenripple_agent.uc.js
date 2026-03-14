@@ -9622,84 +9622,78 @@
   // ── Message Bridge: Chrome ↔ Content ──
 
   function _setupDashboardBridge() {
-    // Listen for messages from dashboard/session pages
-    window.addEventListener('message', async (event) => {
-      if (event.data?.type !== 'zenripple-request') return;
-      const { id, method, params } = event.data;
-      const source = event.source;
-      if (!id || !method || !source) return;
+    // Use a ProgressListener to detect when dashboard pages finish loading,
+    // then inject the bridge relay. This is more reliable than DOMContentLoaded
+    // message listener which has timing issues.
+
+    // Also poll existing tabs on a short interval to catch pages that
+    // loaded before the listener was registered
+    const _bridgedTabs = new WeakSet();
+
+    function _tryInjectBridge(tab) {
+      if (!tab?.linkedBrowser) return;
+      if (_bridgedTabs.has(tab)) return;
+      const url = tab.linkedBrowser.currentURI?.spec || '';
+      if (!url.startsWith('resource://zenripple-pages/')) return;
 
       try {
-        const result = await _handleBridgeMethod(method, params || {});
-        source.postMessage({ type: 'zenripple-response', id, result }, '*');
+        const mm = tab.linkedBrowser.messageManager;
+        if (!mm) return;
+
+        _bridgedTabs.add(tab);
+
+        // Set up chrome-side message listener
+        mm.addMessageListener('ZenRipple:Request', {
+          receiveMessage: async function(msg) {
+            const { id, method, params } = msg.data;
+            try {
+              const result = await _handleBridgeMethod(method, params || {});
+              mm.sendAsyncMessage('ZenRipple:Response', { id, result });
+            } catch (e) {
+              mm.sendAsyncMessage('ZenRipple:Response', { id, error: String(e) });
+            }
+          }
+        });
+
+        // Inject content-side relay script
+        mm.loadFrameScript('data:,(' + encodeURIComponent(`
+          (function() {
+            content.addEventListener('message', function(e) {
+              if (e.data && e.data.type === 'zenripple-request') {
+                sendAsyncMessage('ZenRipple:Request', e.data);
+              }
+            });
+            addMessageListener('ZenRipple:Response', function(msg) {
+              content.postMessage(msg.data, '*');
+            });
+            content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
+          })();
+        `) + ')', true); // true = load in all future documents too
+
+        log('Dashboard bridge injected for tab: ' + url);
       } catch (e) {
-        source.postMessage({ type: 'zenripple-response', id, error: String(e) }, '*');
+        log('Dashboard bridge injection failed: ' + e);
       }
+    }
+
+    // Listen for new tabs
+    gBrowser.tabContainer.addEventListener('TabOpen', (e) => {
+      // Delay slightly to let the tab navigate to its URL
+      setTimeout(() => _tryInjectBridge(e.target), 500);
     });
 
-    // Also listen via the browser's message manager for content→chrome
-    // (postMessage from resource:// pages may not reach the chrome window directly)
-    gBrowser.tabContainer.addEventListener('TabOpen', (e) => {
-      _setupBridgeForTab(e.target);
-    });
-    // Setup bridge for already-open tabs
-    for (const tab of gBrowser.tabs) _setupBridgeForTab(tab);
+    // Check existing tabs
+    for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
+
+    // Also poll periodically to catch tabs that loaded before listeners
+    let bridgePollCount = 0;
+    const bridgePollTimer = setInterval(() => {
+      for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
+      bridgePollCount++;
+      if (bridgePollCount > 20) clearInterval(bridgePollTimer); // Stop after 40s
+    }, 2000);
 
     log('Dashboard bridge listener registered');
-  }
-
-  function _setupBridgeForTab(tab) {
-    if (!tab?.linkedBrowser) return;
-    try {
-      const mm = tab.linkedBrowser.messageManager;
-      if (!mm || mm._zenrippleBridgeSetup) return;
-      mm._zenrippleBridgeSetup = true;
-
-      // Inject a content script that relays postMessage to/from chrome
-      mm.addMessageListener('ZenRipple:Request', async (msg) => {
-        const { id, method, params } = msg.data;
-        try {
-          const result = await _handleBridgeMethod(method, params || {});
-          mm.sendAsyncMessage('ZenRipple:Response', { id, result });
-        } catch (e) {
-          mm.sendAsyncMessage('ZenRipple:Response', { id, error: String(e) });
-        }
-      });
-
-      // When the page loads, inject bridge relay script
-      mm.addMessageListener('DOMContentLoaded', () => {
-        const url = tab.linkedBrowser?.currentURI?.spec || '';
-        if (url.startsWith('resource://zenripple-pages/')) {
-          _injectBridgeRelay(mm);
-        }
-      });
-    } catch (e) {
-      // Not all tabs support message manager
-    }
-  }
-
-  function _injectBridgeRelay(mm) {
-    try {
-      mm.loadFrameScript('data:,(' + encodeURIComponent(`
-        function relay() {
-          // Content → Chrome: forward postMessage requests
-          content.addEventListener('message', function(e) {
-            if (e.data && e.data.type === 'zenripple-request') {
-              sendAsyncMessage('ZenRipple:Request', e.data);
-            }
-          });
-          // Chrome → Content: forward responses back
-          addMessageListener('ZenRipple:Response', function(msg) {
-            content.postMessage(msg.data, '*');
-          });
-          // Signal that bridge is ready
-          content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
-        }
-        relay();
-      `) + ')', false);
-    } catch (e) {
-      log('Bridge relay injection failed: ' + e);
-    }
   }
 
   // ── Bridge Method Dispatcher ──
