@@ -6443,6 +6443,8 @@
   let _dashboardSyncMap = new Map(); // replaySeq → conversationBlockIdx
   let _dashboardScreenshotCache = new Map();
   let _dashboardCurrentScreenshotURL = null;
+  let _dashboardConvoFileSize = 0; // Track conversation file size for incremental updates
+  let _dashboardReplayFileSize = 0; // Track replay log file size for incremental updates
 
   function injectDashboardStyles() {
     if (document.getElementById(DASHBOARD_STYLE_ID)) return;
@@ -6715,6 +6717,9 @@
   async function buildDetailView(sessionId) {
     _dashboardDetailSession = sessionId;
     _dashboardView = 'detail';
+    // Reset file size trackers for fresh load
+    _dashboardConvoFileSize = 0;
+    _dashboardReplayFileSize = 0;
 
     const container = _dashboardModal.querySelector('#zenripple-dashboard-container');
     if (!container) return;
@@ -6804,8 +6809,8 @@
     };
 
     try {
-      const existing = await IOUtils.readUTF8(messagesPath).catch(() => '');
-      await IOUtils.writeUTF8(messagesPath, existing + JSON.stringify(message) + '\n');
+      // Append-only write to avoid race conditions with CLI readers/writers
+      await IOUtils.writeUTF8(messagesPath, JSON.stringify(message) + '\n', { mode: 'append' });
     } catch (e) {
       log('Dashboard: failed to write message: ' + e);
     }
@@ -6829,10 +6834,27 @@
   async function _loadReplayData(sessionId) {
     const tmpDir = PathUtils.tempDir;
     _dashboardReplayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
-    _dashboardReplayEntries = [];
 
+    // Skip re-parse if file size hasn't changed
+    const logPath = PathUtils.join(_dashboardReplayDir, 'tool_log.jsonl');
     try {
-      const content = await IOUtils.readUTF8(PathUtils.join(_dashboardReplayDir, 'tool_log.jsonl'));
+      const info = await IOUtils.stat(logPath);
+      if (info.size === _dashboardReplayFileSize && _dashboardReplayEntries.length > 0) {
+        return; // No change
+      }
+      _dashboardReplayFileSize = info.size;
+    } catch (_) {
+      if (_dashboardReplayEntries.length === 0) {
+        // No log file yet — just ensure empty state is rendered
+        const listEl = _dashboardModal?.querySelector('#zd-replay-entries');
+        if (listEl && listEl.children.length === 0) return;
+      }
+      return;
+    }
+
+    _dashboardReplayEntries = [];
+    try {
+      const content = await IOUtils.readUTF8(logPath);
       const lines = content.trim().split('\n').filter(Boolean);
       for (const line of lines) {
         try { _dashboardReplayEntries.push(JSON.parse(line)); } catch (_) {}
@@ -6932,19 +6954,36 @@
       conversationPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim();
     } catch (_) {}
 
-    _dashboardConversationEntries = [];
-    if (conversationPath) {
-      try {
-        const content = await IOUtils.readUTF8(conversationPath);
-        const lines = content.trim().split('\n').filter(Boolean);
-        for (const line of lines) {
-          try { _dashboardConversationEntries.push(JSON.parse(line)); } catch (_) {}
-        }
-      } catch (e) {
-        log('Dashboard: failed to read conversation file: ' + e);
+    if (!conversationPath) {
+      if (_dashboardConversationEntries.length === 0) {
+        _renderConversation();
       }
+      return;
     }
 
+    // Skip re-parse if file size hasn't changed
+    try {
+      const info = await IOUtils.stat(conversationPath);
+      if (info.size === _dashboardConvoFileSize && _dashboardConversationEntries.length > 0) {
+        return; // No change
+      }
+      _dashboardConvoFileSize = info.size;
+    } catch (_) {
+      return;
+    }
+
+    _dashboardConversationEntries = [];
+    try {
+      const content = await IOUtils.readUTF8(conversationPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { _dashboardConversationEntries.push(JSON.parse(line)); } catch (_) {}
+      }
+    } catch (e) {
+      log('Dashboard: failed to read conversation file: ' + e);
+    }
+
+    _buildToolResultMap();
     _renderConversation();
   }
 
@@ -6970,8 +7009,8 @@
       if (role === 'user') {
         if (typeof content === 'string') {
           // Check for system messages (compaction notices, etc.)
-          if (content.startsWith('[') || content.includes('system-reminder')) {
-            // Skip system messages
+          // Only skip if it looks like a system-internal tag, not user text
+          if (content.includes('<system-reminder>') || content.includes('<context-window-compacted>')) {
             blockIdx++;
             continue;
           }
@@ -7138,17 +7177,24 @@
     return '';
   }
 
-  function _findToolResult(toolUseId) {
-    if (!toolUseId) return null;
+  // Pre-built map from tool_use_id → tool_result block (rebuilt on conversation load)
+  let _toolResultMap = new Map();
+
+  function _buildToolResultMap() {
+    _toolResultMap.clear();
     for (const entry of _dashboardConversationEntries) {
       if (entry.role !== 'user' || !Array.isArray(entry.content)) continue;
       for (const block of entry.content) {
-        if (block.type === 'tool_result' && block.tool_use_id === toolUseId) {
-          return block;
+        if (block.type === 'tool_result' && block.tool_use_id) {
+          _toolResultMap.set(block.tool_use_id, block);
         }
       }
     }
-    return null;
+  }
+
+  function _findToolResult(toolUseId) {
+    if (!toolUseId) return null;
+    return _toolResultMap.get(toolUseId) || null;
   }
 
   function _truncateResult(str) {
@@ -7176,7 +7222,7 @@
           if (block.type !== 'tool_use') continue;
           // Match by tool name
           const toolName = block.name || '';
-          const matches = _toolNameMatches(reTool, toolName);
+          const matches = _toolNameMatches(reTool, toolName, block.input);
           if (!matches) continue;
           // Match by timestamp proximity
           const ceTime = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
@@ -7194,7 +7240,7 @@
     }
   }
 
-  function _toolNameMatches(replayTool, conversationTool) {
+  function _toolNameMatches(replayTool, conversationTool, conversationInput) {
     // Replay uses CLI command names, conversation uses MCP tool names or Bash
     if (!replayTool || !conversationTool) return false;
     if (replayTool === conversationTool) return true;
@@ -7202,7 +7248,13 @@
     const bareName = conversationTool.replace(/^browser_/, '');
     if (replayTool === bareName) return true;
     // CLI command → MCP tool: nav → browser_navigate
-    if (conversationTool === 'Bash') return true; // Bash commands with zenripple
+    if (conversationTool === 'Bash') {
+      // Only match if the bash command actually contains "zenripple"
+      const cmd = conversationInput
+        ? (typeof conversationInput === 'string' ? conversationInput : (conversationInput.command || ''))
+        : '';
+      return cmd.includes('zenripple');
+    }
     // Map CLI names to browser method names
     const cliEntry = COMMANDS_REVERSE.get(replayTool);
     if (cliEntry && conversationTool.includes(cliEntry)) return true;
@@ -7312,8 +7364,9 @@
   }
 
   async function _resolveApproval(sessionId, approvalId, status, message) {
+    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
     const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + safe_id);
     const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
 
     const resolution = {
@@ -7324,8 +7377,8 @@
     if (message) resolution.message = message;
 
     try {
-      const existing = await IOUtils.readUTF8(approvalsPath).catch(() => '');
-      await IOUtils.writeUTF8(approvalsPath, existing + JSON.stringify(resolution) + '\n');
+      // Append-only write to avoid race conditions with CLI readers
+      await IOUtils.writeUTF8(approvalsPath, JSON.stringify(resolution) + '\n', { mode: 'append' });
     } catch (e) {
       log('Dashboard: failed to write approval resolution: ' + e);
     }
@@ -7510,35 +7563,49 @@
 
   // ── Polling ──
 
+  let _dashboardPolling = false; // guard against re-entrancy
+
   function _startDashboardPolling() {
     _stopDashboardPolling();
-    _dashboardPollTimer = setInterval(() => _dashboardPoll(), _DASHBOARD_POLL_MS);
+    _dashboardPolling = true;
+    _scheduleDashboardPoll();
+  }
+
+  function _scheduleDashboardPoll() {
+    if (!_dashboardPolling) return;
+    _dashboardPollTimer = setTimeout(() => _dashboardPoll(), _DASHBOARD_POLL_MS);
   }
 
   function _stopDashboardPolling() {
+    _dashboardPolling = false;
     if (_dashboardPollTimer) {
-      clearInterval(_dashboardPollTimer);
+      clearTimeout(_dashboardPollTimer);
       _dashboardPollTimer = null;
     }
   }
 
   async function _dashboardPoll() {
-    if (!_dashboardModal) return;
+    if (!_dashboardModal || !_dashboardPolling) return;
 
-    if (_dashboardView === 'overview') {
-      await _refreshOverview();
-    } else if (_dashboardView === 'detail' && _dashboardDetailSession) {
-      await _loadDetailData(_dashboardDetailSession);
-      _updateDashboardFooter(_dashboardDetailSession);
+    try {
+      if (_dashboardView === 'overview') {
+        await _refreshOverview();
+      } else if (_dashboardView === 'detail' && _dashboardDetailSession) {
+        await _loadDetailData(_dashboardDetailSession);
+        _updateDashboardFooter(_dashboardDetailSession);
+      }
+    } catch (e) {
+      log('Dashboard poll error: ' + e);
     }
+
+    // Schedule next poll after this one completes (prevents re-entrancy)
+    _scheduleDashboardPoll();
   }
 
   // ── Open/Close ──
 
   async function openDashboardModal() {
     if (_dashboardModal) return;
-
-    closeDashboardModal();
     injectDashboardStyles();
 
     _dashboardModal = buildDashboardModal();
@@ -7582,11 +7649,23 @@
     _dashboardConversationEntries = [];
     _dashboardReplayEntries = [];
     _dashboardSyncMap.clear();
+    _dashboardConvoFileSize = 0;
+    _dashboardReplayFileSize = 0;
+    _toolResultMap.clear();
 
     log('Dashboard closed');
   }
 
   // ── Keyboard handling ──
+
+  function _isDashboardInput(e) {
+    // Allow typing in contenteditable inputs (message input, deny reason)
+    const target = e.target;
+    if (target && (target.isContentEditable || target.getAttribute('contenteditable') === 'true')) {
+      return true;
+    }
+    return false;
+  }
 
   function handleDashboardKeydown(e) {
     if (!_dashboardModal) return;
@@ -7594,12 +7673,26 @@
     // Let Ctrl+Shift+D through for toggle
     if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') return;
 
-    // Block keys from leaking to page
+    // Ignore bare modifier keys
+    if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+
+    // If user is typing in a contenteditable input, let most keys through
+    if (_isDashboardInput(e)) {
+      // Only intercept Escape (to blur) and Enter+Shift for send
+      if (e.key === 'Escape') {
+        e.target.blur();
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+      // Enter without shift is handled by the input's own keydown listener
+      return;
+    }
+
+    // Block keys from leaking to page underneath
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-
-    if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
 
     if (e.key === 'Escape') {
       if (_dashboardView === 'detail') {
@@ -7658,6 +7751,8 @@
 
   function _blockDashboardKeyEvent(e) {
     if (!_dashboardModal) return;
+    // Don't block events targeting contenteditable inputs
+    if (_isDashboardInput(e)) return;
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();

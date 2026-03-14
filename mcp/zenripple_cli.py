@@ -1045,7 +1045,8 @@ def _get_process_cmdline(pid: int) -> list[str] | None:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             data = f.read()
             if data:
-                return data.rstrip(b"\x00").split(b"\x00")
+                return [s.decode("utf-8", errors="replace")
+                        for s in data.rstrip(b"\x00").split(b"\x00")]
     except (FileNotFoundError, PermissionError, OSError):
         pass
     # macOS fallback
@@ -1107,8 +1108,8 @@ def _find_conversation_jsonl(project_cwd: str) -> str | None:
     except OSError:
         pass
 
-    # Only return if modified within last 60 seconds (active conversation)
-    if best_path and (time.time() - best_mtime) < 60:
+    # Only return if modified within last 5 minutes (active conversation)
+    if best_path and (time.time() - best_mtime) < 300:
         return best_path
 
     return None
@@ -1309,8 +1310,8 @@ def _append_jsonl(path: str, entry: dict) -> None:
         else:
             with open(path, "a") as f:
                 f.write(line)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to write to {path}: {e}", file=sys.stderr)
 
 
 def _read_undelivered_messages(session_id: str) -> list[dict]:

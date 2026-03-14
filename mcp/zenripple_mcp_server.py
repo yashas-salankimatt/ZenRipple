@@ -132,31 +132,49 @@ def _collect_human_messages() -> str:
 
 
 def _mark_delivered(messages_path: str, message_ids: list[str]) -> None:
-    """Mark messages as delivered in messages.jsonl."""
+    """Mark messages as delivered in messages.jsonl (with file locking)."""
     from datetime import datetime, timezone
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        _fcntl = None
+
     delivered_ids = set(message_ids)
     now = datetime.now(timezone.utc).isoformat()
-    lines = []
-    try:
-        with open(messages_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
-                        entry["delivered_at"] = now
-                    lines.append(json.dumps(entry, default=str))
-                except json.JSONDecodeError:
-                    lines.append(line)
-    except (FileNotFoundError, OSError):
-        return
-    tmp = messages_path + ".tmp"
-    try:
+    lock_path = messages_path + ".lock"
+
+    def _do_mark():
+        lines = []
+        try:
+            with open(messages_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
+                            entry["delivered_at"] = now
+                        lines.append(json.dumps(entry, default=str))
+                    except json.JSONDecodeError:
+                        lines.append(line)
+        except (FileNotFoundError, OSError):
+            return
+        tmp = messages_path + ".tmp"
         with open(tmp, "w") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(tmp, messages_path)
+
+    try:
+        if _fcntl:
+            with open(lock_path, "a") as lock_f:
+                _fcntl.flock(lock_f, _fcntl.LOCK_EX)
+                try:
+                    _do_mark()
+                finally:
+                    _fcntl.flock(lock_f, _fcntl.LOCK_UN)
+        else:
+            _do_mark()
     except OSError:
         pass
 
