@@ -6029,6 +6029,20 @@
 .zd-claude-send:hover {
   background: var(--zr-accent-20);
 }
+.zd-claude-stop {
+  font-size: 13px;
+  padding: 6px 10px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  border: 1px solid rgba(243,139,168,0.3);
+  background: rgba(243,139,168,0.1);
+  color: var(--zr-error);
+  transition: all 0.12s;
+  align-self: flex-end;
+}
+.zd-claude-stop:hover {
+  background: rgba(243,139,168,0.2);
+}
 .zd-claude-status {
   font-size: 10px;
   color: var(--zr-text-muted);
@@ -7082,9 +7096,11 @@
           </div>
           <div class="zd-conversation-scroll" id="zd-conversation"></div>
           <div class="zd-tool-detail-view" id="zd-tool-detail"></div>
+          <div class="zd-claude-status" id="zd-claude-status" style="display:none"></div>
           <div class="zd-claude-input-wrapper" id="zd-claude-input-wrapper">
             <div class="zd-claude-input" id="zd-claude-input" contenteditable="true" data-placeholder="Send to Claude Code..."></div>
             <div class="zd-claude-send" id="zd-claude-send">\u2192</div>
+            <div class="zd-claude-stop" id="zd-claude-stop" style="display:none" title="Stop fork">\u25A0</div>
           </div>
         </div>
         <div class="zd-splitter zd-splitter-v" data-split="right"></div>
@@ -7124,6 +7140,7 @@
     // Claude Code direct send
     const claudeInput = body.querySelector('#zd-claude-input');
     const claudeSend = body.querySelector('#zd-claude-send');
+    const claudeStop = body.querySelector('#zd-claude-stop');
     if (claudeInput && claudeSend) {
       claudeSend.addEventListener('click', () => _sendToClaudeCode(sessionId, claudeInput));
       claudeInput.addEventListener('keydown', (e) => {
@@ -7132,6 +7149,9 @@
           _sendToClaudeCode(sessionId, claudeInput);
         }
       });
+    }
+    if (claudeStop) {
+      claudeStop.addEventListener('click', () => _stopClaudeFork());
     }
 
     // Tab switching
@@ -7330,6 +7350,26 @@
 
   // ── Claude Code direct interaction ──
 
+  let _dashboardForkPidFile = null;
+
+  async function _stopClaudeFork() {
+    if (!_dashboardForkPidFile) return;
+    log('Dashboard: stopping fork via PID file ' + _dashboardForkPidFile);
+    try {
+      const pidStr = await _runShellCommand('cat ' + _shellQuote(_dashboardForkPidFile) + ' 2>/dev/null');
+      const pid = parseInt(pidStr.trim(), 10);
+      if (pid > 0) {
+        await _runShellCommand('kill ' + pid + ' 2>/dev/null ; kill -9 ' + pid + ' 2>/dev/null');
+        log('Dashboard: killed fork PID ' + pid);
+      }
+    } catch (_) {}
+    const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
+    const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
+    if (statusEl) statusEl.textContent = 'Fork stopped';
+    if (stopBtn) stopBtn.style.display = 'none';
+    _dashboardForkPidFile = null;
+  }
+
   async function _sendToClaudeCode(sessionId, inputEl) {
     const text = (inputEl.textContent || '').trim();
     if (!text) return;
@@ -7417,14 +7457,28 @@
     } else if (convoSessionId) {
       // cd to the project directory so claude --resume can find the session
       const cdPrefix = matchedCwd ? 'cd ' + _shellQuote(matchedCwd) + ' && ' : '';
-      const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) + ' | claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1';
+      // Use a PID file so we can stop the fork
+      const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + convoSessionId + '.pid');
+      const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
+        ' | claude -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
+        ' --output-format text 2>&1 & echo $! > ' + _shellQuote(pidFile) + ' ; wait';
       log('Dashboard: sending via --resume fork: ' + resumeCmd.slice(0, 150));
+
+      // Show status and stop button
+      const statusEl = _dashboardModal?.querySelector('#zd-claude-status');
+      const stopBtn = _dashboardModal?.querySelector('#zd-claude-stop');
+      if (statusEl) { statusEl.textContent = 'Fork running...'; statusEl.style.display = ''; }
+      if (stopBtn) { stopBtn.style.display = ''; _dashboardForkPidFile = pidFile; }
+
       try {
         const response = await _runShellCommand(resumeCmd);
         log('Dashboard: resume response (' + response.length + ' chars): ' + response.slice(0, 200));
+        if (statusEl) { statusEl.textContent = 'Fork completed (' + response.length + ' chars)'; }
       } catch (e) {
         log('Dashboard: resume fork failed: ' + e);
+        if (statusEl) { statusEl.textContent = 'Fork failed: ' + e; }
       }
+      if (stopBtn) stopBtn.style.display = 'none';
     } else {
       log('Dashboard: no tmux pane and no conversation link');
     }
