@@ -7353,9 +7353,13 @@
     // Find Claude PID and tmux pane
     let tmuxPane = null;
     try {
+      // Debug: test if shell commands work at all
+      const debugOut = await _runShellCommand('echo "SHELL_OK" ; echo "HOME=$HOME" ; which pgrep ; pgrep -x claude 2>&1 ; echo "EXIT=$?"');
+      log('Dashboard claude-send: shell debug: ' + debugOut.trim().replace(/\n/g, ' | '));
+
       // Find all Claude PIDs
       const pgrepOut = await _runShellCommand('pgrep -x claude 2>/dev/null || true');
-      log('Dashboard claude-send: pgrep found: ' + pgrepOut.trim().split('\n').length + ' PIDs, convoPath=' + convoPath.slice(-60));
+      log('Dashboard claude-send: pgrep raw output: [' + pgrepOut + '] length=' + pgrepOut.length);
       const pids = pgrepOut.trim().split('\n').filter(Boolean);
 
       log('Dashboard claude-send: checking PIDs: ' + pids.join(','));
