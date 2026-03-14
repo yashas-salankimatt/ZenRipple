@@ -1140,7 +1140,8 @@ def _try_link_conversation(session_id: str) -> None:
     # Don't re-link if already linked
     if os.path.exists(link_path):
         try:
-            existing = open(link_path).read().strip()
+            with open(link_path) as f:
+                existing = f.read().strip()
             if existing and os.path.exists(existing):
                 return
         except OSError:
@@ -1315,13 +1316,18 @@ def _append_jsonl(path: str, entry: dict) -> None:
 
 
 def _read_undelivered_messages(session_id: str) -> list[dict]:
-    """Read human→agent messages that haven't been delivered yet."""
+    """Read human→agent messages that haven't been delivered yet.
+
+    Uses append-only delivery tracking: delivery records are separate lines
+    with {"delivered": msg_id}. No file rewriting needed.
+    """
     safe_id = _sanitize_session_id(session_id)
     if not safe_id:
         return []
     replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
     messages_path = os.path.join(replay_dir, "messages.jsonl")
-    undelivered = []
+    delivered_ids: set[str] = set()
+    human_messages: list[dict] = []
     try:
         with open(messages_path) as f:
             for line in f:
@@ -1330,18 +1336,19 @@ def _read_undelivered_messages(session_id: str) -> list[dict]:
                     continue
                 try:
                     entry = json.loads(line)
-                    if (entry.get("direction") == "human_to_agent"
-                            and not entry.get("delivered_at")):
-                        undelivered.append(entry)
+                    if entry.get("delivered"):
+                        delivered_ids.add(entry["delivered"])
+                    elif entry.get("direction") == "human_to_agent":
+                        human_messages.append(entry)
                 except json.JSONDecodeError:
                     continue
     except (FileNotFoundError, OSError):
         pass
-    return undelivered
+    return [m for m in human_messages if m.get("id") and m["id"] not in delivered_ids]
 
 
 def _mark_messages_delivered(session_id: str, message_ids: list[str]) -> None:
-    """Mark messages as delivered by rewriting messages.jsonl."""
+    """Mark messages as delivered by appending delivery records (append-only, no rewrite)."""
     if not message_ids:
         return
     safe_id = _sanitize_session_id(session_id)
@@ -1349,44 +1356,10 @@ def _mark_messages_delivered(session_id: str, message_ids: list[str]) -> None:
         return
     replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
     messages_path = os.path.join(replay_dir, "messages.jsonl")
-    lock_path = messages_path + ".lock"
-    delivered_ids = set(message_ids)
     now = datetime.now(timezone.utc).isoformat()
 
-    def _do_mark():
-        lines = []
-        try:
-            with open(messages_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        entry = json.loads(line)
-                        if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
-                            entry["delivered_at"] = now
-                        lines.append(json.dumps(entry, default=str))
-                    except json.JSONDecodeError:
-                        lines.append(line)
-        except (FileNotFoundError, OSError):
-            return
-        tmp = messages_path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        os.replace(tmp, messages_path)
-
-    try:
-        if fcntl:
-            with open(lock_path, "a") as lock_f:
-                fcntl.flock(lock_f, fcntl.LOCK_EX)
-                try:
-                    _do_mark()
-                finally:
-                    fcntl.flock(lock_f, fcntl.LOCK_UN)
-        else:
-            _do_mark()
-    except Exception:
-        pass
+    for msg_id in message_ids:
+        _append_jsonl(messages_path, {"delivered": msg_id, "at": now})
 
 
 async def handle_replay_status(client: BrowserClient) -> int:

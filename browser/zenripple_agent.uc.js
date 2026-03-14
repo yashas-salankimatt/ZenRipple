@@ -6446,6 +6446,14 @@
   let _dashboardConvoFileSize = 0; // Track conversation file size for incremental updates
   let _dashboardReplayFileSize = 0; // Track replay log file size for incremental updates
 
+  function _sanitizeSessionId(id) {
+    return (id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  }
+
+  function _replayDirForSession(sessionId) {
+    return PathUtils.join(PathUtils.tempDir, 'zenripple_replay_' + _sanitizeSessionId(sessionId));
+  }
+
   function injectDashboardStyles() {
     if (document.getElementById(DASHBOARD_STYLE_ID)) return;
     const style = document.createElement('style');
@@ -6458,15 +6466,25 @@
 
   function renderMarkdown(text) {
     if (!text) return '';
-    let html = escapeHTML(text);
 
-    // Code blocks (``` ... ```)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-      return `<pre><code class="lang-${lang || 'text'}">${code.trim()}</code></pre>`;
+    // Extract code blocks BEFORE HTML escaping to avoid double-encoding
+    const codeBlocks = [];
+    let processed = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      const placeholder = '\x00CB' + codeBlocks.length + '\x00';
+      codeBlocks.push(`<pre><code class="lang-${escapeHTML(lang || 'text')}">${escapeHTML(code.trim())}</code></pre>`);
+      return placeholder;
     });
 
-    // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // Extract inline code before escaping
+    const inlineCodes = [];
+    processed = processed.replace(/`([^`]+)`/g, (_, code) => {
+      const placeholder = '\x00IC' + inlineCodes.length + '\x00';
+      inlineCodes.push(`<code>${escapeHTML(code)}</code>`);
+      return placeholder;
+    });
+
+    // Now escape the remaining text
+    let html = escapeHTML(processed);
 
     // Bold
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
@@ -6487,6 +6505,14 @@
     html = html.replace(/\n\n/g, '</p><p>');
     html = '<p>' + html + '</p>';
     html = html.replace(/<p><\/p>/g, '');
+
+    // Restore code blocks and inline code
+    for (let i = 0; i < codeBlocks.length; i++) {
+      html = html.replace('\x00CB' + i + '\x00', codeBlocks[i]);
+    }
+    for (let i = 0; i < inlineCodes.length; i++) {
+      html = html.replace('\x00IC' + i + '\x00', inlineCodes[i]);
+    }
 
     return html;
   }
@@ -6578,7 +6604,7 @@
 
     // Live sessions from the sessions map
     for (const [sessionId, session] of sessions) {
-      const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+      const replayDir = _replayDirForSession(sessionId);
       let toolCount = 0;
       let lastAction = '';
       let lastScreenshotFile = '';
@@ -6797,8 +6823,7 @@
     if (!text) return;
     inputEl.textContent = '';
 
-    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
-    const replayDir = PathUtils.join(PathUtils.tempDir, 'zenripple_replay_' + safe_id);
+    const replayDir = _replayDirForSession(sessionId);
     const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
 
     const message = {
@@ -6832,8 +6857,7 @@
   // ── Replay data for detail view ──
 
   async function _loadReplayData(sessionId) {
-    const tmpDir = PathUtils.tempDir;
-    _dashboardReplayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    _dashboardReplayDir = _replayDirForSession(sessionId);
 
     // Skip re-parse if file size hasn't changed
     const logPath = PathUtils.join(_dashboardReplayDir, 'tool_log.jsonl');
@@ -6945,8 +6969,7 @@
   // ── Conversation loading and rendering ──
 
   async function _loadConversation(sessionId) {
-    const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const replayDir = _replayDirForSession(sessionId);
     let conversationPath = '';
 
     // Read conversation.link
@@ -7115,6 +7138,9 @@
       }
     }
 
+    // Preserve scroll position if user has scrolled up; auto-scroll if at bottom
+    const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
+
     scrollEl.innerHTML = html;
 
     // Add toggle handlers for tool blocks
@@ -7140,8 +7166,10 @@
       }
     }
 
-    // Scroll to bottom
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    // Only auto-scroll to bottom if user was already at (or near) the bottom
+    if (wasAtBottom) {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
   }
 
   function _isZenrippleTool(name, input) {
@@ -7277,8 +7305,7 @@
   // ── Approvals loading ──
 
   async function _loadApprovals(sessionId) {
-    const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const replayDir = _replayDirForSession(sessionId);
     const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
     const approvalsEl = _dashboardModal?.querySelector('#zd-approvals');
     if (!approvalsEl) return;
@@ -7364,9 +7391,7 @@
   }
 
   async function _resolveApproval(sessionId, approvalId, status, message) {
-    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
-    const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + safe_id);
+    const replayDir = _replayDirForSession(sessionId);
     const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
 
     const resolution = {
@@ -7408,28 +7433,32 @@
   // ── Messages loading ──
 
   async function _loadMessages(sessionId) {
+    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
     const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + safe_id);
     const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
     const messagesEl = _dashboardModal?.querySelector('#zd-messages');
     if (!messagesEl) return;
 
-    let entries = [];
+    let rawEntries = [];
     try {
       const content = await IOUtils.readUTF8(messagesPath);
       const lines = content.trim().split('\n').filter(Boolean);
       for (const line of lines) {
-        try { entries.push(JSON.parse(line)); } catch (_) {}
+        try { rawEntries.push(JSON.parse(line)); } catch (_) {}
       }
     } catch (_) {}
 
-    if (entries.length === 0) {
+    // Filter out delivery records, only show actual messages
+    const messages = rawEntries.filter(e => e.direction && !e.delivered);
+
+    if (messages.length === 0) {
       messagesEl.innerHTML = '<div class="zd-empty">No messages yet</div>';
       return;
     }
 
     let html = '';
-    for (const msg of entries) {
+    for (const msg of messages) {
       const isAgent = msg.direction === 'agent_to_human';
       const timeStr = extractTime(msg.timestamp);
       html += `<div class="zd-chat-msg ${isAgent ? 'agent' : 'human'}">

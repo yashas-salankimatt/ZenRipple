@@ -81,7 +81,12 @@ async def _run_cli(*args: str, timeout: float = 120) -> str:
 
 
 def _collect_human_messages() -> str:
-    """Check for undelivered human→agent messages and return them as a prefix string."""
+    """Check for undelivered human→agent messages and return them as a prefix string.
+
+    Uses append-only delivery tracking: appends {"delivered": msg_id} lines instead
+    of rewriting the file, so browser-side appends are never lost to TOCTOU races.
+    The read-and-mark is done under a single lock to prevent duplicate delivery.
+    """
     if not _session_id:
         return ""
     import re as _re
@@ -90,61 +95,24 @@ def _collect_human_messages() -> str:
         return ""
 
     import tempfile as _tmp
+    try:
+        import fcntl as _fcntl
+    except ImportError:
+        _fcntl = None
+
     replay_dir = os.path.join(_tmp.gettempdir(), f"zenripple_replay_{safe_id}")
     messages_path = os.path.join(replay_dir, "messages.jsonl")
 
     if not os.path.exists(messages_path):
         return ""
 
-    undelivered = []
-    try:
-        with open(messages_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                    if (entry.get("direction") == "human_to_agent"
-                            and not entry.get("delivered_at")):
-                        undelivered.append(entry)
-                except (json.JSONDecodeError, KeyError):
-                    continue
-    except (FileNotFoundError, OSError):
-        return ""
-
-    if not undelivered:
-        return ""
-
-    # Mark as delivered
-    _mark_delivered(messages_path, [m["id"] for m in undelivered])
-
-    # Format as prefix
-    parts = []
-    for msg in undelivered:
-        ts = msg.get("timestamp", "")
-        # Extract just the time portion
-        time_str = ts
-        if "T" in ts:
-            time_str = ts.split("T")[1][:8]
-        parts.append(f"[HUMAN_MESSAGE at {time_str}] {msg.get('text', '')}")
-    return "\n".join(parts) + "\n---\n"
-
-
-def _mark_delivered(messages_path: str, message_ids: list[str]) -> None:
-    """Mark messages as delivered in messages.jsonl (with file locking)."""
-    from datetime import datetime, timezone
-    try:
-        import fcntl as _fcntl
-    except ImportError:
-        _fcntl = None
-
-    delivered_ids = set(message_ids)
-    now = datetime.now(timezone.utc).isoformat()
     lock_path = messages_path + ".lock"
+    undelivered = []
 
-    def _do_mark():
-        lines = []
+    def _read_and_mark():
+        # Collect all human→agent messages and all delivery records
+        delivered_ids = set()
+        human_messages = []
         try:
             with open(messages_path) as f:
                 for line in f:
@@ -153,30 +121,53 @@ def _mark_delivered(messages_path: str, message_ids: list[str]) -> None:
                         continue
                     try:
                         entry = json.loads(line)
-                        if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
-                            entry["delivered_at"] = now
-                        lines.append(json.dumps(entry, default=str))
-                    except json.JSONDecodeError:
-                        lines.append(line)
+                        if entry.get("delivered"):
+                            delivered_ids.add(entry["delivered"])
+                        elif entry.get("direction") == "human_to_agent":
+                            human_messages.append(entry)
+                    except (json.JSONDecodeError, KeyError):
+                        continue
         except (FileNotFoundError, OSError):
             return
-        tmp = messages_path + ".tmp"
-        with open(tmp, "w") as f:
-            f.write("\n".join(lines) + "\n")
-        os.replace(tmp, messages_path)
+
+        # Find undelivered messages
+        for msg in human_messages:
+            if msg.get("id") and msg["id"] not in delivered_ids:
+                undelivered.append(msg)
+
+        # Append delivery records (append-only, no rewrite)
+        if undelivered:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc).isoformat()
+            with open(messages_path, "a") as f:
+                for msg in undelivered:
+                    f.write(json.dumps({"delivered": msg["id"], "at": now}) + "\n")
 
     try:
         if _fcntl:
             with open(lock_path, "a") as lock_f:
                 _fcntl.flock(lock_f, _fcntl.LOCK_EX)
                 try:
-                    _do_mark()
+                    _read_and_mark()
                 finally:
                     _fcntl.flock(lock_f, _fcntl.LOCK_UN)
         else:
-            _do_mark()
+            _read_and_mark()
     except OSError:
-        pass
+        return ""
+
+    if not undelivered:
+        return ""
+
+    # Format as prefix
+    parts = []
+    for msg in undelivered:
+        ts = msg.get("timestamp", "")
+        time_str = ts
+        if "T" in ts:
+            time_str = ts.split("T")[1][:8]
+        parts.append(f"[HUMAN_MESSAGE at {time_str}] {msg.get('text', '')}")
+    return "\n".join(parts) + "\n---\n"
 
 
 async def _ensure_session():
