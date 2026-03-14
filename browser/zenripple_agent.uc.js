@@ -7086,7 +7086,7 @@
     }
   }
 
-  async function _selectDashboardReplayEntry(idx) {
+  async function _selectDashboardReplayEntry(idx, { scrollConversation = true } = {}) {
     if (idx < 0 || idx >= _dashboardReplayEntries.length) return;
     _dashboardSelectedReplayIdx = idx;
     const entry = _dashboardReplayEntries[idx];
@@ -7128,13 +7128,16 @@
       ssContainer.innerHTML = '<span class="zd-no-screenshot">No screenshot</span>';
     }
 
-    // Scroll conversation to synced tool_use block
-    const syncInfo = _dashboardSyncMap.get(entry.seq);
-    if (syncInfo) {
-      _scrollToSyncedBlock(syncInfo);
-    } else if (_dashboardConvoHasMore && entry.timestamp) {
-      // The matching conversation entry might not be loaded yet — load more
-      _loadConversationUntilMatch(entry);
+    // Scroll conversation to synced tool_use block (only when user clicked replay, not scroll sync)
+    if (scrollConversation) {
+      const syncInfo = _dashboardSyncMap.get(entry.seq);
+      if (syncInfo) {
+        _pauseScrollSync();
+        _scrollToSyncedBlock(syncInfo);
+      } else if (_dashboardConvoHasMore && entry.timestamp) {
+        _pauseScrollSync();
+        _loadConversationUntilMatch(entry);
+      }
     }
   }
 
@@ -7488,47 +7491,41 @@
     _setupConversationScrollSync(scrollEl);
   }
 
-  // Scroll-based conversation→replay sync with debounce
+  // Scroll-based conversation→replay sync
   let _scrollSyncTimer = null;
-  let _scrollSyncPaused = false; // Paused during programmatic scrolls from replay clicks
+  let _scrollSyncPaused = false;
 
   function _pauseScrollSync() {
     _scrollSyncPaused = true;
-    // Resume after animation completes
     setTimeout(() => { _scrollSyncPaused = false; }, 800);
   }
 
   function _setupConversationScrollSync(scrollEl) {
-    // Build reverse map: toolUseId → replayIdx
-    const reverseSync = new Map();
-    for (const [replaySeq, syncInfo] of _dashboardSyncMap) {
-      if (syncInfo.toolUseId) {
-        const replayIdx = _dashboardReplayEntries.findIndex(e => (e.seq ?? 0) === replaySeq);
-        if (replayIdx >= 0) reverseSync.set(syncInfo.toolUseId, replayIdx);
-      }
-    }
-    if (reverseSync.size === 0) return;
-
     scrollEl.addEventListener('scroll', () => {
       if (_scrollSyncPaused) return;
       if (_scrollSyncTimer) clearTimeout(_scrollSyncTimer);
-      _scrollSyncTimer = setTimeout(() => {
-        _doScrollSync(scrollEl, reverseSync);
-      }, 150); // 150ms debounce
+      _scrollSyncTimer = setTimeout(() => _doScrollSync(scrollEl), 200);
     });
   }
 
-  function _doScrollSync(scrollEl, reverseSync) {
+  function _doScrollSync(scrollEl) {
     if (_scrollSyncPaused || !_dashboardModal) return;
+    if (_dashboardReplayEntries.length === 0) return;
 
-    // Find the ZenRipple tool block closest to the center of the viewport
-    const toolBlocks = scrollEl.querySelectorAll('.zd-zenripple-tool[data-tool-use-id]');
-    const viewCenter = scrollEl.getBoundingClientRect().top + scrollEl.clientHeight / 2;
+    // Find ALL tool blocks (not just ZenRipple) near the viewport center
+    const allToolBlocks = scrollEl.querySelectorAll('.zd-tool-block[data-conv-idx]');
+    if (allToolBlocks.length === 0) return;
+
+    const scrollRect = scrollEl.getBoundingClientRect();
+    const viewCenter = scrollRect.top + scrollEl.clientHeight / 2;
+
+    // Find the tool block closest to viewport center
     let bestBlock = null;
     let bestDist = Infinity;
-
-    for (const block of toolBlocks) {
+    for (const block of allToolBlocks) {
       const rect = block.getBoundingClientRect();
+      // Skip blocks not visible in viewport
+      if (rect.bottom < scrollRect.top || rect.top > scrollRect.bottom) continue;
       const blockCenter = rect.top + rect.height / 2;
       const dist = Math.abs(blockCenter - viewCenter);
       if (dist < bestDist) {
@@ -7537,16 +7534,34 @@
       }
     }
 
-    if (!bestBlock || bestDist > scrollEl.clientHeight / 2) return; // No block near center
+    if (!bestBlock) return;
 
-    const toolUseId = bestBlock.getAttribute('data-tool-use-id');
-    const replayIdx = reverseSync.get(toolUseId);
-    if (replayIdx != null && replayIdx !== _dashboardSelectedReplayIdx) {
-      // Update replay selection WITHOUT triggering a scroll-back to conversation
-      _scrollSyncPaused = true;
-      _selectDashboardReplayEntry(replayIdx);
-      // Don't call scrollIntoView from the replay side — just update selection + screenshot
-      setTimeout(() => { _scrollSyncPaused = false; }, 100);
+    // Get the conversation entry index for this block
+    const convIdx = parseInt(bestBlock.getAttribute('data-conv-idx'), 10);
+    if (isNaN(convIdx) || convIdx >= _dashboardConversationEntries.length) return;
+
+    // Get the timestamp from the conversation entry
+    const entry = _dashboardConversationEntries[convIdx];
+    const entryTime = entry?.timestamp ? new Date(entry.timestamp).getTime() : 0;
+    if (!entryTime) return;
+
+    // Find the replay entry with the closest timestamp
+    let bestReplayIdx = -1;
+    let bestReplayDist = Infinity;
+    for (let ri = 0; ri < _dashboardReplayEntries.length; ri++) {
+      const re = _dashboardReplayEntries[ri];
+      const reTime = re.timestamp ? new Date(re.timestamp).getTime() : 0;
+      if (!reTime) continue;
+      const dist = Math.abs(reTime - entryTime);
+      if (dist < bestReplayDist) {
+        bestReplayDist = dist;
+        bestReplayIdx = ri;
+      }
+    }
+
+    // Only sync if we found a reasonable match (within 30 seconds)
+    if (bestReplayIdx >= 0 && bestReplayDist < 30000 && bestReplayIdx !== _dashboardSelectedReplayIdx) {
+      _selectDashboardReplayEntry(bestReplayIdx, { scrollConversation: false });
     }
   }
 
