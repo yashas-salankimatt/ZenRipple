@@ -7819,41 +7819,104 @@
   // ── Messages loading ──
 
   async function _loadMessages(sessionId) {
-    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
-    const tmpDir = PathUtils.tempDir;
-    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + safe_id);
+    const replayDir = _replayDirForSession(sessionId);
     const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
+    const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
     const messagesEl = _dashboardModal?.querySelector('#zd-messages');
     if (!messagesEl) return;
 
-    let rawEntries = [];
+    // Collect messages
+    let msgEntries = [];
     try {
       const content = await IOUtils.readUTF8(messagesPath);
-      const lines = content.trim().split('\n').filter(Boolean);
-      for (const line of lines) {
-        try { rawEntries.push(JSON.parse(line)); } catch (_) {}
+      for (const line of content.trim().split('\n').filter(Boolean)) {
+        try { msgEntries.push(JSON.parse(line)); } catch (_) {}
       }
     } catch (_) {}
 
-    // Filter out delivery records, only show actual messages
-    const messages = rawEntries.filter(e => e.direction && !e.delivered);
+    // Collect approval events
+    let approvalEntries = [];
+    try {
+      const content = await IOUtils.readUTF8(approvalsPath);
+      for (const line of content.trim().split('\n').filter(Boolean)) {
+        try { approvalEntries.push(JSON.parse(line)); } catch (_) {}
+      }
+    } catch (_) {}
 
-    if (messages.length === 0) {
+    // Build unified timeline: messages + approval events
+    const timeline = [];
+
+    // Add actual messages (skip delivery records)
+    for (const msg of msgEntries) {
+      if (!msg.direction || msg.delivered) continue;
+      timeline.push({
+        type: msg.direction === 'agent_to_human' ? 'agent-msg' : 'human-msg',
+        text: msg.text || '',
+        timestamp: msg.timestamp || '',
+      });
+    }
+
+    // Add approval events
+    const seenApprovalResolutions = new Set();
+    for (const entry of approvalEntries) {
+      if (entry.status === 'pending') {
+        timeline.push({
+          type: 'approval-request',
+          text: entry.description || entry.id,
+          timestamp: entry.requested_at || '',
+        });
+      } else if ((entry.status === 'approved' || entry.status === 'denied') && !seenApprovalResolutions.has(entry.id)) {
+        seenApprovalResolutions.add(entry.id);
+        const verb = entry.status === 'approved' ? 'Approved' : 'Denied';
+        const reason = entry.message ? ': ' + entry.message : '';
+        timeline.push({
+          type: 'approval-' + entry.status,
+          text: verb + reason,
+          timestamp: entry.resolved_at || '',
+        });
+      }
+    }
+
+    // Sort by timestamp
+    timeline.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+
+    if (timeline.length === 0) {
       messagesEl.innerHTML = '<div class="zd-empty">No messages yet</div>';
       return;
     }
 
     let html = '';
-    for (const msg of messages) {
-      const isAgent = msg.direction === 'agent_to_human';
-      const timeStr = extractTime(msg.timestamp);
-      html += `<div class="zd-chat-msg ${isAgent ? 'agent' : 'human'}">
-        <div>${escapeHTML(msg.text || '')}</div>
-        <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
-      </div>`;
+    for (const evt of timeline) {
+      const timeStr = extractTime(evt.timestamp);
+      if (evt.type === 'agent-msg') {
+        html += `<div class="zd-chat-msg agent">
+          <div>${escapeHTML(evt.text)}</div>
+          <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+        </div>`;
+      } else if (evt.type === 'human-msg') {
+        html += `<div class="zd-chat-msg human">
+          <div>${escapeHTML(evt.text)}</div>
+          <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+        </div>`;
+      } else if (evt.type === 'approval-request') {
+        html += `<div class="zd-chat-msg agent" style="border-left:3px solid var(--zd-status-approval);background:rgba(250,179,135,0.05)">
+          <div>\u26A0 <strong>Approval requested:</strong> ${escapeHTML(evt.text)}</div>
+          <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+        </div>`;
+      } else if (evt.type === 'approval-approved') {
+        html += `<div class="zd-chat-msg human" style="border-left:3px solid var(--zr-success);background:rgba(166,227,161,0.05)">
+          <div>\u2705 ${escapeHTML(evt.text)}</div>
+          <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+        </div>`;
+      } else if (evt.type === 'approval-denied') {
+        html += `<div class="zd-chat-msg human" style="border-left:3px solid var(--zr-error);background:rgba(243,139,168,0.05)">
+          <div>\u274C ${escapeHTML(evt.text)}</div>
+          <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+        </div>`;
+      }
     }
 
-    messagesEl.innerHTML = html;
+    messagesEl.innerHTML = sanitizeForXHTML(html);
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
