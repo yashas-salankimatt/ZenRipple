@@ -7128,10 +7128,12 @@
       ssContainer.innerHTML = '<span class="zd-no-screenshot">No screenshot</span>';
     }
 
-    // Scroll conversation to synced block
-    const syncedConvoIdx = _dashboardSyncMap.get(entry.seq);
-    if (syncedConvoIdx != null) {
-      const convoEl = _dashboardModal?.querySelector(`[data-conv-idx="${syncedConvoIdx}"]`);
+    // Scroll conversation to synced tool_use block
+    const syncInfo = _dashboardSyncMap.get(entry.seq);
+    if (syncInfo) {
+      // Find the tool block by tool_use_id
+      const convoEl = _dashboardModal?.querySelector(`[data-tool-use-id="${syncInfo.toolUseId}"]`)
+                   || _dashboardModal?.querySelector(`[data-conv-idx="${syncInfo.convoIdx}"]`);
       if (convoEl) {
         convoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
         convoEl.classList.add('zd-sync-highlight');
@@ -7312,7 +7314,7 @@
               const toolClass = isZenripple ? 'zd-zenripple-tool' : 'zd-other-tool';
               const toolIdx = _pendingToolBlocks.length;
               _pendingToolBlocks.push({ block, isZenripple, blockIdx });
-              html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-idx="${toolIdx}"></div>`;
+              html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-idx="${toolIdx}" data-tool-use-id="${escapeHTML(block.id || '')}"></div>`;
             }
           }
         }
@@ -7483,42 +7485,35 @@
     const msgBlocks = scrollEl.querySelectorAll('.zd-msg');
     log('Dashboard render: ' + msgBlocks.length + ' messages, ' + toolBlocks.length + ' tool blocks, html length=' + html.length);
 
-    // Set up IntersectionObserver for conversation→replay sync
-    _setupConversationSyncObserver(scrollEl);
+    // Add click-to-sync on ZenRipple tool blocks in conversation → selects replay entry
+    _setupConversationClickSync(scrollEl);
   }
 
-  let _dashboardSyncObserver = null;
-
-  function _setupConversationSyncObserver(scrollEl) {
-    if (_dashboardSyncObserver) _dashboardSyncObserver.disconnect();
-
-    // Build reverse map: conversationIdx → replaySeq
+  function _setupConversationClickSync(scrollEl) {
+    // Build reverse map: toolUseId → replayIdx
     const reverseSync = new Map();
-    for (const [replaySeq, convoIdx] of _dashboardSyncMap) {
-      reverseSync.set(convoIdx, replaySeq);
-    }
-
-    if (reverseSync.size === 0) return;
-
-    _dashboardSyncObserver = new IntersectionObserver((entries) => {
-      for (const entry of entries) {
-        if (!entry.isIntersecting) continue;
-        const convoIdx = parseInt(entry.target.dataset.convIdx, 10);
-        if (isNaN(convoIdx)) continue;
-        const replaySeq = reverseSync.get(convoIdx);
-        if (replaySeq == null) continue;
-        // Find the replay entry index for this seq
+    for (const [replaySeq, syncInfo] of _dashboardSyncMap) {
+      if (syncInfo.toolUseId) {
         const replayIdx = _dashboardReplayEntries.findIndex(e => (e.seq ?? 0) === replaySeq);
-        if (replayIdx >= 0 && replayIdx !== _dashboardSelectedReplayIdx) {
-          _selectDashboardReplayEntry(replayIdx);
+        if (replayIdx >= 0) {
+          reverseSync.set(syncInfo.toolUseId, replayIdx);
         }
       }
-    }, { root: scrollEl, threshold: 0.5 });
+    }
 
-    // Observe all ZenRipple tool blocks in conversation
-    const toolBlocks = scrollEl.querySelectorAll('.zd-zenripple-tool[data-conv-idx]');
+    // Add click handlers to ZenRipple tool blocks
+    const toolBlocks = scrollEl.querySelectorAll('.zd-zenripple-tool[data-tool-use-id]');
     for (const block of toolBlocks) {
-      _dashboardSyncObserver.observe(block);
+      const toolUseId = block.getAttribute('data-tool-use-id');
+      const replayIdx = reverseSync.get(toolUseId);
+      if (replayIdx != null) {
+        block.style.cursor = 'pointer';
+        block.addEventListener('click', (e) => {
+          // Don't trigger if clicking the expand toggle
+          if (e.target.closest('[data-toggle="tool"]')) return;
+          _selectDashboardReplayEntry(replayIdx);
+        });
+      }
     }
   }
 
@@ -7603,78 +7598,68 @@
   }
 
   // ── Sync map: replay entries ↔ conversation blocks ──
+  // Maps replaySeq → { convoIdx, toolUseId } using timestamp matching.
 
   function _buildSyncMap() {
     _dashboardSyncMap.clear();
+    if (!_dashboardReplayEntries.length || !_dashboardConversationEntries.length) return;
 
+    // Build a list of all conversation tool_use blocks with their timestamps
+    const convoTools = [];
+    for (let ci = 0; ci < _dashboardConversationEntries.length; ci++) {
+      const ce = _dashboardConversationEntries[ci];
+      const msg = ce.message;
+      if (ce.type !== 'assistant' || !msg || !Array.isArray(msg.content)) continue;
+      const ceTime = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
+      for (const block of msg.content) {
+        if (block.type !== 'tool_use') continue;
+        // Extract zenripple subcommand from Bash commands
+        let zrCmd = '';
+        if (block.name === 'Bash' && block.input) {
+          const cmd = typeof block.input === 'string' ? block.input : (block.input.command || '');
+          const m = cmd.match(/zenripple\s+(\S+)/);
+          if (m) zrCmd = m[1];
+        }
+        convoTools.push({ ci, ceTime, name: block.name, id: block.id, zrCmd });
+      }
+    }
+
+    // For each replay entry, find the closest conversation tool_use by timestamp
+    const usedConvo = new Set(); // Prevent duplicate matches
     for (let ri = 0; ri < _dashboardReplayEntries.length; ri++) {
       const re = _dashboardReplayEntries[ri];
       const reTime = re.timestamp ? new Date(re.timestamp).getTime() : 0;
       const reTool = re.tool || '';
+      if (!reTime) continue;
 
-      let bestConvoIdx = -1;
+      let bestMatch = null;
       let bestDelta = Infinity;
 
-      for (let ci = 0; ci < _dashboardConversationEntries.length; ci++) {
-        const ce = _dashboardConversationEntries[ci];
-        // Claude Code JSONL: ce.type = "assistant", ce.message.content = [...]
-        const msg = ce.message;
-        if (ce.type !== 'assistant' || !msg || !Array.isArray(msg.content)) continue;
-        for (const block of msg.content) {
-          if (block.type !== 'tool_use') continue;
-          // Match by tool name
-          const toolName = block.name || '';
-          const matches = _toolNameMatches(reTool, toolName, block.input);
-          if (!matches) continue;
-          // Match by timestamp proximity
-          const ceTime = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
-          const delta = Math.abs(reTime - ceTime);
-          if (delta < bestDelta && delta < 10000) { // Within 10 seconds
-            bestDelta = delta;
-            bestConvoIdx = ci;
-          }
+      for (const ct of convoTools) {
+        if (usedConvo.has(ct.id)) continue; // Already matched
+        const delta = Math.abs(reTime - ct.ceTime);
+        if (delta > 5000) continue; // Must be within 5 seconds
+
+        // Check if tools match
+        let matches = false;
+        if (ct.zrCmd && ct.zrCmd === reTool) matches = true; // zenripple fill → fill
+        else if (ct.name === 'Bash' && ct.zrCmd) matches = true; // Any zenripple bash
+        else if (ct.name === reTool) matches = true; // Direct name match
+
+        if (matches && delta < bestDelta) {
+          bestDelta = delta;
+          bestMatch = ct;
         }
       }
 
-      if (bestConvoIdx >= 0) {
-        _dashboardSyncMap.set(re.seq ?? ri, bestConvoIdx);
+      if (bestMatch) {
+        usedConvo.add(bestMatch.id);
+        _dashboardSyncMap.set(re.seq ?? ri, { convoIdx: bestMatch.ci, toolUseId: bestMatch.id });
       }
     }
-  }
 
-  function _toolNameMatches(replayTool, conversationTool, conversationInput) {
-    // Replay uses CLI command names, conversation uses MCP tool names or Bash
-    if (!replayTool || !conversationTool) return false;
-    if (replayTool === conversationTool) return true;
-    // browser_click → click, browser_navigate → nav, etc.
-    const bareName = conversationTool.replace(/^browser_/, '');
-    if (replayTool === bareName) return true;
-    // CLI command → MCP tool: nav → browser_navigate
-    if (conversationTool === 'Bash') {
-      // Only match if the bash command actually contains "zenripple"
-      const cmd = conversationInput
-        ? (typeof conversationInput === 'string' ? conversationInput : (conversationInput.command || ''))
-        : '';
-      return cmd.includes('zenripple');
-    }
-    // Map CLI names to browser method names
-    const cliEntry = COMMANDS_REVERSE.get(replayTool);
-    if (cliEntry && conversationTool.includes(cliEntry)) return true;
-    return false;
+    log('Dashboard: sync map built with ' + _dashboardSyncMap.size + ' matched entries');
   }
-
-  // Reverse map: CLI command → browser method name
-  const COMMANDS_REVERSE = new Map([
-    ['nav', 'navigate'], ['click', 'click'], ['fill', 'fill'],
-    ['type', 'type'], ['key', 'press_key'], ['scroll', 'scroll'],
-    ['hover', 'hover'], ['dom', 'get_dom'], ['text', 'get_page_text'],
-    ['screenshot', 'screenshot'], ['ss', 'screenshot'],
-    ['create-tab', 'create_tab'], ['close-tab', 'close_tab'],
-    ['switch-tab', 'switch_tab'], ['list-tabs', 'list_tabs'],
-    ['elements', 'get_elements_compact'], ['eval', 'console_eval'],
-    ['wait', 'wait'], ['wait-load', 'wait_for_load'],
-    ['gclick', 'grounded_click'], ['reflect', 'reflect'],
-  ]);
 
   // ── Approvals loading ──
 
@@ -8107,7 +8092,6 @@
 
     _stopDashboardPolling();
     if (_detailSplitterCleanup) _detailSplitterCleanup();
-    if (_dashboardSyncObserver) { _dashboardSyncObserver.disconnect(); _dashboardSyncObserver = null; }
     window.removeEventListener('keydown', handleDashboardKeydown, true);
     window.removeEventListener('keyup', _blockDashboardKeyEvent, true);
     window.removeEventListener('keypress', _blockDashboardKeyEvent, true);
