@@ -7131,14 +7131,10 @@
     // Scroll conversation to synced tool_use block
     const syncInfo = _dashboardSyncMap.get(entry.seq);
     if (syncInfo) {
-      // Find the tool block by tool_use_id
-      const convoEl = _dashboardModal?.querySelector(`[data-tool-use-id="${syncInfo.toolUseId}"]`)
-                   || _dashboardModal?.querySelector(`[data-conv-idx="${syncInfo.convoIdx}"]`);
-      if (convoEl) {
-        convoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        convoEl.classList.add('zd-sync-highlight');
-        setTimeout(() => convoEl.classList.remove('zd-sync-highlight'), 500);
-      }
+      _scrollToSyncedBlock(syncInfo);
+    } else if (_dashboardConvoHasMore && entry.timestamp) {
+      // The matching conversation entry might not be loaded yet — load more
+      _loadConversationUntilMatch(entry);
     }
   }
 
@@ -7487,6 +7483,38 @@
 
     // Add click-to-sync on ZenRipple tool blocks in conversation → selects replay entry
     _setupConversationClickSync(scrollEl);
+  }
+
+  function _scrollToSyncedBlock(syncInfo) {
+    const convoEl = _dashboardModal?.querySelector(`[data-tool-use-id="${syncInfo.toolUseId}"]`)
+                 || _dashboardModal?.querySelector(`[data-conv-idx="${syncInfo.convoIdx}"]`);
+    if (convoEl) {
+      convoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      convoEl.classList.add('zd-sync-highlight');
+      setTimeout(() => convoEl.classList.remove('zd-sync-highlight'), 500);
+    }
+  }
+
+  async function _loadConversationUntilMatch(replayEntry) {
+    // Load more conversation data in chunks until we find a matching tool_use
+    const maxAttempts = 10; // Max 10 chunks (20MB total)
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (!_dashboardConvoHasMore) break;
+
+      _dashboardConvoReadBytes += _CONVO_CHUNK_SIZE;
+      _dashboardConvoFileSize = 0; // Force re-read
+      await _loadConversation(_dashboardDetailSession);
+      _buildSyncMap();
+
+      // Check if we now have a match
+      const syncInfo = _dashboardSyncMap.get(replayEntry.seq);
+      if (syncInfo) {
+        log('Dashboard: loaded conversation back to match replay seq=' + replayEntry.seq);
+        _scrollToSyncedBlock(syncInfo);
+        return;
+      }
+    }
+    log('Dashboard: could not find conversation match for replay seq=' + replayEntry.seq);
   }
 
   function _setupConversationClickSync(scrollEl) {
