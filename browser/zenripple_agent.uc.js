@@ -7216,6 +7216,7 @@
 
     let html = '';
     let blockIdx = 0;
+    const _pendingToolBlocks = []; // Filled during HTML generation, built into DOM after innerHTML
 
     // Show indicator if there are earlier entries not yet loaded
     if (_dashboardConvoHasMore) {
@@ -7306,56 +7307,13 @@
                 <div class="zd-msg-content">${renderMarkdown(block.text)}</div>
               </div>`;
             } else if (block.type === 'tool_use') {
+              // Emit a placeholder div — content built programmatically after
+              // innerHTML to avoid XHTML parser stripping inner elements.
               const isZenripple = _isZenrippleTool(block.name, block.input);
               const toolClass = isZenripple ? 'zd-zenripple-tool' : 'zd-other-tool';
-              const friendlyName = isZenripple ? _friendlyToolName(block.name) : (block.name || '?');
-              const subtitle = _toolUseSubtitle(block.name, block.input);
-              log('Dashboard render tool_use: name=' + block.name + ' friendly=' + friendlyName + ' zenripple=' + isZenripple + ' subtitle=' + subtitle.slice(0, 40));
-
-              // For Bash tool, show the command inline
-              let inlineContent = '';
-              if (block.name === 'Bash' && block.input) {
-                const cmd = typeof block.input === 'string' ? block.input : (block.input.command || '');
-                if (cmd) {
-                  inlineContent = `<div class="zd-tool-json" style="margin-top:4px">$ ${escapeHTML(cmd.slice(0, 500))}</div>`;
-                }
-              } else if (block.name === 'Edit' && block.input) {
-                const file = (block.input.file_path || '').split('/').pop();
-                const old = (block.input.old_string || '').slice(0, 100);
-                const nw = (block.input.new_string || '').slice(0, 100);
-                if (file) {
-                  inlineContent = `<div class="zd-tool-json" style="margin-top:4px"><span class="zr-key">${escapeHTML(file)}</span>\n<span style="color:var(--zr-error)">- ${escapeHTML(old)}${old.length >= 100 ? '...' : ''}</span>\n<span style="color:var(--zr-success)">+ ${escapeHTML(nw)}${nw.length >= 100 ? '...' : ''}</span></div>`;
-                }
-              }
-
-              // Expandable JSON args (hidden by default for non-Bash tools)
-              const inputStr = block.input ? (typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)) : '';
-
-              // Find matching tool_result
-              const resultEntry = _findToolResult(block.id);
-              const resultStr = resultEntry ? (typeof resultEntry.content === 'string' ? resultEntry.content : JSON.stringify(resultEntry.content, null, 2)) : '';
-              const isError = resultEntry ? resultEntry.is_error : false;
-
-              html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-use-id="${escapeHTML(block.id || '')}">
-                <div class="zd-tool-header" data-toggle="tool">
-                  <span class="zd-tool-name">${escapeHTML(friendlyName)}</span>
-                  <span class="zd-tool-subtitle">${escapeHTML(subtitle)}</span>
-                  ${isError ? '<span class="zd-tool-result-dot error" style="margin-left:auto"></span>' : ''}
-                  <span class="zd-tool-toggle">\u25B6</span>
-                </div>
-                ${inlineContent}
-                <div class="zd-tool-body">
-                  ${inputStr && !inlineContent ? `<div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
-                  ${inputStr && inlineContent ? `<div class="zd-tool-result-label">Full Args</div><div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
-                  ${resultStr ? `
-                    <div class="zd-tool-result-label">
-                      <span class="zd-tool-result-dot ${isError ? 'error' : 'success'}"></span>
-                      Result
-                    </div>
-                    <div class="zd-tool-json">${syntaxHighlightJSON(_truncateResult(resultStr))}</div>
-                  ` : ''}
-                </div>
-              </div>`;
+              const toolIdx = _pendingToolBlocks.length;
+              _pendingToolBlocks.push({ block, isZenripple, blockIdx });
+              html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-idx="${toolIdx}"></div>`;
             }
           }
         }
@@ -7382,26 +7340,107 @@
     // Preserve scroll position if user has scrolled up; auto-scroll if at bottom
     const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
 
-    // Use DOMParser with text/html (lenient HTML5 parser) instead of XHTML
-    // innerHTML. Firefox chrome context uses XHTML which silently discards
-    // inner content of elements when it encounters even minor markup issues.
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(
-        '<html><body><div>' + sanitizeForXHTML(html) + '</div></body></html>',
-        'text/html'
-      );
-      const wrapper = doc.body.firstChild;
-      scrollEl.textContent = ''; // Clear existing content
-      while (wrapper.firstChild) {
-        scrollEl.appendChild(document.adoptNode(wrapper.firstChild));
+    scrollEl.innerHTML = sanitizeForXHTML(html);
+
+    // Build tool block content programmatically (XHTML innerHTML strips inner elements)
+    for (const { block, isZenripple, blockIdx: bIdx } of _pendingToolBlocks) {
+      const placeholder = scrollEl.querySelector(`[data-tool-idx="${_pendingToolBlocks.indexOf(arguments[0] || { block, isZenripple, blockIdx: bIdx })}"]`);
+    }
+    for (let ti = 0; ti < _pendingToolBlocks.length; ti++) {
+      const { block, isZenripple } = _pendingToolBlocks[ti];
+      const el = scrollEl.querySelector('[data-tool-idx="' + ti + '"]');
+      if (!el) continue;
+
+      const friendlyName = isZenripple ? _friendlyToolName(block.name) : (block.name || '?');
+      const subtitle = _toolUseSubtitle(block.name, block.input);
+      const resultEntry = _findToolResult(block.id);
+      const isError = resultEntry ? resultEntry.is_error : false;
+
+      // Header
+      const header = document.createElement('div');
+      header.className = 'zd-tool-header';
+      header.setAttribute('data-toggle', 'tool');
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'zd-tool-name';
+      nameSpan.textContent = friendlyName;
+      header.appendChild(nameSpan);
+      const subSpan = document.createElement('span');
+      subSpan.className = 'zd-tool-subtitle';
+      subSpan.textContent = subtitle;
+      header.appendChild(subSpan);
+      if (isError) {
+        const errDot = document.createElement('span');
+        errDot.className = 'zd-tool-result-dot error';
+        errDot.style.marginLeft = 'auto';
+        header.appendChild(errDot);
       }
-    } catch (e) {
-      log('Dashboard: DOMParser fallback to innerHTML: ' + e);
-      scrollEl.innerHTML = sanitizeForXHTML(html);
+      const toggle = document.createElement('span');
+      toggle.className = 'zd-tool-toggle';
+      toggle.textContent = '\u25B6';
+      header.appendChild(toggle);
+      el.appendChild(header);
+
+      // Inline content for Bash/Edit
+      if (block.name === 'Bash' && block.input) {
+        const cmd = typeof block.input === 'string' ? block.input : (block.input.command || '');
+        if (cmd) {
+          const cmdDiv = document.createElement('div');
+          cmdDiv.className = 'zd-tool-json';
+          cmdDiv.style.marginTop = '4px';
+          cmdDiv.textContent = '$ ' + cmd.slice(0, 500);
+          el.appendChild(cmdDiv);
+        }
+      } else if (block.name === 'Edit' && block.input) {
+        const file = (block.input.file_path || '').split('/').pop();
+        if (file) {
+          const editDiv = document.createElement('div');
+          editDiv.className = 'zd-tool-json';
+          editDiv.style.marginTop = '4px';
+          editDiv.textContent = file + '\n- ' + (block.input.old_string || '').slice(0, 80) + '\n+ ' + (block.input.new_string || '').slice(0, 80);
+          el.appendChild(editDiv);
+        }
+      }
+
+      // Expandable body (hidden by default)
+      const body = document.createElement('div');
+      body.className = 'zd-tool-body';
+      const inputStr = block.input ? (typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)) : '';
+      if (inputStr) {
+        const argsJson = document.createElement('div');
+        argsJson.className = 'zd-tool-json';
+        argsJson.textContent = inputStr.slice(0, 2000);
+        body.appendChild(argsJson);
+      }
+      if (resultEntry) {
+        const resultStr = typeof resultEntry.content === 'string' ? resultEntry.content : JSON.stringify(resultEntry.content, null, 2);
+        const label = document.createElement('div');
+        label.className = 'zd-tool-result-label';
+        const dot = document.createElement('span');
+        dot.className = 'zd-tool-result-dot ' + (isError ? 'error' : 'success');
+        label.appendChild(dot);
+        label.appendChild(document.createTextNode(' Result'));
+        body.appendChild(label);
+        const resultJson = document.createElement('div');
+        resultJson.className = 'zd-tool-json';
+        resultJson.textContent = resultStr.slice(0, 2000);
+        body.appendChild(resultJson);
+      }
+      el.appendChild(body);
+
+      // Toggle handler
+      header.addEventListener('click', () => {
+        body.classList.toggle('expanded');
+        toggle.classList.toggle('expanded');
+      });
+
+      // Auto-expand errors
+      if (isError) {
+        body.classList.add('expanded');
+        toggle.classList.add('expanded');
+      }
     }
 
-    // Add toggle handlers for tool blocks
+    // Add toggle handlers for tool blocks (for any non-programmatic ones)
     const toggles = scrollEl.querySelectorAll('[data-toggle="tool"]');
     for (const toggle of toggles) {
       toggle.addEventListener('click', () => {
