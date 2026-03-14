@@ -9648,9 +9648,9 @@
             const { id, method, params } = msg.data;
             try {
               const result = await _handleBridgeMethod(method, params || {});
-              mm.sendAsyncMessage('ZenRipple:Response', { id, result });
+              mm.sendAsyncMessage('ZenRipple:Response', { type: 'zenripple-response', id, result });
             } catch (e) {
-              mm.sendAsyncMessage('ZenRipple:Response', { id, error: String(e) });
+              mm.sendAsyncMessage('ZenRipple:Response', { type: 'zenripple-response', id, error: String(e) });
             }
           }
         });
@@ -9666,9 +9666,16 @@
             addMessageListener('ZenRipple:Response', function(msg) {
               content.postMessage(msg.data, '*');
             });
-            content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
+            // Signal bridge ready — retry to catch pages that load after frame script
+            function signalReady() {
+              content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
+            }
+            signalReady();
+            content.setTimeout(signalReady, 200);
+            content.setTimeout(signalReady, 1000);
+            content.setTimeout(signalReady, 3000);
           })();
-        `) + ')', true); // true = load in all future documents too
+        `) + ')', true);
 
         log('Dashboard bridge injected for tab: ' + url);
       } catch (e) {
