@@ -421,6 +421,27 @@
       log('WARNING: Could not write auth token to ' + file + ': ' + e);
       // Token is still in memory — connections will work for this session
     }
+
+    // Write token to dashboard pages directory so the page can fetch it
+    _writeAuthToPages();
+  }
+
+  function _writeAuthToPages() {
+    if (!authToken) return;
+    try {
+      const pagesDir = Services.dirsvc.get('UChrm', Ci.nsIFile);
+      pagesDir.append('JS'); pagesDir.append('pages');
+      if (!pagesDir.exists()) {
+        const sineDir = Services.dirsvc.get('UChrm', Ci.nsIFile);
+        sineDir.append('sine-mods'); sineDir.append('zenripple');
+        sineDir.append('JS'); sineDir.append('pages');
+        if (sineDir.exists()) pagesDir.initWithFile(sineDir);
+      }
+      if (pagesDir.exists()) {
+        const authPath = PathUtils.join(pagesDir.path, 'auth.txt');
+        IOUtils.writeUTF8(authPath, authToken).catch(() => {});
+      }
+    } catch (_) {}
   }
 
   async function startServer() {
@@ -9564,7 +9585,7 @@
   const DASHBOARD_PAGE_URL = 'resource://zenripple-pages/dashboard.html';
   const SESSION_PAGE_URL = 'resource://zenripple-pages/session.html';
 
-  // Register resource://zenripple-pages/ pointing to the pages directory
+  // Register resource://zenripple-pages/ and write auth token for page access
   function _registerPagesResource() {
     try {
       const pagesDir = Services.dirsvc.get('UChrm', Ci.nsIFile);

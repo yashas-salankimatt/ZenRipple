@@ -11,12 +11,19 @@ let _pendingRequests = new Map();
 let _reqCounter = 0;
 let _reconnectTimer = null;
 
-function _getToken() {
-  return new URLSearchParams(window.location.search).get('token') || '';
+async function _getToken() {
+  // Try URL param first, then fetch from auth.txt served via resource://
+  const urlToken = new URLSearchParams(window.location.search).get('token');
+  if (urlToken) return urlToken;
+  try {
+    const resp = await fetch('auth.txt');
+    if (resp.ok) return (await resp.text()).trim();
+  } catch (_) {}
+  return '';
 }
 
-function _connectWebSocket() {
-  const token = _getToken();
+async function _connectWebSocket() {
+  const token = await _getToken();
   const wsUrl = 'ws://localhost:9876/dashboard' + (token ? '?token=' + encodeURIComponent(token) : '');
 
   try {
