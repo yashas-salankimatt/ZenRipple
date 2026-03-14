@@ -7091,11 +7091,15 @@
     _dashboardSelectedReplayIdx = idx;
     const entry = _dashboardReplayEntries[idx];
 
-    // Update selection visuals
+    // Update selection visuals and scroll selected entry into view
     const entries = _dashboardModal?.querySelectorAll('.zd-replay-entry');
     if (entries) {
       for (const el of entries) {
-        el.classList.toggle('selected', parseInt(el.dataset.idx, 10) === idx);
+        const isSelected = parseInt(el.dataset.idx, 10) === idx;
+        el.classList.toggle('selected', isSelected);
+        if (isSelected) {
+          el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
       }
     }
 
