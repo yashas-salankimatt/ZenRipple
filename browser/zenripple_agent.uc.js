@@ -5981,6 +5981,61 @@
   padding: 4px;
 }
 
+/* Claude Code direct input */
+.zd-claude-input-wrapper {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+  background: var(--zr-bg-surface);
+}
+.zd-claude-input {
+  flex: 1;
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  padding: 8px 12px;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-accent-20);
+  background: var(--zr-bg-raised);
+  color: var(--zr-text-primary);
+  outline: none;
+  min-height: 28px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+.zd-claude-input:focus {
+  border-color: var(--zr-accent);
+  box-shadow: 0 0 0 1px var(--zr-accent-dim);
+}
+.zd-claude-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--zr-text-muted);
+  pointer-events: none;
+}
+.zd-claude-send {
+  font-family: var(--zr-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  border: 1px solid var(--zr-accent-20);
+  background: var(--zr-accent-dim);
+  color: var(--zr-accent);
+  transition: all 0.12s;
+  align-self: flex-end;
+}
+.zd-claude-send:hover {
+  background: var(--zr-accent-20);
+}
+.zd-claude-status {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  padding: 0 8px 4px;
+  font-style: italic;
+}
+
 /* Conversation column tabs */
 .zd-convo-tabs {
   display: flex;
@@ -7027,6 +7082,10 @@
           </div>
           <div class="zd-conversation-scroll" id="zd-conversation"></div>
           <div class="zd-tool-detail-view" id="zd-tool-detail"></div>
+          <div class="zd-claude-input-wrapper" id="zd-claude-input-wrapper">
+            <div class="zd-claude-input" id="zd-claude-input" contenteditable="true" data-placeholder="Send to Claude Code..."></div>
+            <div class="zd-claude-send" id="zd-claude-send">\u2192</div>
+          </div>
         </div>
         <div class="zd-splitter zd-splitter-v" data-split="right"></div>
         <div class="zd-right-col" id="zd-right-col">
@@ -7058,6 +7117,19 @@
         if (e.key === 'Enter' && !e.shiftKey) {
           e.preventDefault();
           _sendHumanMessage(sessionId, msgInput);
+        }
+      });
+    }
+
+    // Claude Code direct send
+    const claudeInput = body.querySelector('#zd-claude-input');
+    const claudeSend = body.querySelector('#zd-claude-send');
+    if (claudeInput && claudeSend) {
+      claudeSend.addEventListener('click', () => _sendToClaudeCode(sessionId, claudeInput));
+      claudeInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          _sendToClaudeCode(sessionId, claudeInput);
         }
       });
     }
@@ -7254,6 +7326,128 @@
 
     // Refresh messages display
     await _loadMessages(sessionId);
+  }
+
+  // ── Claude Code direct interaction ──
+
+  async function _sendToClaudeCode(sessionId, inputEl) {
+    const text = (inputEl.textContent || '').trim();
+    if (!text) return;
+    inputEl.textContent = '';
+
+    const replayDir = _replayDirForSession(sessionId);
+
+    // Read conversation.link to get Claude session ID
+    let convoPath = '';
+    let convoSessionId = '';
+    try {
+      convoPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim();
+      convoSessionId = convoPath.split('/').pop().replace('.jsonl', '');
+    } catch (_) {}
+
+    if (!convoSessionId) {
+      log('Dashboard: no conversation link — cannot send to Claude Code');
+      return;
+    }
+
+    // Find Claude PID and tmux pane
+    let tmuxPane = null;
+    try {
+      // Find all Claude PIDs
+      const pgrepOut = await _runShellCommand('pgrep -x claude 2>/dev/null || true');
+      const pids = pgrepOut.trim().split('\n').filter(Boolean);
+
+      for (const pidStr of pids) {
+        const pid = parseInt(pidStr, 10);
+        if (isNaN(pid)) continue;
+        // Get CWD
+        const lsofOut = await _runShellCommand(
+          'lsof -a -p ' + pid + ' -d cwd -Fn 2>/dev/null | grep ^n/ | head -1'
+        );
+        const cwd = lsofOut.trim().replace(/^n/, '');
+        if (!cwd) continue;
+        // Check if CWD matches the project
+        const pathHash = cwd.replace(/[^a-zA-Z0-9-]/g, '-');
+        if (convoPath.includes(pathHash)) {
+          // Found the Claude process — get its tmux pane
+          const ttyOut = await _runShellCommand(
+            'lsof -a -p ' + pid + ' -d 0 -Fn 2>/dev/null | grep ^n/dev/ | head -1'
+          );
+          const tty = ttyOut.trim().replace(/^n/, '');
+          if (tty) {
+            const panesOut = await _runShellCommand(
+              "tmux list-panes -a -F '#{pane_id} #{pane_tty}' 2>/dev/null || true"
+            );
+            for (const line of panesOut.trim().split('\n')) {
+              const [paneId, paneTty] = line.split(' ');
+              if (paneTty === tty) { tmuxPane = paneId; break; }
+            }
+          }
+          break;
+        }
+      }
+    } catch (e) {
+      log('Dashboard: error finding Claude process: ' + e);
+    }
+
+    if (tmuxPane) {
+      log('Dashboard: sending to Claude via tmux pane ' + tmuxPane);
+      try {
+        await _runShellCommand(
+          'tmux send-keys -l -t ' + tmuxPane + ' ' + _shellQuote(text)
+        );
+        await _runShellCommand(
+          'tmux send-keys -t ' + tmuxPane + ' Enter'
+        );
+        log('Dashboard: tmux send succeeded');
+      } catch (e) {
+        log('Dashboard: tmux send failed: ' + e);
+      }
+    } else if (convoSessionId) {
+      log('Dashboard: sending via --resume fork (session ' + convoSessionId + ')');
+      try {
+        const response = await _runShellCommand(
+          'echo ' + _shellQuote(text) + ' | timeout 120 claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1'
+        );
+        log('Dashboard: resume response: ' + response.slice(0, 200));
+      } catch (e) {
+        log('Dashboard: resume fork failed: ' + e);
+      }
+    } else {
+      log('Dashboard: no tmux pane and no conversation link');
+    }
+  }
+
+  function _shellQuote(s) {
+    return "'" + s.replace(/'/g, "'\\''") + "'";
+  }
+
+  async function _runShellCommand(cmd) {
+    return new Promise((resolve, reject) => {
+      const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+      file.initWithPath('/bin/sh');
+      const proc = Cc['@mozilla.org/process/util;1'].createInstance(Ci.nsIProcess);
+      proc.init(file);
+
+      const tmpFile = PathUtils.join(PathUtils.tempDir, 'zenripple_cmd_' + Date.now() + '.tmp');
+      const fullCmd = cmd + ' > ' + _shellQuote(tmpFile) + ' 2>&1';
+
+      proc.runAsync(['-c', fullCmd], 2, {
+        observe: async (subject, topic) => {
+          if (topic === 'process-finished') {
+            try {
+              const output = await IOUtils.readUTF8(tmpFile);
+              try { await IOUtils.remove(tmpFile); } catch (_) {}
+              resolve(output);
+            } catch (_) {
+              resolve('');
+            }
+          } else {
+            reject(new Error('process failed'));
+          }
+        }
+      });
+    });
   }
 
   // ── Playback engine ──

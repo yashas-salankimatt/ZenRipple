@@ -376,7 +376,7 @@ SPECIAL_COMMANDS = {
     "logs", "errors", "net-log",
     "intercept-add",
     "replay-status",
-    "approve", "notify",
+    "approve", "notify", "claude-send", "claude-info",
 }
 
 # ── Arg Parsing Helpers ───────────────────────────────────────
@@ -1313,6 +1313,228 @@ async def handle_notify(client: BrowserClient, params: dict) -> int:
     return 0
 
 
+# ── Claude Code Interaction ───────────────────────────────────
+
+
+def _find_claude_pid_for_session(session_id: str) -> int | None:
+    """Find the Claude Code PID associated with a ZenRipple session.
+
+    Reads conversation.link to find the JSONL, then scans for Claude processes
+    whose CWD matches the project directory.
+    """
+    safe_id = _sanitize_session_id(session_id)
+    if not safe_id:
+        return None
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    link_path = os.path.join(replay_dir, "conversation.link")
+
+    # Read the conversation link to get the project path
+    try:
+        with open(link_path) as f:
+            convo_path = f.read().strip()
+    except (FileNotFoundError, OSError):
+        return None
+
+    if not convo_path:
+        return None
+
+    # Extract session ID from conversation path
+    convo_session_id = Path(convo_path).stem  # UUID without extension
+
+    # Find all Claude processes and check if any match
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "^claude"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode != 0:
+            return None
+        for pid_str in result.stdout.strip().split('\n'):
+            pid = int(pid_str.strip())
+            # Check if this process name is actually "claude"
+            cmdline = _get_process_cmdline(pid)
+            if not cmdline:
+                continue
+            exe_name = os.path.basename(cmdline[0]).lower()
+            if exe_name != "claude":
+                continue
+            # Check CWD matches the project
+            cwd = _get_process_cwd(pid)
+            if not cwd:
+                continue
+            # Build the expected project hash from CWD
+            path_hash = re.sub(r"[^a-zA-Z0-9-]", "-", cwd)
+            if path_hash in convo_path:
+                return pid
+    except Exception:
+        pass
+    return None
+
+
+def _find_tmux_pane_for_pid(pid: int) -> str | None:
+    """Find the tmux pane ID (%N) for a given PID."""
+    import subprocess
+    try:
+        # Get the TTY for this PID
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "0", "-Fn"],
+            capture_output=True, text=True, timeout=2,
+        )
+        tty = None
+        for line in result.stdout.splitlines():
+            if line.startswith("n/dev/"):
+                tty = line[1:]  # Strip the 'n' prefix
+                break
+        if not tty:
+            return None
+
+        # Find the tmux pane with this TTY
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}"],
+            capture_output=True, text=True, timeout=2,
+        )
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split()
+            if len(parts) == 2 and parts[1] == tty:
+                return parts[0]  # e.g., %32
+    except Exception:
+        pass
+    return None
+
+
+def _send_via_tmux(pane_id: str, message: str) -> bool:
+    """Send a message to a Claude Code instance via tmux send-keys."""
+    import subprocess
+    try:
+        # Send literal text
+        result = subprocess.run(
+            ["tmux", "send-keys", "-l", "-t", pane_id, message],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return False
+        # Send Enter
+        result = subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _send_via_resume(session_id: str, message: str) -> str:
+    """Send a message to a Claude Code session via claude -p --resume (fork)."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["claude", "-p", "--resume", session_id, "--output-format", "text"],
+            input=message,
+            capture_output=True, text=True, timeout=120,
+        )
+        return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return "(timed out after 120s)"
+    except Exception as e:
+        return f"(error: {e})"
+
+
+async def handle_claude_info(client: BrowserClient, params: dict) -> int:
+    """Get Claude Code session info for a ZenRipple session."""
+    session_id = client.session_id or SESSION_ID
+    if not session_id:
+        print(json.dumps({"error": "no active session"}))
+        return 1
+
+    safe_id = _sanitize_session_id(session_id)
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+
+    # Read conversation link
+    convo_path = ""
+    convo_session_id = ""
+    try:
+        with open(os.path.join(replay_dir, "conversation.link")) as f:
+            convo_path = f.read().strip()
+            convo_session_id = Path(convo_path).stem
+    except (FileNotFoundError, OSError):
+        pass
+
+    # Find Claude PID
+    claude_pid = _find_claude_pid_for_session(session_id)
+
+    # Find tmux pane
+    tmux_pane = None
+    if claude_pid:
+        tmux_pane = _find_tmux_pane_for_pid(claude_pid)
+
+    print(json.dumps({
+        "session_id": session_id,
+        "conversation_path": convo_path,
+        "conversation_session_id": convo_session_id,
+        "claude_pid": claude_pid,
+        "tmux_pane": tmux_pane,
+        "can_tmux": tmux_pane is not None,
+        "can_resume": bool(convo_session_id),
+    }, indent=2))
+    return 0
+
+
+async def handle_claude_send(client: BrowserClient, params: dict) -> int:
+    """Send a message to Claude Code — via tmux if possible, else via --resume fork."""
+    message = params.get("message", "")
+    if not message:
+        print("Usage: zenripple claude-send <message>", file=sys.stderr)
+        return 1
+
+    session_id = client.session_id or SESSION_ID
+    if not session_id:
+        print(json.dumps({"error": "no active session"}))
+        return 1
+
+    # Find Claude PID and tmux pane
+    claude_pid = _find_claude_pid_for_session(session_id)
+    tmux_pane = None
+    if claude_pid:
+        tmux_pane = _find_tmux_pane_for_pid(claude_pid)
+
+    if tmux_pane:
+        # Live injection via tmux
+        success = _send_via_tmux(tmux_pane, message)
+        print(json.dumps({
+            "method": "tmux",
+            "pane": tmux_pane,
+            "pid": claude_pid,
+            "sent": success,
+        }))
+        return 0 if success else 1
+
+    # Fallback: use claude -p --resume
+    safe_id = _sanitize_session_id(session_id)
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    convo_session_id = ""
+    try:
+        with open(os.path.join(replay_dir, "conversation.link")) as f:
+            convo_path = f.read().strip()
+            convo_session_id = Path(convo_path).stem
+    except (FileNotFoundError, OSError):
+        pass
+
+    if convo_session_id:
+        print(json.dumps({"method": "resume", "session_id": convo_session_id, "status": "sending..."}))
+        sys.stdout.flush()
+        response = _send_via_resume(convo_session_id, message)
+        print(json.dumps({
+            "method": "resume",
+            "session_id": convo_session_id,
+            "response": response,
+        }))
+        return 0
+
+    print(json.dumps({"error": "no tmux pane and no conversation link for resume"}))
+    return 1
+
+
 def _append_jsonl(path: str, entry: dict) -> None:
     """Append a JSON line to a JSONL file under file lock."""
     lock_path = path + ".lock"
@@ -2061,6 +2283,16 @@ async def _dispatch(command: str, args: list[str], client: BrowserClient) -> int
         params = _parse_tool_args(args, ["text"])
         await client.connect()
         return await handle_notify(client, params)
+
+    if command == "claude-send":
+        params = _parse_tool_args(args, ["message"])
+        await client.connect()
+        return await handle_claude_send(client, params)
+
+    if command == "claude-info":
+        params = _parse_tool_args(args, [])
+        await client.connect()
+        return await handle_claude_info(client, params)
 
     # ── Generic command dispatch ──
     if command in COMMANDS:
