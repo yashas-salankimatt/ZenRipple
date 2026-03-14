@@ -7974,17 +7974,37 @@
         return;
       }
       // In Firefox chrome context, Backspace/Delete events get intercepted by
-      // chrome-level handlers (history navigation, ZenLeap, etc.) even though
-      // we don't block them. Handle them explicitly with execCommand, then
-      // stop the event from reaching those other handlers.
-      if (e.key === 'Backspace') {
-        document.execCommand('delete', false);
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        return;
-      }
-      if (e.key === 'Delete') {
-        document.execCommand('forwardDelete', false);
+      // chrome-level handlers even though we don't block them. Handle deletion
+      // manually using the Selection/Range API.
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        const sel = document.activeElement?.ownerDocument?.getSelection?.()
+                 || window.getSelection();
+        if (sel && sel.rangeCount > 0) {
+          const range = sel.getRangeAt(0);
+          if (!range.collapsed) {
+            // Selection exists — delete it
+            range.deleteContents();
+          } else if (e.key === 'Backspace' && range.startOffset > 0) {
+            // Delete character before cursor
+            range.setStart(range.startContainer, range.startOffset - 1);
+            range.deleteContents();
+          } else if (e.key === 'Backspace' && range.startContainer !== document.activeElement) {
+            // Cursor at start of a text node that isn't the first — merge with previous
+            const prev = range.startContainer.previousSibling;
+            if (prev && prev.nodeType === 3) {
+              const offset = prev.textContent.length;
+              prev.textContent = prev.textContent.slice(0, -1);
+              range.setStart(prev, Math.max(0, offset - 1));
+              range.collapse(true);
+            }
+          } else if (e.key === 'Delete') {
+            const container = range.startContainer;
+            if (container.nodeType === 3 && range.startOffset < container.textContent.length) {
+              range.setEnd(container, range.startOffset + 1);
+              range.deleteContents();
+            }
+          }
+        }
         e.preventDefault();
         e.stopImmediatePropagation();
         return;
