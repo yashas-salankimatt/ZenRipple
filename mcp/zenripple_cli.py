@@ -1434,6 +1434,43 @@ def _sanitize_session_id(raw: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_-]", "", raw)
 
 
+def _persist_session_name(session_id: str, name: str) -> None:
+    """Write session name to manifest.json so it survives browser restarts."""
+    safe_id = _sanitize_session_id(session_id)
+    if not safe_id:
+        return
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    manifest_path = os.path.join(replay_dir, "manifest.json")
+    lock_path = os.path.join(replay_dir, "replay.lock")
+
+    def _do_update():
+        os.makedirs(replay_dir, exist_ok=True)
+        manifest = {}
+        try:
+            with open(manifest_path, "r") as f:
+                manifest = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            manifest = {"session_id": safe_id, "started_at": datetime.now(timezone.utc).isoformat(), "next_seq": 0}
+        manifest["name"] = name
+        tmp = manifest_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(manifest, f)
+        os.replace(tmp, manifest_path)
+
+    try:
+        if fcntl:
+            with open(lock_path, "a") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    _do_update()
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        else:
+            _do_update()
+    except Exception:
+        pass
+
+
 def _prune_old_replays(current_dir: str | None) -> None:
     """Delete oldest replay directories when count exceeds REPLAY_KEEP."""
     tmp = tempfile.gettempdir()
@@ -1691,6 +1728,8 @@ async def handle_session(client: BrowserClient, args: list[str]) -> int:
     if subcmd == "new":
         session_id = await _create_session(params.get("name"))
         if session_id:
+            if params.get("name"):
+                _persist_session_name(session_id, params["name"])
             print(json.dumps({"session_id": session_id}))
         else:
             print("Error: could not create session", file=sys.stderr)
@@ -1699,6 +1738,8 @@ async def handle_session(client: BrowserClient, args: list[str]) -> int:
     elif subcmd == "spawn":
         session_id = await _create_session(params.get("name"))
         if session_id:
+            if params.get("name"):
+                _persist_session_name(session_id, params["name"])
             # Print export line that can be eval'd (shell-quoted for safety)
             from shlex import quote as _shquote
             print(f"export ZENRIPPLE_SESSION_ID={_shquote(session_id)}")
@@ -1731,6 +1772,10 @@ async def handle_session(client: BrowserClient, args: list[str]) -> int:
             return 1
         await client.connect()
         result = await client.command("set_session_name", {"name": name})
+        # Persist name to manifest.json so it survives browser restarts
+        session_id = client.session_id or SESSION_ID
+        if session_id:
+            _persist_session_name(session_id, name)
         print(json.dumps(result, indent=2))
 
     else:

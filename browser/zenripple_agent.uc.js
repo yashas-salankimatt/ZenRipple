@@ -4407,9 +4407,11 @@
             }
           }
         } catch (_) {}
+        // Prefer manifest name (persisted by CLI), fall back to tool_log scan
+        const finalName = manifest.name || sessionName;
         results.push({
           sessionId,
-          name: sessionName,
+          name: finalName,
           startedAt: manifest.started_at || '',
           toolCount,
           urls: [...urlSet],
