@@ -7359,12 +7359,14 @@
       const sessionsOut = await _runShellCommand(findCmd);
 
       let matchedPid = null;
+      let matchedCwd = '';
       for (const line of sessionsOut.trim().split('\n')) {
         if (!line.trim()) continue;
         try {
           const sess = JSON.parse(line);
           if (sess.sessionId === convoSessionId && sess.pid) {
             matchedPid = sess.pid;
+            matchedCwd = sess.cwd || '';
             break;
           }
         } catch (_) {}
@@ -7413,8 +7415,10 @@
         log('Dashboard: tmux send failed: ' + e);
       }
     } else if (convoSessionId) {
-      const resumeCmd = 'echo ' + _shellQuote(text) + ' | claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1';
-      log('Dashboard: sending via --resume fork: ' + resumeCmd.slice(0, 120));
+      // cd to the project directory so claude --resume can find the session
+      const cdPrefix = matchedCwd ? 'cd ' + _shellQuote(matchedCwd) + ' && ' : '';
+      const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) + ' | claude -p --resume ' + _shellQuote(convoSessionId) + ' --output-format text 2>&1';
+      log('Dashboard: sending via --resume fork: ' + resumeCmd.slice(0, 150));
       try {
         const response = await _runShellCommand(resumeCmd);
         log('Dashboard: resume response (' + response.length + ' chars): ' + response.slice(0, 200));
