@@ -7355,6 +7355,7 @@
     try {
       // Find all Claude PIDs
       const pgrepOut = await _runShellCommand('pgrep -x claude 2>/dev/null || true');
+      log('Dashboard claude-send: pgrep found: ' + pgrepOut.trim().split('\n').length + ' PIDs, convoPath=' + convoPath.slice(-60));
       const pids = pgrepOut.trim().split('\n').filter(Boolean);
 
       for (const pidStr of pids) {
@@ -7368,6 +7369,7 @@
         if (!cwd) continue;
         // Check if CWD matches the project
         const pathHash = cwd.replace(/[^a-zA-Z0-9-]/g, '-');
+        log('Dashboard claude-send: PID ' + pid + ' cwd=' + cwd.slice(-40) + ' pathHash match=' + convoPath.includes(pathHash));
         if (convoPath.includes(pathHash)) {
           // Found the Claude process — get its tmux pane
           const ttyOut = await _runShellCommand(
@@ -7423,27 +7425,26 @@
   }
 
   async function _runShellCommand(cmd) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
       file.initWithPath('/bin/sh');
       const proc = Cc['@mozilla.org/process/util;1'].createInstance(Ci.nsIProcess);
       proc.init(file);
 
-      const tmpFile = PathUtils.join(PathUtils.tempDir, 'zenripple_cmd_' + Date.now() + '.tmp');
-      const fullCmd = cmd + ' > ' + _shellQuote(tmpFile) + ' 2>&1';
+      const tmpFile = PathUtils.join(PathUtils.tempDir, 'zenripple_cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.tmp');
+      // Source user profile for PATH (claude binary location), redirect output to temp file
+      const fullCmd = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" ; ' +
+                      cmd + ' > ' + _shellQuote(tmpFile) + ' 2>&1';
 
       proc.runAsync(['-c', fullCmd], 2, {
         observe: async (subject, topic) => {
-          if (topic === 'process-finished') {
-            try {
-              const output = await IOUtils.readUTF8(tmpFile);
-              try { await IOUtils.remove(tmpFile); } catch (_) {}
-              resolve(output);
-            } catch (_) {
-              resolve('');
-            }
-          } else {
-            reject(new Error('process failed'));
+          // Both 'process-finished' and 'process-failed' mean the process exited
+          try {
+            const output = await IOUtils.readUTF8(tmpFile);
+            try { await IOUtils.remove(tmpFile); } catch (_) {}
+            resolve(output);
+          } catch (_) {
+            resolve('');
           }
         }
       });
