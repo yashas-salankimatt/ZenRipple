@@ -1458,6 +1458,7 @@ def _persist_session_name(session_id: str, name: str) -> None:
         os.replace(tmp, manifest_path)
 
     try:
+        os.makedirs(replay_dir, exist_ok=True)
         if fcntl:
             with open(lock_path, "a") as lock_f:
                 fcntl.flock(lock_f, fcntl.LOCK_EX)
@@ -1467,8 +1468,8 @@ def _persist_session_name(session_id: str, name: str) -> None:
                     fcntl.flock(lock_f, fcntl.LOCK_UN)
         else:
             _do_update()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to persist session name: {e}", file=sys.stderr)
 
 
 def _prune_old_replays(current_dir: str | None) -> None:
@@ -2134,6 +2135,21 @@ async def main(argv: list[str] | None = None) -> int:
         # Initialize replay after connecting (need session ID)
         # For commands that don't connect, replay is skipped
         result_code = await _dispatch(command, args, client)
+
+        # Inject undelivered human→agent messages into output
+        # (same injection the MCP server does, so CLI users also get messages)
+        if command not in ("ping", "session", "replay-status", "approve", "notify"):
+            _session = client.session_id or SESSION_ID
+            if _session:
+                msgs = _read_undelivered_messages(_session)
+                if msgs:
+                    _mark_messages_delivered(_session, [m["id"] for m in msgs])
+                    parts = []
+                    for m in msgs:
+                        ts = m.get("timestamp", "")
+                        time_str = ts.split("T")[1][:8] if "T" in ts else ts
+                        parts.append(f"[HUMAN_MESSAGE at {time_str}] {m.get('text', '')}")
+                    print("\n".join(parts))
 
     except ConnectionError as e:
         print(f"Connection error: {e}", file=sys.stderr)

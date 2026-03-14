@@ -7557,6 +7557,10 @@
     const approvalsEl = _dashboardModal?.querySelector('#zd-approvals');
     if (!approvalsEl) return;
 
+    // Don't rebuild if user has the deny input open — it would destroy their typed text
+    const openDenyInput = approvalsEl.querySelector('.zd-deny-input-wrapper.visible');
+    if (openDenyInput) return;
+
     let entries = [];
     try {
       const content = await IOUtils.readUTF8(approvalsPath);
