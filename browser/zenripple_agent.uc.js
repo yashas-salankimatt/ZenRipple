@@ -9515,6 +9515,430 @@
   }
 
   // ============================================
+  // DASHBOARD TAB PAGES (resource:// based)
+  // ============================================
+
+  const DASHBOARD_PAGE_URL = 'resource://zenripple-pages/dashboard.html';
+  const SESSION_PAGE_URL = 'resource://zenripple-pages/session.html';
+
+  // Register resource://zenripple-pages/ pointing to the pages directory
+  function _registerPagesResource() {
+    try {
+      const pagesDir = Services.dirsvc.get('UChrm', Ci.nsIFile);
+      pagesDir.append('JS');
+      pagesDir.append('pages');
+      if (!pagesDir.exists()) {
+        // Try Sine layout
+        const sineDir = Services.dirsvc.get('UChrm', Ci.nsIFile);
+        sineDir.append('sine-mods');
+        sineDir.append('zenripple');
+        sineDir.append('JS');
+        sineDir.append('pages');
+        if (sineDir.exists()) {
+          pagesDir.initWithFile(sineDir);
+        }
+      }
+      const resProto = Services.io.getProtocolHandler('resource').QueryInterface(Ci.nsIResProtocolHandler);
+      resProto.setSubstitution('zenripple-pages', Services.io.newFileURI(pagesDir));
+      log('Registered resource://zenripple-pages/ -> ' + pagesDir.path);
+    } catch (e) {
+      log('Failed to register pages resource: ' + e);
+    }
+  }
+
+  // Find or create the pinned dashboard overview tab
+  async function _ensureDashboardOverviewTab() {
+    const wsId = await ensureAgentWorkspace();
+    if (!wsId) return null;
+
+    // Check existing tabs for the dashboard page
+    for (const tab of gBrowser.tabs) {
+      const url = tab.linkedBrowser?.currentURI?.spec || '';
+      if (url.startsWith(DASHBOARD_PAGE_URL) || url === DASHBOARD_PAGE_URL) {
+        if (!tab.pinned) gBrowser.pinTab(tab);
+        return tab;
+      }
+    }
+
+    // Create new tab
+    const tab = gBrowser.addTab(DASHBOARD_PAGE_URL, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+    if (wsId && gZenWorkspaces) {
+      gZenWorkspaces.moveTabToWorkspace(tab, wsId);
+    }
+    gBrowser.pinTab(tab);
+    log('Dashboard overview tab created and pinned');
+    return tab;
+  }
+
+  // Open a session detail tab
+  async function _openSessionDetailTab(sessionId) {
+    const wsId = await ensureAgentWorkspace();
+    const url = SESSION_PAGE_URL + '?id=' + encodeURIComponent(sessionId);
+
+    // Check if already open
+    for (const tab of gBrowser.tabs) {
+      const tabUrl = tab.linkedBrowser?.currentURI?.spec || '';
+      if (tabUrl === url) {
+        gBrowser.selectedTab = tab;
+        return tab;
+      }
+    }
+
+    const tab = gBrowser.addTab(url, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+    if (wsId && gZenWorkspaces) {
+      gZenWorkspaces.moveTabToWorkspace(tab, wsId);
+    }
+    gBrowser.selectedTab = tab;
+    return tab;
+  }
+
+  // Open a merged conversation tab
+  async function _openMergedDetailTab(convoPath) {
+    const wsId = await ensureAgentWorkspace();
+    const url = SESSION_PAGE_URL + '?merged=' + encodeURIComponent(convoPath);
+
+    for (const tab of gBrowser.tabs) {
+      const tabUrl = tab.linkedBrowser?.currentURI?.spec || '';
+      if (tabUrl === url) {
+        gBrowser.selectedTab = tab;
+        return tab;
+      }
+    }
+
+    const tab = gBrowser.addTab(url, {
+      triggeringPrincipal: Services.scriptSecurityManager.getSystemPrincipal(),
+    });
+    if (wsId && gZenWorkspaces) {
+      gZenWorkspaces.moveTabToWorkspace(tab, wsId);
+    }
+    gBrowser.selectedTab = tab;
+    return tab;
+  }
+
+  // ── Message Bridge: Chrome ↔ Content ──
+
+  function _setupDashboardBridge() {
+    // Listen for messages from dashboard/session pages
+    window.addEventListener('message', async (event) => {
+      if (event.data?.type !== 'zenripple-request') return;
+      const { id, method, params } = event.data;
+      const source = event.source;
+      if (!id || !method || !source) return;
+
+      try {
+        const result = await _handleBridgeMethod(method, params || {});
+        source.postMessage({ type: 'zenripple-response', id, result }, '*');
+      } catch (e) {
+        source.postMessage({ type: 'zenripple-response', id, error: String(e) }, '*');
+      }
+    });
+
+    // Also listen via the browser's message manager for content→chrome
+    // (postMessage from resource:// pages may not reach the chrome window directly)
+    gBrowser.tabContainer.addEventListener('TabOpen', (e) => {
+      _setupBridgeForTab(e.target);
+    });
+    // Setup bridge for already-open tabs
+    for (const tab of gBrowser.tabs) _setupBridgeForTab(tab);
+
+    log('Dashboard bridge listener registered');
+  }
+
+  function _setupBridgeForTab(tab) {
+    if (!tab?.linkedBrowser) return;
+    try {
+      const mm = tab.linkedBrowser.messageManager;
+      if (!mm || mm._zenrippleBridgeSetup) return;
+      mm._zenrippleBridgeSetup = true;
+
+      // Inject a content script that relays postMessage to/from chrome
+      mm.addMessageListener('ZenRipple:Request', async (msg) => {
+        const { id, method, params } = msg.data;
+        try {
+          const result = await _handleBridgeMethod(method, params || {});
+          mm.sendAsyncMessage('ZenRipple:Response', { id, result });
+        } catch (e) {
+          mm.sendAsyncMessage('ZenRipple:Response', { id, error: String(e) });
+        }
+      });
+
+      // When the page loads, inject bridge relay script
+      mm.addMessageListener('DOMContentLoaded', () => {
+        const url = tab.linkedBrowser?.currentURI?.spec || '';
+        if (url.startsWith('resource://zenripple-pages/')) {
+          _injectBridgeRelay(mm);
+        }
+      });
+    } catch (e) {
+      // Not all tabs support message manager
+    }
+  }
+
+  function _injectBridgeRelay(mm) {
+    try {
+      mm.loadFrameScript('data:,(' + encodeURIComponent(`
+        function relay() {
+          // Content → Chrome: forward postMessage requests
+          content.addEventListener('message', function(e) {
+            if (e.data && e.data.type === 'zenripple-request') {
+              sendAsyncMessage('ZenRipple:Request', e.data);
+            }
+          });
+          // Chrome → Content: forward responses back
+          addMessageListener('ZenRipple:Response', function(msg) {
+            content.postMessage(msg.data, '*');
+          });
+          // Signal that bridge is ready
+          content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
+        }
+        relay();
+      `) + ')', false);
+    } catch (e) {
+      log('Bridge relay injection failed: ' + e);
+    }
+  }
+
+  // ── Bridge Method Dispatcher ──
+
+  async function _handleBridgeMethod(method, params) {
+    switch (method) {
+      case 'ping':
+        return { ok: true };
+
+      case 'getSessionCards':
+        return await gatherSessionCardData();
+
+      case 'getSessionInfo': {
+        const sid = params.sessionId;
+        const session = sessions.get(sid);
+        let name = session?.name || '';
+        if (!name) {
+          try {
+            const manifest = JSON.parse(await IOUtils.readUTF8(PathUtils.join(_replayDirForSession(sid), 'manifest.json')));
+            name = manifest.name || '';
+          } catch (_) {}
+        }
+        return { name: name || sid?.slice(0, 12), status: computeSessionStatus(sid) };
+      }
+
+      case 'getSessionData': {
+        const sid = params.sessionId;
+        const replayDir = _replayDirForSession(sid);
+        const result = { replayEntries: [], conversationEntries: [], approvals: [], messages: [], status: '' };
+
+        // Replay entries
+        try {
+          const content = await IOUtils.readUTF8(PathUtils.join(replayDir, 'tool_log.jsonl'));
+          for (const line of content.trim().split('\n').filter(Boolean)) {
+            try {
+              const entry = JSON.parse(line);
+              entry._replayDir = replayDir;
+              result.replayEntries.push(entry);
+            } catch (_) {}
+          }
+          result.replayEntries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+        } catch (_) {}
+
+        // Conversation
+        try {
+          const convoPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim();
+          if (convoPath) {
+            const convoContent = await IOUtils.readUTF8(convoPath);
+            // Read last 2MB for large files
+            const maxRead = 2 * 1024 * 1024;
+            let text = convoContent;
+            if (convoContent.length > maxRead) {
+              text = convoContent.slice(-maxRead);
+              const nl = text.indexOf('\n');
+              if (nl >= 0) text = text.slice(nl + 1);
+            }
+            for (const line of text.trim().split('\n').filter(Boolean)) {
+              try { result.conversationEntries.push(JSON.parse(line)); } catch (_) {}
+            }
+          }
+        } catch (_) {}
+
+        // Approvals
+        try {
+          const content = await IOUtils.readUTF8(PathUtils.join(replayDir, 'approvals.jsonl'));
+          for (const line of content.trim().split('\n').filter(Boolean)) {
+            try { result.approvals.push(JSON.parse(line)); } catch (_) {}
+          }
+        } catch (_) {}
+
+        // Messages
+        try {
+          const content = await IOUtils.readUTF8(PathUtils.join(replayDir, 'messages.jsonl'));
+          for (const line of content.trim().split('\n').filter(Boolean)) {
+            try { result.messages.push(JSON.parse(line)); } catch (_) {}
+          }
+        } catch (_) {}
+
+        result.status = computeSessionStatus(sid);
+        return result;
+      }
+
+      case 'getMergedSessionData': {
+        const convoPath = params.convoPath;
+        // Find all sessions sharing this conversation
+        const allCards = await gatherSessionCardData();
+        const matchingCards = allCards.filter(c => c.conversationPath === convoPath);
+        const sessionIds = matchingCards.map(c => c.sessionId);
+
+        const result = { replayEntries: [], conversationEntries: [], approvals: [], messages: [], status: '' };
+
+        // Merged replay entries
+        for (const sid of sessionIds) {
+          const replayDir = _replayDirForSession(sid);
+          const session = sessions.get(sid);
+          const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+          const name = session?.name || sid.slice(0, 12);
+          try {
+            const content = await IOUtils.readUTF8(PathUtils.join(replayDir, 'tool_log.jsonl'));
+            for (const line of content.trim().split('\n').filter(Boolean)) {
+              try {
+                const entry = JSON.parse(line);
+                entry._sourceSessionId = sid;
+                entry._sourceColor = color;
+                entry._sourceName = name;
+                entry._sourceReplayDir = replayDir;
+                result.replayEntries.push(entry);
+              } catch (_) {}
+            }
+          } catch (_) {}
+        }
+        result.replayEntries.sort((a, b) => {
+          const tA = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+          const tB = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+          return tA !== tB ? tA - tB : (a.seq ?? 0) - (b.seq ?? 0);
+        });
+
+        // Conversation from first session
+        if (sessionIds.length > 0) {
+          const rd = _replayDirForSession(sessionIds[0]);
+          try {
+            const cp = (await IOUtils.readUTF8(PathUtils.join(rd, 'conversation.link'))).trim();
+            if (cp) {
+              const cc = await IOUtils.readUTF8(cp);
+              const maxRead = 2 * 1024 * 1024;
+              let text = cc;
+              if (cc.length > maxRead) {
+                text = cc.slice(-maxRead);
+                const nl = text.indexOf('\n');
+                if (nl >= 0) text = text.slice(nl + 1);
+              }
+              for (const line of text.trim().split('\n').filter(Boolean)) {
+                try { result.conversationEntries.push(JSON.parse(line)); } catch (_) {}
+              }
+            }
+          } catch (_) {}
+        }
+
+        return result;
+      }
+
+      case 'getScreenshot': {
+        const { replayDir, filename } = params;
+        if (!filename || !replayDir) return { url: null };
+        if (filename.includes('/') || filename.includes('..')) return { url: null };
+        try {
+          const filepath = PathUtils.join(replayDir, filename);
+          const bytes = await IOUtils.read(filepath);
+          const blob = new Blob([bytes], { type: 'image/jpeg' });
+          // Create object URL in chrome context — need to transfer to content
+          // Actually, send as base64 data URL instead
+          const b64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+          return { url: 'data:image/jpeg;base64,' + b64 };
+        } catch (_) {
+          return { url: null };
+        }
+      }
+
+      case 'sendHumanMessage': {
+        const { sessionId, text } = params;
+        const replayDir = _replayDirForSession(sessionId);
+        const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
+        const message = {
+          id: 'msg_' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+          direction: 'human_to_agent',
+          text,
+          timestamp: new Date().toISOString(),
+        };
+        try {
+          let existing = '';
+          try { existing = await IOUtils.readUTF8(messagesPath); } catch (_) {}
+          await IOUtils.writeUTF8(messagesPath, existing + JSON.stringify(message) + '\n');
+        } catch (e) { throw new Error('Write failed: ' + e); }
+        return { sent: true };
+      }
+
+      case 'resolveApproval': {
+        const { sessionId, approvalId, status, message } = params;
+        const replayDir = _replayDirForSession(sessionId);
+        const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
+        const resolution = { id: approvalId, status, resolved_at: new Date().toISOString() };
+        if (message) resolution.message = message;
+        try {
+          let existing = '';
+          try { existing = await IOUtils.readUTF8(approvalsPath); } catch (_) {}
+          await IOUtils.writeUTF8(approvalsPath, existing + JSON.stringify(resolution) + '\n');
+        } catch (e) { throw new Error('Write failed: ' + e); }
+        return { resolved: true };
+      }
+
+      case 'sendToClaudeCode': {
+        const { sessionId, text } = params;
+        // Delegate to existing _sendToClaudeCode logic
+        // For now, just use the tmux/resume path directly
+        const { convoSessionId } = await _getConvoInfo(sessionId);
+        if (!convoSessionId) throw new Error('No conversation link');
+
+        const info = await _detectClaudeProcess(convoSessionId);
+        if (info.tmuxPane) {
+          await _runShellCommand('tmux send-keys -l -t ' + info.tmuxPane + ' ' + _shellQuote(text));
+          await _runShellCommand('tmux send-keys -t ' + info.tmuxPane + ' Enter');
+          return { method: 'tmux', pane: info.tmuxPane };
+        }
+        // Fallback: resume fork
+        const cdPrefix = info.cwd ? 'cd ' + _shellQuote(info.cwd) + ' && ' : '';
+        const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
+          ' | claude -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
+          ' --output-format text 2>&1';
+        const response = await _runShellCommand(resumeCmd);
+        return { method: 'resume', response: response.slice(0, 500) };
+      }
+
+      case 'stopClaude': {
+        await _stopClaude();
+        return { stopped: true };
+      }
+
+      case 'openSessionTab': {
+        await _openSessionDetailTab(params.sessionId);
+        return { opened: true };
+      }
+
+      case 'openMergedTab': {
+        await _openMergedDetailTab(params.convoPath);
+        return { opened: true };
+      }
+
+      case 'openDashboardTab': {
+        const tab = await _ensureDashboardOverviewTab();
+        if (tab) gBrowser.selectedTab = tab;
+        return { opened: true };
+      }
+
+      default:
+        throw new Error('Unknown bridge method: ' + method);
+    }
+  }
+
+  // ============================================
   // INITIALIZATION
   // ============================================
 
@@ -9549,6 +9973,17 @@
       setupReplayShortcut();
       setupReplayContextMenu();
       setupDashboardShortcut();
+      _registerPagesResource();
+      _setupDashboardBridge();
+
+      // Auto-create pinned dashboard tab (deferred for workspace init)
+      setTimeout(async () => {
+        try {
+          await _ensureDashboardOverviewTab();
+        } catch (e) {
+          log('Dashboard tab auto-create failed: ' + e);
+        }
+      }, 3000);
 
       log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
     } catch (e) {

@@ -283,6 +283,11 @@ install_sine_mod() {
     cp "$SCRIPT_DIR/browser/zenripple_agent.uc.js" "$mod_js_dir/zenripple_agent.uc.js"
     echo -e "  ${GREEN}+${NC} Installed zenripple_agent.uc.js (Sine mod)"
 
+    # Dashboard pages (served via resource://zenripple-pages/)
+    mkdir -p "$mod_js_dir/pages"
+    cp "$SCRIPT_DIR/browser/pages/"* "$mod_js_dir/pages/" 2>/dev/null
+    echo -e "  ${GREEN}+${NC} Installed dashboard pages"
+
     # Actor files must stay in chrome/JS/actors/ (loaded via resource:// URI from UChrm)
     mkdir -p "$ACTORS_DIR"
     cp "$SCRIPT_DIR/browser/actors/ZenRippleAgentChild.sys.mjs" "$ACTORS_DIR/ZenRippleAgentChild.sys.mjs"
@@ -350,6 +355,11 @@ install_fxautoconfig() {
     fi
 
     cp "$SCRIPT_DIR/browser/zenripple_agent.uc.js" "$JS_DIR/zenripple_agent.uc.js"
+
+    # Dashboard pages
+    mkdir -p "$JS_DIR/pages"
+    cp "$SCRIPT_DIR/browser/pages/"* "$JS_DIR/pages/" 2>/dev/null
+    echo -e "  ${GREEN}+${NC} Installed dashboard pages"
     echo -e "  ${GREEN}+${NC} Installed zenripple_agent.uc.js (fx-autoconfig)"
 
     cp "$SCRIPT_DIR/browser/actors/ZenRippleAgentChild.sys.mjs" "$ACTORS_DIR/ZenRippleAgentChild.sys.mjs"
