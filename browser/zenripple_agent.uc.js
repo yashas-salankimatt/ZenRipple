@@ -6491,6 +6491,9 @@
   let _dashboardCurrentScreenshotURL = null;
   let _dashboardConvoFileSize = 0; // Track conversation file size for incremental updates
   let _dashboardReplayFileSize = 0; // Track replay log file size for incremental updates
+  let _dashboardConvoReadBytes = 2 * 1024 * 1024; // How many bytes from end to read (grows on scroll-up)
+  const _CONVO_CHUNK_SIZE = 2 * 1024 * 1024; // 2MB per chunk
+  let _dashboardConvoHasMore = false; // Whether there are more entries to load
 
   function _sanitizeSessionId(id) {
     return (id || '').replace(/[^a-zA-Z0-9_-]/g, '');
@@ -6875,7 +6878,7 @@
     }
 
     // Load data
-    _dashboardRenderWindow = 200; // Reset on session switch
+    _dashboardConvoReadBytes = _CONVO_CHUNK_SIZE; // Reset on session switch
     await _loadDetailData(sessionId);
     _setupConversationScrollLoader();
 
@@ -6952,21 +6955,28 @@
 
   // ── Scroll-up lazy loading for conversation ──
 
-  let _dashboardRenderWindow = 200; // How many entries to render from the end
+  let _dashboardLoadingMore = false;
 
   function _setupConversationScrollLoader() {
     const scrollEl = _dashboardModal?.querySelector('#zd-conversation');
     if (!scrollEl) return;
 
-    scrollEl.addEventListener('scroll', () => {
-      // When user scrolls near the top, load more entries
-      if (scrollEl.scrollTop < 100 && _dashboardConversationEntries.length > _dashboardRenderWindow) {
+    scrollEl.addEventListener('scroll', async () => {
+      // When user scrolls near the top and there's more to load
+      if (scrollEl.scrollTop < 100 && _dashboardConvoHasMore && !_dashboardLoadingMore) {
+        _dashboardLoadingMore = true;
         const oldHeight = scrollEl.scrollHeight;
-        _dashboardRenderWindow = Math.min(_dashboardConversationEntries.length, _dashboardRenderWindow + 200);
-        _renderConversation();
+
+        // Increase the read window and re-load
+        _dashboardConvoReadBytes += _CONVO_CHUNK_SIZE;
+        _dashboardConvoFileSize = 0; // Force re-read
+        await _loadConversation(_dashboardDetailSession);
+        _buildSyncMap();
+
         // Preserve scroll position after prepending content
         const newHeight = scrollEl.scrollHeight;
         scrollEl.scrollTop += (newHeight - oldHeight);
+        _dashboardLoadingMore = false;
       }
     });
   }
@@ -7148,28 +7158,29 @@
     }
 
     _dashboardConversationEntries = [];
+    _dashboardConvoHasMore = false;
     try {
-      // For large files (>2MB), read only the last portion to avoid choking
-      // the browser. 2MB of JSONL is roughly 200-500 messages — plenty for
-      // the dashboard view.
-      const MAX_READ_BYTES = 2 * 1024 * 1024;
       let content;
-      if (_dashboardConvoFileSize > MAX_READ_BYTES) {
+      if (_dashboardConvoFileSize > _dashboardConvoReadBytes) {
         // Read the tail of the file
-        const bytes = await IOUtils.read(conversationPath, { offset: _dashboardConvoFileSize - MAX_READ_BYTES });
+        const readOffset = _dashboardConvoFileSize - _dashboardConvoReadBytes;
+        const bytes = await IOUtils.read(conversationPath, { offset: readOffset });
         content = new TextDecoder().decode(bytes);
         // Skip the first partial line
         const firstNewline = content.indexOf('\n');
         if (firstNewline >= 0) content = content.slice(firstNewline + 1);
-        log('Dashboard: large conversation (' + Math.round(_dashboardConvoFileSize / 1024) + 'KB), reading last ' + Math.round(MAX_READ_BYTES / 1024) + 'KB');
+        _dashboardConvoHasMore = true;
+        log('Dashboard: large conversation (' + Math.round(_dashboardConvoFileSize / 1024) + 'KB), reading last ' + Math.round(_dashboardConvoReadBytes / 1024) + 'KB');
       } else {
         content = await IOUtils.readUTF8(conversationPath);
+        _dashboardConvoHasMore = false;
       }
       const lines = content.trim().split('\n').filter(Boolean);
       for (const line of lines) {
         try { _dashboardConversationEntries.push(JSON.parse(line)); } catch (_) {}
       }
-      log('Dashboard: parsed ' + _dashboardConversationEntries.length + ' conversation entries');
+      log('Dashboard: parsed ' + _dashboardConversationEntries.length + ' conversation entries' +
+          (_dashboardConvoHasMore ? ' (more available)' : ''));
     } catch (e) {
       log('Dashboard: failed to read conversation file (' + Math.round(_dashboardConvoFileSize / 1024) + 'KB): ' + e);
     }
@@ -7193,11 +7204,9 @@
     let html = '';
     let blockIdx = 0;
 
-    // Render a window of entries from the end; scroll-up loads more
-    const startIdx = Math.max(0, _dashboardConversationEntries.length - _dashboardRenderWindow);
-    if (startIdx > 0) {
-      html += `<div class="zd-load-more" id="zd-load-more">\u2191 ${startIdx} earlier entries \u2014 scroll up to load</div>`;
-      blockIdx = startIdx;
+    // Show indicator if there are earlier entries not yet loaded
+    if (_dashboardConvoHasMore) {
+      html += `<div class="zd-load-more">\u2191 Scroll up to load earlier messages</div>`;
     }
 
     for (let ei = startIdx; ei < _dashboardConversationEntries.length; ei++) {
@@ -7920,6 +7929,8 @@
     _dashboardSyncMap.clear();
     _dashboardConvoFileSize = 0;
     _dashboardReplayFileSize = 0;
+    _dashboardConvoReadBytes = _CONVO_CHUNK_SIZE;
+    _dashboardConvoHasMore = false;
     _toolResultMap.clear();
 
     log('Dashboard closed');
@@ -7954,22 +7965,31 @@
 
     // If user is typing in a contenteditable input, let most keys through
     const inInput = _isDashboardInput(e);
-    if (e.key === 'Backspace') {
-      log('Dashboard key: Backspace, inInput=' + inInput +
-          ', target=' + (e.target?.tagName || '?') + '.' + (e.target?.className || '') +
-          ', activeEl=' + (document.activeElement?.tagName || '?') + '.' + (document.activeElement?.className || '') +
-          ', isContentEditable=' + (document.activeElement?.isContentEditable) +
-          ', contenteditable=' + (document.activeElement?.getAttribute?.('contenteditable')));
-    }
     if (inInput) {
-      // Only intercept Escape (to blur)
       if (e.key === 'Escape') {
-        e.target.blur();
+        document.activeElement?.blur?.();
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
+        return;
       }
-      // All other keys (including Backspace, Enter) pass through to the input
+      // In Firefox chrome context, Backspace/Delete events get intercepted by
+      // chrome-level handlers (history navigation, ZenLeap, etc.) even though
+      // we don't block them. Handle them explicitly with execCommand, then
+      // stop the event from reaching those other handlers.
+      if (e.key === 'Backspace') {
+        document.execCommand('delete', false);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (e.key === 'Delete') {
+        document.execCommand('forwardDelete', false);
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      // All other keys pass through to the contenteditable input natively
       return;
     }
 
