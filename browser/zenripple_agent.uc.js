@@ -6996,11 +6996,24 @@
       timestamp: new Date().toISOString(),
     };
 
+    const line = JSON.stringify(message) + '\n';
+    log('Dashboard: sending human message to ' + sessionId + ': ' + text.slice(0, 50));
     try {
-      // Append-only write to avoid race conditions with CLI readers/writers
-      await IOUtils.writeUTF8(messagesPath, JSON.stringify(message) + '\n', { mode: 'append' });
+      // Read existing content and append (IOUtils.writeUTF8 append mode may not
+      // be supported in all Firefox/Zen builds)
+      let existing = '';
+      try { existing = await IOUtils.readUTF8(messagesPath); } catch (_) {}
+      await IOUtils.writeUTF8(messagesPath, existing + line);
+      log('Dashboard: message written to ' + messagesPath);
     } catch (e) {
       log('Dashboard: failed to write message: ' + e);
+      // Fallback: try with mode append
+      try {
+        await IOUtils.writeUTF8(messagesPath, line, { mode: 'append' });
+        log('Dashboard: message written (append fallback)');
+      } catch (e2) {
+        log('Dashboard: append fallback also failed: ' + e2);
+      }
     }
 
     // Refresh messages display
@@ -7295,8 +7308,27 @@
             } else if (block.type === 'tool_use') {
               const isZenripple = _isZenrippleTool(block.name, block.input);
               const toolClass = isZenripple ? 'zd-zenripple-tool' : 'zd-other-tool';
-              const inputStr = block.input ? (typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)) : '';
+              const friendlyName = isZenripple ? _friendlyToolName(block.name) : (block.name || '?');
               const subtitle = _toolUseSubtitle(block.name, block.input);
+
+              // For Bash tool, show the command inline
+              let inlineContent = '';
+              if (block.name === 'Bash' && block.input) {
+                const cmd = typeof block.input === 'string' ? block.input : (block.input.command || '');
+                if (cmd) {
+                  inlineContent = `<div class="zd-tool-json" style="margin-top:4px">$ ${escapeHTML(cmd.slice(0, 500))}</div>`;
+                }
+              } else if (block.name === 'Edit' && block.input) {
+                const file = (block.input.file_path || '').split('/').pop();
+                const old = (block.input.old_string || '').slice(0, 100);
+                const nw = (block.input.new_string || '').slice(0, 100);
+                if (file) {
+                  inlineContent = `<div class="zd-tool-json" style="margin-top:4px"><span class="zr-key">${escapeHTML(file)}</span>\n<span style="color:var(--zr-error)">- ${escapeHTML(old)}${old.length >= 100 ? '...' : ''}</span>\n<span style="color:var(--zr-success)">+ ${escapeHTML(nw)}${nw.length >= 100 ? '...' : ''}</span></div>`;
+                }
+              }
+
+              // Expandable JSON args (hidden by default for non-Bash tools)
+              const inputStr = block.input ? (typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)) : '';
 
               // Find matching tool_result
               const resultEntry = _findToolResult(block.id);
@@ -7305,12 +7337,15 @@
 
               html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-use-id="${escapeHTML(block.id || '')}">
                 <div class="zd-tool-header" data-toggle="tool">
-                  <span class="zd-tool-name">${escapeHTML(block.name || '')}</span>
+                  <span class="zd-tool-name">${escapeHTML(friendlyName)}</span>
                   <span class="zd-tool-subtitle">${escapeHTML(subtitle)}</span>
+                  ${isError ? '<span class="zd-tool-result-dot error" style="margin-left:auto"></span>' : ''}
                   <span class="zd-tool-toggle">\u25B6</span>
                 </div>
+                ${inlineContent}
                 <div class="zd-tool-body">
-                  ${inputStr ? `<div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
+                  ${inputStr && !inlineContent ? `<div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
+                  ${inputStr && inlineContent ? `<div class="zd-tool-result-label">Full Args</div><div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
                   ${resultStr ? `
                     <div class="zd-tool-result-label">
                       <span class="zd-tool-result-dot ${isError ? 'error' : 'success'}"></span>
@@ -7417,8 +7452,9 @@
 
   function _isZenrippleTool(name, input) {
     if (!name) return false;
-    // MCP tools start with browser_
+    // MCP tools: browser_* or mcp__zenripple-browser__*
     if (name.startsWith('browser_')) return true;
+    if (name.includes('zenripple')) return true;
     // Bash commands containing zenripple
     if (name === 'Bash' && input) {
       const cmd = typeof input === 'string' ? input : (input.command || '');
@@ -7427,23 +7463,42 @@
     return false;
   }
 
+  function _friendlyToolName(name) {
+    if (!name) return '?';
+    // mcp__zenripple-browser__browser_click → click
+    if (name.includes('zenripple-browser__browser_')) {
+      return name.split('browser_').pop() || name;
+    }
+    // browser_click → click
+    if (name.startsWith('browser_')) return name.slice(8);
+    return name;
+  }
+
   function _toolUseSubtitle(name, input) {
     if (!input) return '';
-    if (typeof input === 'string') return input.slice(0, 60);
-    if (name === 'Bash') return (input.command || '').slice(0, 60);
-    if (name === 'Read') return (input.file_path || '').split('/').pop() || '';
-    if (name === 'Write') return (input.file_path || '').split('/').pop() || '';
-    if (name === 'Edit') return (input.file_path || '').split('/').pop() || '';
-    if (name === 'Grep') return (input.pattern || '').slice(0, 40);
-    if (name === 'Glob') return (input.pattern || '').slice(0, 40);
-    // For browser_ tools, try to get a summary
-    if (name.startsWith('browser_')) {
-      const bare = name.replace(/^browser_/, '');
+    if (typeof input === 'string') return input.slice(0, 80);
+    if (name === 'Bash') return (input.command || '').slice(0, 80);
+    if (name === 'Read') return (input.file_path || '');
+    if (name === 'Write') return (input.file_path || '');
+    if (name === 'Edit') {
+      const file = (input.file_path || '').split('/').pop() || '';
+      const old = (input.old_string || '').slice(0, 30);
+      return file + (old ? ' \u2192 ' + old + '...' : '');
+    }
+    if (name === 'Grep') return (input.pattern || '').slice(0, 50);
+    if (name === 'Glob') return (input.pattern || '').slice(0, 50);
+    if (name === 'Agent') return (input.description || input.prompt || '').slice(0, 60);
+    if (name === 'Skill') return (input.skill || '').slice(0, 40);
+    // For zenripple MCP tools
+    if (_isZenrippleTool(name, input)) {
+      const bare = _friendlyToolName(name);
       return toolCallSubtitle('browser_' + bare, input);
     }
     // Fallback: first short string value
-    for (const v of Object.values(input)) {
-      if (typeof v === 'string' && v.length > 0 && v.length <= 80) return v.slice(0, 60);
+    if (typeof input === 'object') {
+      for (const v of Object.values(input)) {
+        if (typeof v === 'string' && v.length > 0 && v.length <= 80) return v.slice(0, 60);
+      }
     }
     return '';
   }
@@ -7653,8 +7708,9 @@
     if (message) resolution.message = message;
 
     try {
-      // Append-only write to avoid race conditions with CLI readers
-      await IOUtils.writeUTF8(approvalsPath, JSON.stringify(resolution) + '\n', { mode: 'append' });
+      let existing = '';
+      try { existing = await IOUtils.readUTF8(approvalsPath); } catch (_) {}
+      await IOUtils.writeUTF8(approvalsPath, existing + JSON.stringify(resolution) + '\n');
     } catch (e) {
       log('Dashboard: failed to write approval resolution: ' + e);
     }
