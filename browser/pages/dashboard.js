@@ -112,6 +112,7 @@ const _mergedConvoPath = _params.get('merged') || '';
 let _replayEntries = [];
 let _conversationEntries = [];
 let _selectedReplayIdx = -1;
+let _followingLatest = true; // Track if user is following the latest entry
 let _pollTimer = null;
 let _lastReplayCount = -1;
 let _lastConvoCount = -1;
@@ -331,9 +332,14 @@ async function _loadSessionData() {
     // Only re-render replay if data changed
     if (data.replayEntries && data.replayEntries.length !== _lastReplayCount) {
       const isFirstLoad = _lastReplayCount < 0;
+      const hadNewEntries = data.replayEntries.length > _lastReplayCount;
       _replayEntries = data.replayEntries;
       _lastReplayCount = data.replayEntries.length;
-      _renderReplayList(isFirstLoad); // Auto-select latest on first load only
+      _renderReplayList(false);
+      // Auto-select latest only on first load OR if user is following latest and new entries arrived
+      if (isFirstLoad || (_followingLatest && hadNewEntries)) {
+        _selectReplayEntry(_replayEntries.length - 1);
+      }
     }
 
     // Load conversation with incremental reads
@@ -420,10 +426,14 @@ function _renderReplayList(autoSelectLatest = true) {
 
   for (let i = _replayEntries.length - 1; i >= 0; i--) {
     const entry = _replayEntries[i];
+    const toolName = (entry.tool || '').replace(/^browser_/, '');
+    const isZR = _isZenrippleTool(entry.tool, entry.args);
+
     const el = document.createElement('div');
-    el.className = 'zd-replay-entry' + (_selectedReplayIdx === i ? ' selected' : '');
+    el.className = 'zd-replay-entry' + (_selectedReplayIdx === i ? ' selected' : '') + (isZR ? ' zr-tool' : '');
     el.dataset.idx = String(i);
 
+    // Session color dot (merged view)
     if (entry._sourceColor) {
       const dot = document.createElement('span');
       dot.className = 'zd-replay-entry-session-dot';
@@ -431,22 +441,82 @@ function _renderReplayList(autoSelectLatest = true) {
       el.appendChild(dot);
     }
 
-    const seq = document.createElement('span');
-    seq.className = 'zd-replay-entry-seq';
-    seq.textContent = '#' + (entry.seq ?? i);
-    el.appendChild(seq);
+    // Seq + status dot
+    const seqDot = document.createElement('span');
+    seqDot.className = 'zd-replay-entry-seq';
+    seqDot.textContent = '#' + (entry.seq ?? i);
+    el.appendChild(seqDot);
 
-    const dot = document.createElement('span');
-    dot.className = 'zd-replay-entry-dot' + (entry.error ? ' error' : '');
-    el.appendChild(dot);
+    const statusDot = document.createElement('span');
+    statusDot.className = 'zd-replay-entry-dot' + (entry.error ? ' error' : '');
+    el.appendChild(statusDot);
 
-    const name = document.createElement('span');
-    name.className = 'zd-replay-entry-name';
-    name.textContent = (entry.tool || '').replace(/^browser_/, '');
-    el.appendChild(name);
+    // Main content column
+    const col = document.createElement('span');
+    col.className = 'zd-replay-entry-col';
+
+    const nameRow = document.createElement('span');
+    nameRow.className = 'zd-replay-entry-name';
+    nameRow.textContent = toolName;
+    col.appendChild(nameRow);
+
+    // Subtitle: show key arg or description
+    const subtitle = _toolSubtitle(entry.tool, entry.args);
+    if (subtitle) {
+      const sub = document.createElement('span');
+      sub.className = 'zd-replay-entry-subtitle';
+      sub.textContent = subtitle;
+      col.appendChild(sub);
+    }
+
+    el.appendChild(col);
+
+    // Duration + time
+    const meta = document.createElement('span');
+    meta.className = 'zd-replay-entry-meta';
+    const parts = [];
+    if (entry.duration_ms != null) parts.push(Math.round(entry.duration_ms) + 'ms');
+    parts.push(extractTime(entry.timestamp));
+    meta.textContent = parts.filter(Boolean).join(' · ');
+    el.appendChild(meta);
 
     el.addEventListener('click', () => _selectReplayEntry(i));
     listEl.appendChild(el);
+  }
+
+  function _isZenrippleTool(name, args) {
+    if (!name) return false;
+    if (name.startsWith('browser_') || name.includes('zenripple')) return true;
+    if (name === 'Bash' || name === 'bash') {
+      const cmd = args?.command || (typeof args === 'string' ? args : '');
+      return cmd.includes('zenripple');
+    }
+    return false;
+  }
+
+  function _toolSubtitle(tool, args) {
+    if (!args) return '';
+    if (typeof args === 'string') return args.slice(0, 50);
+    if (tool === 'Bash' || tool === 'bash') {
+      const cmd = (args.command || '').replace(/^source [^;]+;\s*/, '').slice(0, 60);
+      return cmd;
+    }
+    if (tool === 'Read') return (args.file_path || '').split('/').pop();
+    if (tool === 'Write') return (args.file_path || '').split('/').pop();
+    if (tool === 'Edit') return (args.file_path || '').split('/').pop();
+    if (tool === 'Grep') return (args.pattern || '').slice(0, 40);
+    if (tool === 'Glob') return (args.pattern || '').slice(0, 40);
+    // ZenRipple tools
+    const bare = (tool || '').replace(/^browser_/, '');
+    if (args.url) return args.url.replace(/^https?:\/\//, '').slice(0, 50);
+    if (args.description) return args.description.slice(0, 50);
+    if (args.index != null) return 'index ' + args.index;
+    if (args.text) return args.text.slice(0, 40);
+    if (args.expression) return args.expression.slice(0, 40);
+    for (const v of Object.values(args)) {
+      if (typeof v === 'string' && v.length > 0 && v.length <= 60) return v.slice(0, 50);
+    }
+    return '';
   }
 
   // Auto-select latest only on first load
@@ -460,6 +530,8 @@ function _renderReplayList(autoSelectLatest = true) {
 async function _selectReplayEntry(idx) {
   if (idx < 0 || idx >= _replayEntries.length) return;
   _selectedReplayIdx = idx;
+  // Track if user is following the latest entry
+  _followingLatest = (idx === _replayEntries.length - 1);
   const entry = _replayEntries[idx];
 
   // Update selection visuals + scroll into view
