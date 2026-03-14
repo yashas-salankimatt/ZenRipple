@@ -6933,9 +6933,8 @@
         if (url) _dashboardScreenshotCache.set(entry.screenshot, url);
       }
       if (url) {
-        if (_dashboardCurrentScreenshotURL && !_dashboardScreenshotCache.has(_dashboardCurrentScreenshotURL)) {
-          try { URL.revokeObjectURL(_dashboardCurrentScreenshotURL); } catch (_) {}
-        }
+        // Don't revoke here — cached URLs are reused across entry selection.
+        // All blob URLs are properly revoked by closeDashboardModal cleanup.
         _dashboardCurrentScreenshotURL = url;
         let img = ssContainer.querySelector('img');
         if (img) {
