@@ -9622,12 +9622,8 @@
   // ── Message Bridge: Chrome ↔ Content ──
 
   function _setupDashboardBridge() {
-    // Use a ProgressListener to detect when dashboard pages finish loading,
-    // then inject the bridge relay. This is more reliable than DOMContentLoaded
-    // message listener which has timing issues.
-
-    // Also poll existing tabs on a short interval to catch pages that
-    // loaded before the listener was registered
+    // Expose a bridge function on dashboard pages using Cu.exportFunction.
+    // This is the standard Firefox API for chrome→content function exposure.
     const _bridgedTabs = new WeakSet();
 
     function _tryInjectBridge(tab) {
@@ -9636,68 +9632,51 @@
       const url = tab.linkedBrowser.currentURI?.spec || '';
       if (!url.startsWith('resource://zenripple-pages/')) return;
 
-      try {
-        const mm = tab.linkedBrowser.messageManager;
-        if (!mm) return;
+      const win = tab.linkedBrowser.contentWindow;
+      if (!win || !win.document || win.document.readyState === 'uninitialized') return;
 
+      try {
         _bridgedTabs.add(tab);
 
-        // Set up chrome-side message listener
-        mm.addMessageListener('ZenRipple:Request', {
-          receiveMessage: async function(msg) {
-            const { id, method, params } = msg.data;
-            try {
-              const result = await _handleBridgeMethod(method, params || {});
-              mm.sendAsyncMessage('ZenRipple:Response', { type: 'zenripple-response', id, result });
-            } catch (e) {
-              mm.sendAsyncMessage('ZenRipple:Response', { type: 'zenripple-response', id, error: String(e) });
+        // Export bridge function: content calls __zenrippleBridge(method, paramsJSON, callback)
+        // The callback receives a JSON string with {result} or {error}
+        Cu.exportFunction(function(method, paramsStr, callback) {
+          const params = paramsStr ? JSON.parse(paramsStr) : {};
+          _handleBridgeMethod(method, params).then(
+            result => {
+              try { callback(JSON.stringify({ result })); } catch (_) {}
+            },
+            error => {
+              try { callback(JSON.stringify({ error: String(error) })); } catch (_) {}
             }
-          }
-        });
+          );
+        }, win, { defineAs: '__zenrippleBridge' });
 
-        // Inject content-side relay script
-        mm.loadFrameScript('data:,(' + encodeURIComponent(`
-          (function() {
-            content.addEventListener('message', function(e) {
-              if (e.data && e.data.type === 'zenripple-request') {
-                sendAsyncMessage('ZenRipple:Request', e.data);
-              }
-            });
-            addMessageListener('ZenRipple:Response', function(msg) {
-              content.postMessage(msg.data, '*');
-            });
-            // Signal bridge ready — retry to catch pages that load after frame script
-            function signalReady() {
-              content.postMessage({ type: 'zenripple-bridge-ready' }, '*');
-            }
-            signalReady();
-            content.setTimeout(signalReady, 200);
-            content.setTimeout(signalReady, 1000);
-            content.setTimeout(signalReady, 3000);
-          })();
-        `) + ')', true);
+        // Signal that bridge is ready
+        win.dispatchEvent(new win.CustomEvent('zenripple-bridge-ready'));
 
-        log('Dashboard bridge injected for tab: ' + url);
+        log('Dashboard bridge exported for tab: ' + url);
       } catch (e) {
-        log('Dashboard bridge injection failed: ' + e);
+        log('Dashboard bridge export failed: ' + e);
+        _bridgedTabs.delete(tab); // Allow retry
       }
     }
 
-    // Listen for new tabs
+    // Listen for new tabs and page loads
     gBrowser.tabContainer.addEventListener('TabOpen', (e) => {
-      // Delay slightly to let the tab navigate to its URL
       setTimeout(() => _tryInjectBridge(e.target), 500);
+      setTimeout(() => _tryInjectBridge(e.target), 1500);
     });
 
     // Check existing tabs
     for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
 
-    // Also poll periodically to catch tabs that loaded before listeners
+    // Poll to catch tabs that load after init
     let bridgePollCount = 0;
     const bridgePollTimer = setInterval(() => {
       for (const tab of gBrowser.tabs) _tryInjectBridge(tab);
       bridgePollCount++;
-      if (bridgePollCount > 20) clearInterval(bridgePollTimer); // Stop after 40s
+      if (bridgePollCount > 30) clearInterval(bridgePollTimer);
     }, 2000);
 
     log('Dashboard bridge listener registered');

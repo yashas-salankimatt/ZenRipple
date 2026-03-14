@@ -6,50 +6,35 @@
 // ── Bridge Client ──────────────────────────────────────────
 
 let _bridgeReady = false;
-let _pendingRequests = new Map(); // id → { resolve, reject, timeout }
-let _reqCounter = 0;
 
 function bridgeCall(method, params = {}) {
   return new Promise((resolve, reject) => {
-    const id = 'req_' + (++_reqCounter);
-    const timeout = setTimeout(() => {
-      _pendingRequests.delete(id);
-      reject(new Error('Bridge timeout: ' + method));
-    }, 30000);
-
-    _pendingRequests.set(id, { resolve, reject, timeout });
-
-    // Send to chrome context via window.postMessage
-    // The chrome script listens on the browser window and relays back
-    window.postMessage({
-      type: 'zenripple-request',
-      id,
-      method,
-      params,
-    }, '*');
+    if (typeof window.__zenrippleBridge !== 'function') {
+      reject(new Error('Bridge not ready'));
+      return;
+    }
+    try {
+      window.__zenrippleBridge(method, JSON.stringify(params), function(responseStr) {
+        try {
+          const { result, error } = JSON.parse(responseStr);
+          if (error) reject(new Error(error));
+          else resolve(result);
+        } catch (e) {
+          reject(new Error('Bridge parse error: ' + e));
+        }
+      });
+    } catch (e) {
+      reject(new Error('Bridge call error: ' + e));
+    }
   });
 }
 
-window.addEventListener('message', (event) => {
-  if (event.data?.type === 'zenripple-response') {
-    const { id, result, error } = event.data;
-    const pending = _pendingRequests.get(id);
-    if (pending) {
-      clearTimeout(pending.timeout);
-      _pendingRequests.delete(id);
-      if (error) {
-        pending.reject(new Error(error));
-      } else {
-        pending.resolve(result);
-      }
-    }
-  }
-
-  if (event.data?.type === 'zenripple-bridge-ready') {
-    _bridgeReady = true;
-    console.log('[ZenRipple] Bridge connected');
-    _init();
-  }
+// Listen for bridge-ready event from chrome
+window.addEventListener('zenripple-bridge-ready', () => {
+  if (_bridgeReady) return;
+  _bridgeReady = true;
+  console.log('[ZenRipple] Bridge connected via Cu.exportFunction');
+  _init();
 });
 
 // ── Utility Functions ──────────────────────────────────────
@@ -665,16 +650,20 @@ async function _init() {
   startPolling();
 }
 
-// If bridge is already ready (sync signal), init immediately
-// Otherwise wait for the 'zenripple-bridge-ready' message
-setTimeout(() => {
-  if (!_bridgeReady) {
-    // Try to ping the bridge
-    bridgeCall('ping').then(() => {
-      _bridgeReady = true;
-      _init();
-    }).catch(() => {
-      console.log('[ZenRipple] Waiting for bridge...');
-    });
+// If bridge is already available (exported before page JS loaded), init immediately
+// Otherwise wait for the 'zenripple-bridge-ready' CustomEvent
+function _tryConnect() {
+  if (_bridgeReady) return;
+  if (typeof window.__zenrippleBridge === 'function') {
+    _bridgeReady = true;
+    console.log('[ZenRipple] Bridge found (poll)');
+    _init();
+    return;
   }
-}, 500);
+  console.log('[ZenRipple] Waiting for bridge...');
+}
+// Poll a few times in case the event was missed
+setTimeout(_tryConnect, 300);
+setTimeout(_tryConnect, 1000);
+setTimeout(_tryConnect, 3000);
+setTimeout(_tryConnect, 5000);
