@@ -7641,14 +7641,17 @@
       const ceTime = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
       for (const block of msg.content) {
         if (block.type !== 'tool_use') continue;
-        // Extract zenripple subcommand from Bash commands
-        let zrCmd = '';
+        // Extract ALL zenripple subcommands from Bash commands (handles && chains)
+        let zrCmds = [];
         if (block.name === 'Bash' && block.input) {
           const cmd = typeof block.input === 'string' ? block.input : (block.input.command || '');
-          const m = cmd.match(/zenripple\s+(\S+)/);
-          if (m) zrCmd = m[1];
+          const re = /zenripple\s+(\S+)/g;
+          let m;
+          while ((m = re.exec(cmd)) !== null) {
+            zrCmds.push(m[1]);
+          }
         }
-        convoTools.push({ ci, ceTime, name: block.name, id: block.id, zrCmd });
+        convoTools.push({ ci, ceTime, name: block.name, id: block.id, zrCmds });
       }
     }
 
@@ -7664,15 +7667,25 @@
       let bestDelta = Infinity;
 
       for (const ct of convoTools) {
-        if (usedConvo.has(ct.id)) continue; // Already matched
+        // Allow multiple replay entries to match the same chained Bash command
+        // (don't skip via usedConvo for multi-command Bash calls)
+        const isChained = ct.zrCmds && ct.zrCmds.length > 1;
+        if (!isChained && usedConvo.has(ct.id)) continue;
+
         const delta = Math.abs(reTime - ct.ceTime);
-        if (delta > 5000) continue; // Must be within 5 seconds
+        // Chained commands can span several seconds — use wider window
+        const maxDelta = isChained ? 30000 : 5000;
+        if (delta > maxDelta) continue;
 
         // Check if tools match
         let matches = false;
-        if (ct.zrCmd && ct.zrCmd === reTool) matches = true; // zenripple fill → fill
-        else if (ct.name === 'Bash' && ct.zrCmd) matches = true; // Any zenripple bash
-        else if (ct.name === reTool) matches = true; // Direct name match
+        if (ct.zrCmds && ct.zrCmds.includes(reTool)) matches = true;
+        else if (ct.name === 'Bash' && ct.zrCmds && ct.zrCmds.length > 0) {
+          // For chained commands, also match if replay timestamp falls after
+          // the conversation timestamp (commands execute sequentially)
+          if (reTime >= ct.ceTime && delta < maxDelta) matches = true;
+        }
+        else if (ct.name === reTool) matches = true;
 
         if (matches && delta < bestDelta) {
           bestDelta = delta;
