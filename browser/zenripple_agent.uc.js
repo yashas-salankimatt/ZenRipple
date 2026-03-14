@@ -9833,6 +9833,37 @@
         return result;
       }
 
+      case 'getConversation': {
+        const { sessionId, readBytes } = params;
+        const replayDir = _replayDirForSession(sessionId);
+        let convoPath = '';
+        try { convoPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim(); } catch (_) {}
+        if (!convoPath) return { entries: [], hasMore: false, fileSize: 0 };
+
+        let fileSize = 0;
+        try { fileSize = (await IOUtils.stat(convoPath)).size; } catch (_) { return { entries: [], hasMore: false, fileSize: 0 }; }
+
+        const maxRead = readBytes || 2 * 1024 * 1024;
+        const entries = [];
+        let hasMore = false;
+        try {
+          let content;
+          if (fileSize > maxRead) {
+            const bytes = await IOUtils.read(convoPath, { offset: fileSize - maxRead });
+            content = new TextDecoder().decode(bytes);
+            const nl = content.indexOf('\n');
+            if (nl >= 0) content = content.slice(nl + 1);
+            hasMore = true;
+          } else {
+            content = await IOUtils.readUTF8(convoPath);
+          }
+          for (const line of content.trim().split('\n').filter(Boolean)) {
+            try { entries.push(JSON.parse(line)); } catch (_) {}
+          }
+        } catch (_) {}
+        return { entries, hasMore, fileSize };
+      }
+
       case 'getScreenshot': {
         const { replayDir, filename } = params;
         if (!filename || !replayDir) return { url: null };

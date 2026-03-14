@@ -113,12 +113,18 @@ let _replayEntries = [];
 let _conversationEntries = [];
 let _selectedReplayIdx = -1;
 let _pollTimer = null;
-let _lastReplayCount = -1; // Track to avoid re-render on unchanged data
+let _lastReplayCount = -1;
 let _lastConvoCount = -1;
 let _screenshotCache = new Map();
 let _scrollSyncRafId = null;
 let _scrollSyncPaused = false;
 const _POLL_MS = 2000;
+
+// Lazy loading
+let _convoReadBytes = 2 * 1024 * 1024; // Start with 2MB from end
+const _CONVO_CHUNK_SIZE = 2 * 1024 * 1024;
+let _convoHasMore = false;
+let _convoLoadingMore = false;
 
 // Playback
 let _playbackTimer = null;
@@ -297,10 +303,12 @@ async function initSessionDetail() {
   _setupSplitters();
 
   // Load data
+  _convoReadBytes = _CONVO_CHUNK_SIZE; // Reset on new session
   await _loadSessionData();
 
-  // Scroll sync
+  // Scroll sync + lazy loading
   _setupScrollSync();
+  _setupScrollUpLoader();
 }
 
 function _wireInput(inputId, sendId, handler) {
@@ -322,22 +330,85 @@ async function _loadSessionData() {
 
     // Only re-render replay if data changed
     if (data.replayEntries && data.replayEntries.length !== _lastReplayCount) {
+      const isFirstLoad = _lastReplayCount < 0;
       _replayEntries = data.replayEntries;
       _lastReplayCount = data.replayEntries.length;
-      _renderReplayList(false); // false = don't auto-select latest
+      _renderReplayList(isFirstLoad); // Auto-select latest on first load only
     }
-    // Only re-render conversation if data changed
-    if (data.conversationEntries && data.conversationEntries.length !== _lastConvoCount) {
-      _conversationEntries = data.conversationEntries;
-      _lastConvoCount = data.conversationEntries.length;
-      _renderConversation();
-    }
+
+    // Load conversation with incremental reads
+    await _loadConversation();
+
     if (data.approvals) _renderApprovals(data.approvals);
     if (data.messages) _renderMessages(data.messages);
 
     const footer = document.getElementById('zd-footer');
     if (footer) footer.innerHTML = `<span class="zd-footer-item">${_replayEntries.length} calls</span><span class="zd-footer-item">${escapeHTML(data.status||'')}</span>`;
   } catch (e) { console.error('[ZenRipple] Load error:', e); }
+}
+
+async function _loadConversation() {
+  try {
+    const sid = _pageType === 'merged' ? '' : _sessionId;
+    const data = await bridgeCall('getConversation', { sessionId: sid || _sessionId, readBytes: _convoReadBytes });
+    if (!data) return;
+
+    // Only re-render if count changed
+    if (data.entries && data.entries.length !== _lastConvoCount) {
+      _conversationEntries = data.entries;
+      _lastConvoCount = data.entries.length;
+      _convoHasMore = data.hasMore;
+      _renderConversation();
+    }
+  } catch (_) {}
+}
+
+// ── Scroll-Up Lazy Loading ─────────────────────────────────
+
+function _setupScrollUpLoader() {
+  const scrollEl = document.getElementById('zd-conversation');
+  if (!scrollEl) return;
+  scrollEl.addEventListener('scroll', async () => {
+    if (scrollEl.scrollTop < 100 && _convoHasMore && !_convoLoadingMore) {
+      _convoLoadingMore = true;
+      const oldHeight = scrollEl.scrollHeight;
+      _convoReadBytes += _CONVO_CHUNK_SIZE;
+      _lastConvoCount = -1; // Force re-render
+      await _loadConversation();
+      // Preserve scroll position
+      const newHeight = scrollEl.scrollHeight;
+      scrollEl.scrollTop += (newHeight - oldHeight);
+      _convoLoadingMore = false;
+    }
+  });
+}
+
+// ── Auto-Load Conversation on Replay Click ─────────────────
+
+async function _loadConversationUntilMatch(replayEntry) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    if (!_convoHasMore) break;
+    _convoReadBytes += _CONVO_CHUNK_SIZE;
+    _lastConvoCount = -1;
+    await _loadConversation();
+
+    // Check if we now have a matching conversation entry by timestamp
+    const reTime = replayEntry.timestamp ? new Date(replayEntry.timestamp).getTime() : 0;
+    if (!reTime) break;
+    for (let ci = 0; ci < _conversationEntries.length; ci++) {
+      const ceTime = _conversationEntries[ci].timestamp ? new Date(_conversationEntries[ci].timestamp).getTime() : 0;
+      if (ceTime && Math.abs(ceTime - reTime) < 10000) {
+        // Found it — scroll to it
+        const block = document.querySelector(`[data-conv-idx="${ci}"]`);
+        if (block) {
+          block.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          block.classList.add('zd-sync-highlight');
+          setTimeout(() => block.classList.remove('zd-sync-highlight'), 500);
+        }
+        return;
+      }
+    }
+  }
 }
 
 // ── Replay List ────────────────────────────────────────────
@@ -423,6 +494,28 @@ async function _selectReplayEntry(idx) {
 
   _updateTransport();
   _updateToolDetailView();
+
+  // Sync: scroll conversation to matching tool block by timestamp
+  if (entry.timestamp) {
+    _pauseScrollSync();
+    const reTime = new Date(entry.timestamp).getTime();
+    let bestBlock = null, bestDist = Infinity;
+    for (const block of document.querySelectorAll('.zd-tool-block[data-tool-ts]')) {
+      const ts = block.dataset.toolTs;
+      if (!ts) continue;
+      const ceTime = new Date(ts).getTime();
+      const dist = Math.abs(ceTime - reTime);
+      if (dist < bestDist) { bestDist = dist; bestBlock = block; }
+    }
+    if (bestBlock && bestDist < 30000) {
+      bestBlock.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      bestBlock.classList.add('zd-sync-highlight');
+      setTimeout(() => bestBlock.classList.remove('zd-sync-highlight'), 500);
+    } else if (_convoHasMore && entry.timestamp) {
+      // Matching block not loaded yet — load more conversation
+      _loadConversationUntilMatch(entry);
+    }
+  }
 }
 
 // ── Tool Detail View ───────────────────────────────────────
@@ -463,6 +556,9 @@ function _renderConversation() {
 
   const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
   let html = '';
+  if (_convoHasMore) {
+    html += '<div class="zd-load-more">&#x2191; Scroll up to load earlier messages</div>';
+  }
 
   for (let ci = 0; ci < _conversationEntries.length; ci++) {
     const entry = _conversationEntries[ci];
@@ -526,6 +622,11 @@ function _renderConversation() {
 }
 
 // ── Scroll Sync (conversation → replay) ────────────────────
+
+function _pauseScrollSync() {
+  _scrollSyncPaused = true;
+  setTimeout(() => { _scrollSyncPaused = false; }, 800);
+}
 
 function _setupScrollSync() {
   const scrollEl = document.getElementById('zd-conversation');
