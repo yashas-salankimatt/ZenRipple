@@ -7491,8 +7491,8 @@
     _setupConversationScrollSync(scrollEl);
   }
 
-  // Scroll-based conversation→replay sync
-  let _scrollSyncTimer = null;
+  // Scroll-based conversation→replay sync (live, using requestAnimationFrame)
+  let _scrollSyncRafId = null;
   let _scrollSyncPaused = false;
 
   function _pauseScrollSync() {
@@ -7503,8 +7503,11 @@
   function _setupConversationScrollSync(scrollEl) {
     scrollEl.addEventListener('scroll', () => {
       if (_scrollSyncPaused) return;
-      if (_scrollSyncTimer) clearTimeout(_scrollSyncTimer);
-      _scrollSyncTimer = setTimeout(() => _doScrollSync(scrollEl), 200);
+      if (_scrollSyncRafId) return; // Already scheduled for this frame
+      _scrollSyncRafId = requestAnimationFrame(() => {
+        _scrollSyncRafId = null;
+        _doScrollSync(scrollEl);
+      });
     });
   }
 
@@ -8214,7 +8217,7 @@
 
     _stopDashboardPolling();
     if (_detailSplitterCleanup) _detailSplitterCleanup();
-    if (_scrollSyncTimer) { clearTimeout(_scrollSyncTimer); _scrollSyncTimer = null; }
+    if (_scrollSyncRafId) { cancelAnimationFrame(_scrollSyncRafId); _scrollSyncRafId = null; }
     window.removeEventListener('keydown', handleDashboardKeydown, true);
     window.removeEventListener('keyup', _blockDashboardKeyEvent, true);
     window.removeEventListener('keypress', _blockDashboardKeyEvent, true);
