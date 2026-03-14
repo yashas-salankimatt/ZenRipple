@@ -8140,14 +8140,14 @@
     if (_scrollSyncPaused || !_dashboardModal) return;
     if (_dashboardReplayEntries.length === 0) return;
 
-    // Find ALL tool blocks (not just ZenRipple) near the viewport center
+    // Find the tool block closest to the BOTTOM of the viewport,
+    // so the newest visible tool call drives the sync
     const allToolBlocks = scrollEl.querySelectorAll('.zd-tool-block[data-conv-idx]');
     if (allToolBlocks.length === 0) return;
 
     const scrollRect = scrollEl.getBoundingClientRect();
-    const viewCenter = scrollRect.top + scrollEl.clientHeight / 2;
+    const viewBottom = scrollRect.bottom;
 
-    // Find the tool block closest to viewport center
     let bestBlock = null;
     let bestDist = Infinity;
     for (const block of allToolBlocks) {
@@ -8155,7 +8155,7 @@
       // Skip blocks not visible in viewport
       if (rect.bottom < scrollRect.top || rect.top > scrollRect.bottom) continue;
       const blockCenter = rect.top + rect.height / 2;
-      const dist = Math.abs(blockCenter - viewCenter);
+      const dist = Math.abs(blockCenter - viewBottom);
       if (dist < bestDist) {
         bestDist = dist;
         bestBlock = block;
