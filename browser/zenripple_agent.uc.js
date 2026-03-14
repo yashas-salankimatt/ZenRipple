@@ -7352,6 +7352,7 @@
 
     // Find Claude PID and tmux pane
     let tmuxPane = null;
+    let matchedCwd = '';
     try {
       // Use ~/.claude/sessions/<PID>.json to match the exact Claude process
       // by conversation session ID (not just CWD)
@@ -7359,7 +7360,6 @@
       const sessionsOut = await _runShellCommand(findCmd);
 
       let matchedPid = null;
-      let matchedCwd = '';
       for (const line of sessionsOut.trim().split('\n')) {
         if (!line.trim()) continue;
         try {
