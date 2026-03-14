@@ -9633,7 +9633,16 @@
       if (!url.startsWith('resource://zenripple-pages/')) return;
 
       const win = tab.linkedBrowser.contentWindow;
-      if (!win || !win.document || win.document.readyState === 'uninitialized') return;
+      log('Dashboard bridge: tab found url=' + url.slice(-30) + ' contentWindow=' + !!win +
+          ' readyState=' + (win?.document?.readyState || 'N/A'));
+
+      if (!win) {
+        // contentWindow is null — page is in a content process.
+        // Use message manager frame script instead of Cu.exportFunction.
+        _tryInjectBridgeViaFrameScript(tab);
+        return;
+      }
+      if (!win.document || win.document.readyState === 'uninitialized') return;
 
       try {
         _bridgedTabs.add(tab);
@@ -9678,6 +9687,97 @@
       bridgePollCount++;
       if (bridgePollCount > 30) clearInterval(bridgePollTimer);
     }, 2000);
+
+    // Fallback for out-of-process tabs: use message manager frame script
+    function _tryInjectBridgeViaFrameScript(tab) {
+      if (_bridgedTabs.has(tab)) return;
+      try {
+        const mm = tab.linkedBrowser.messageManager;
+        if (!mm) return;
+        _bridgedTabs.add(tab);
+
+        mm.addMessageListener('ZenRipple:Request', {
+          receiveMessage: function(msg) {
+            const { id, method, params } = msg.data;
+            _handleBridgeMethod(method, params || {}).then(
+              result => {
+                try {
+                  mm.sendAsyncMessage('ZenRipple:Response', {
+                    type: 'zenripple-response', id,
+                    result: JSON.parse(JSON.stringify(result)), // Ensure serializable
+                  });
+                } catch (e) {
+                  mm.sendAsyncMessage('ZenRipple:Response', {
+                    type: 'zenripple-response', id,
+                    error: 'Serialize error: ' + String(e),
+                  });
+                }
+              },
+              error => {
+                mm.sendAsyncMessage('ZenRipple:Response', {
+                  type: 'zenripple-response', id, error: String(error),
+                });
+              }
+            );
+          }
+        });
+
+        // Inject relay script into content process
+        mm.loadFrameScript('data:,(' + encodeURIComponent(`
+          (function() {
+            // Expose bridge function on content window
+            var Cu = Components.utils || {};
+            var win = content.wrappedJSObject || content;
+
+            // Create bridge function that content JS can call
+            function bridgeFn(method, paramsStr, callback) {
+              var id = 'req_' + Math.random().toString(36).slice(2);
+              // Listen for response
+              var handler = {
+                receiveMessage: function(msg) {
+                  if (msg.data.id === id) {
+                    removeMessageListener('ZenRipple:Response', handler);
+                    callback(JSON.stringify({ result: msg.data.result, error: msg.data.error }));
+                  }
+                }
+              };
+              addMessageListener('ZenRipple:Response', handler);
+              sendAsyncMessage('ZenRipple:Request', { id: id, method: method, params: JSON.parse(paramsStr || '{}') });
+            }
+
+            // Export to content window
+            try {
+              if (typeof Cu.exportFunction === 'function') {
+                Cu.exportFunction(bridgeFn, content, { defineAs: '__zenrippleBridge' });
+              } else {
+                // Fallback: set directly (may work for resource:// pages)
+                content.__zenrippleBridge = bridgeFn;
+              }
+            } catch(e) {
+              // Last resort: set on wrappedJSObject
+              try { content.wrappedJSObject.__zenrippleBridge = bridgeFn; } catch(e2) {}
+            }
+
+            // Signal ready
+            try {
+              content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready'));
+            } catch(e) {}
+            // Retry signals
+            content.setTimeout(function() {
+              try { content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready')); } catch(e) {}
+            }, 500);
+            content.setTimeout(function() {
+              try { content.dispatchEvent(new content.CustomEvent('zenripple-bridge-ready')); } catch(e) {}
+            }, 2000);
+          })();
+        `) + ')', true);
+
+        log('Dashboard bridge (frame script) injected for tab: ' + (tab.linkedBrowser.currentURI?.spec || '').slice(-40));
+      } catch (e) {
+        log('Dashboard bridge frame script injection failed: ' + e);
+        _bridgedTabs.delete(tab);
+      }
+    }
 
     log('Dashboard bridge listener registered');
   }
