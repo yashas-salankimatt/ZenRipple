@@ -69,7 +69,96 @@ async def _run_cli(*args: str, timeout: float = 120) -> str:
             error_msg = f"zenripple exited with code {proc.returncode}"
         raise Exception(error_msg)
 
-    return stdout.decode()
+    output = stdout.decode()
+
+    # Inject undelivered human→agent messages into tool output
+    if _session_id and args and args[0] not in ("approve", "notify", "ping", "session"):
+        human_prefix = _collect_human_messages()
+        if human_prefix:
+            output = human_prefix + output
+
+    return output
+
+
+def _collect_human_messages() -> str:
+    """Check for undelivered human→agent messages and return them as a prefix string."""
+    if not _session_id:
+        return ""
+    import re as _re
+    safe_id = _re.sub(r"[^a-zA-Z0-9_-]", "", _session_id)
+    if not safe_id:
+        return ""
+
+    import tempfile as _tmp
+    replay_dir = os.path.join(_tmp.gettempdir(), f"zenripple_replay_{safe_id}")
+    messages_path = os.path.join(replay_dir, "messages.jsonl")
+
+    if not os.path.exists(messages_path):
+        return ""
+
+    undelivered = []
+    try:
+        with open(messages_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if (entry.get("direction") == "human_to_agent"
+                            and not entry.get("delivered_at")):
+                        undelivered.append(entry)
+                except (json.JSONDecodeError, KeyError):
+                    continue
+    except (FileNotFoundError, OSError):
+        return ""
+
+    if not undelivered:
+        return ""
+
+    # Mark as delivered
+    _mark_delivered(messages_path, [m["id"] for m in undelivered])
+
+    # Format as prefix
+    parts = []
+    for msg in undelivered:
+        ts = msg.get("timestamp", "")
+        # Extract just the time portion
+        time_str = ts
+        if "T" in ts:
+            time_str = ts.split("T")[1][:8]
+        parts.append(f"[HUMAN_MESSAGE at {time_str}] {msg.get('text', '')}")
+    return "\n".join(parts) + "\n---\n"
+
+
+def _mark_delivered(messages_path: str, message_ids: list[str]) -> None:
+    """Mark messages as delivered in messages.jsonl."""
+    from datetime import datetime, timezone
+    delivered_ids = set(message_ids)
+    now = datetime.now(timezone.utc).isoformat()
+    lines = []
+    try:
+        with open(messages_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
+                        entry["delivered_at"] = now
+                    lines.append(json.dumps(entry, default=str))
+                except json.JSONDecodeError:
+                    lines.append(line)
+    except (FileNotFoundError, OSError):
+        return
+    tmp = messages_path + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, messages_path)
+    except OSError:
+        pass
 
 
 async def _ensure_session():
@@ -1107,6 +1196,32 @@ async def browser_claim_tab(tab_id: str) -> str:
 
     CLI: zenripple claim-tab <tab_id>"""
     return await _cmd("claim-tab", tab_id)
+
+
+# ── Dashboard: Approvals & Messages ──────────────────────────────
+
+
+@mcp.tool()
+async def browser_approve(description: str, tab_id: str = "", timeout: int = 300) -> str:
+    """Request human approval before proceeding with a sensitive action.
+    Blocks until the human approves or denies (or timeout expires).
+
+    CLI: zenripple approve <description> [--tab-id ID] [--timeout SECONDS]"""
+    args = ["approve", description]
+    if tab_id:
+        args += ["--tab-id", tab_id]
+    if timeout != 300:
+        args += ["--timeout", str(timeout)]
+    return await _cmd(*args, timeout=timeout + 10)
+
+
+@mcp.tool()
+async def browser_notify(message: str) -> str:
+    """Send a non-blocking message to the human operator.
+    The message appears in the Live Agent Dashboard.
+
+    CLI: zenripple notify <message>"""
+    return await _cmd("notify", message)
 
 
 # ── Health Check ─────────────────────────────────────────────────

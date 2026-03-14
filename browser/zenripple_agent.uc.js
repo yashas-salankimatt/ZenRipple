@@ -369,6 +369,11 @@
     const now = Date.now();
     for (const [id, session] of sessions) {
       if (session.connections.size === 0 && now - session.lastActivity > STALE_THRESHOLD_MS) {
+        // Protect sessions with pending approvals
+        if (_dashboardApprovalCache.get(id)) {
+          log('Stale sweep: skipping session ' + id + ' (has pending approvals)');
+          continue;
+        }
         log('Stale sweep: removing inactive session ' + id);
         destroySession(id);
       }
@@ -5515,6 +5520,2172 @@
   }
 
   // ============================================
+  // LIVE AGENT DASHBOARD (Ctrl+Shift+D)
+  // ============================================
+
+  const DASHBOARD_MODAL_ID = 'zenripple-dashboard-modal';
+  const DASHBOARD_STYLE_ID = 'zenripple-dashboard-styles';
+
+  const DASHBOARD_CSS = `
+/* === ZenRipple Live Agent Dashboard === */
+
+@keyframes zd-modal-enter {
+  from { opacity: 0; transform: scale(0.96) translateY(-8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@keyframes zd-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes zd-approval-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(251,146,60,0.4); }
+  50% { box-shadow: 0 0 0 4px rgba(251,146,60,0.15); }
+}
+
+@keyframes zd-typing-dot {
+  0%, 80%, 100% { transform: scale(0); opacity: 0.4; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+#zenripple-dashboard-modal {
+  --zr-bg-surface: var(--zl-bg-surface, #1e1e2e);
+  --zr-bg-raised: var(--zl-bg-raised, #2a2a3e);
+  --zr-bg-elevated: var(--zl-bg-elevated, #363650);
+  --zr-bg-hover: var(--zl-bg-hover, rgba(255,255,255,0.04));
+  --zr-text-primary: var(--zl-text-primary, #e0e0e6);
+  --zr-text-secondary: var(--zl-text-secondary, #a0a0b0);
+  --zr-text-muted: var(--zl-text-muted, #6b6b80);
+  --zr-accent: var(--zl-accent, #7aa2f7);
+  --zr-accent-dim: var(--zl-accent-dim, rgba(122,162,247,0.1));
+  --zr-accent-20: var(--zl-accent-20, rgba(122,162,247,0.2));
+  --zr-border-subtle: var(--zl-border-subtle, rgba(255,255,255,0.08));
+  --zr-border-default: var(--zl-border-default, rgba(255,255,255,0.12));
+  --zr-border-strong: var(--zl-border-strong, rgba(255,255,255,0.18));
+  --zr-r-xl: var(--zl-r-xl, 20px);
+  --zr-r-md: var(--zl-r-md, 10px);
+  --zr-r-sm: var(--zl-r-sm, 6px);
+  --zr-font-mono: var(--zl-font-mono, 'SF Mono', 'Fira Code', 'Cascadia Code', monospace);
+  --zr-font-ui: var(--zl-font-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif);
+  --zr-shadow-modal: var(--zl-shadow-modal, 0 24px 80px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06));
+  --zr-success: var(--zl-success, #a6e3a1);
+  --zr-error: var(--zl-error, #f38ba8);
+
+  /* Dashboard-specific */
+  --zd-status-active: var(--zl-success, #a6e3a1);
+  --zd-status-thinking: var(--zl-warning, #f9e2af);
+  --zd-status-approval: #fab387;
+  --zd-status-idle: var(--zr-text-muted);
+  --zd-status-ended: var(--zr-text-muted);
+  --zd-bubble-user: var(--zr-bg-elevated);
+  --zd-bubble-agent: var(--zr-bg-raised);
+  --zd-bubble-tool: var(--zr-bg-surface);
+  --zd-tool-zenripple: var(--zr-accent);
+  --zd-tool-other: var(--zr-border-default);
+
+  position: fixed;
+  inset: 0;
+  z-index: 100006;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  font-family: var(--zr-font-ui);
+  color: var(--zr-text-primary);
+}
+
+#zenripple-dashboard-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(0,0,0,0.55);
+  backdrop-filter: blur(14px);
+}
+
+#zenripple-dashboard-container {
+  position: relative;
+  width: min(96%, 1920px);
+  height: 90vh;
+  max-height: 1020px;
+  background: var(--zr-bg-surface);
+  border-radius: var(--zr-r-xl);
+  box-shadow: var(--zr-shadow-modal);
+  border: 1px solid var(--zr-border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: zd-modal-enter 0.28s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── Header ── */
+.zd-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zd-back {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 16px;
+  line-height: 1;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+  flex-shrink: 0;
+}
+.zd-back:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+.zd-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+  letter-spacing: 0.02em;
+}
+
+.zd-session-badge {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  padding: 2px 8px;
+  border-radius: var(--zr-r-sm);
+  letter-spacing: 0.02em;
+}
+
+.zd-header-spacer { flex: 1; }
+
+.zd-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  transition: all 0.12s;
+  font-size: 16px;
+  line-height: 1;
+  border: none;
+  background: none;
+  -moz-appearance: none;
+}
+.zd-close:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+
+/* ── Body ── */
+.zd-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+}
+
+/* ── Footer ── */
+.zd-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 20px;
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--zr-text-muted);
+}
+
+.zd-footer-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.zd-footer-item {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-secondary);
+}
+
+/* ── Session Overview ── */
+.zd-overview {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+.zd-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  margin-bottom: 12px;
+}
+
+.zd-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.zd-card {
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-md);
+  padding: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.zd-card:hover {
+  background: var(--zr-bg-elevated);
+  border-color: var(--zr-border-default);
+}
+.zd-card.zd-card-active {
+  border-color: rgba(var(--card-sh), 0.3);
+  box-shadow: 0 0 12px rgba(var(--card-sh), 0.08);
+}
+.zd-card.zd-card-approval {
+  animation: zd-approval-pulse 2s ease-in-out infinite;
+}
+
+.zd-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zd-card-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.zd-card-name {
+  font-family: var(--zr-font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zd-card-status {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: var(--zr-r-sm);
+  flex-shrink: 0;
+}
+.zd-card-status.status-active {
+  color: var(--zd-status-active);
+  background: rgba(166,227,161,0.1);
+}
+.zd-card-status.status-thinking {
+  color: var(--zd-status-thinking);
+  background: rgba(249,226,175,0.1);
+}
+.zd-card-status.status-approval {
+  color: var(--zd-status-approval);
+  background: rgba(250,179,135,0.1);
+}
+.zd-card-status.status-idle {
+  color: var(--zd-status-idle);
+  background: var(--zr-bg-elevated);
+}
+.zd-card-status.status-ended {
+  color: var(--zd-status-ended);
+  background: var(--zr-bg-elevated);
+}
+
+.zd-card-thumbnail {
+  width: 100%;
+  aspect-ratio: 16/9;
+  border-radius: var(--zr-r-sm);
+  overflow: hidden;
+  background: var(--zr-bg-surface);
+  border: 1px solid var(--zr-border-subtle);
+}
+.zd-card-thumbnail img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.zd-card-last-action {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  color: var(--zr-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zd-card-stats {
+  display: flex;
+  gap: 12px;
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+}
+
+.zd-card-approval-badge {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--zd-status-approval);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ── Session Detail (Three Column) ── */
+.zd-detail {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Replay Preview Column */
+.zd-replay-col {
+  width: 240px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--zr-border-subtle);
+  overflow: hidden;
+}
+
+.zd-replay-screenshot {
+  height: 180px;
+  background: var(--zr-bg-raised);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--zr-border-subtle);
+}
+.zd-replay-screenshot img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.zd-replay-screenshot .zd-no-screenshot {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--zr-text-muted);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.zd-replay-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.zd-replay-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  min-height: 26px;
+}
+.zd-replay-entry:hover {
+  background: var(--zr-bg-hover);
+}
+.zd-replay-entry.selected {
+  background: var(--zr-accent-dim);
+}
+
+.zd-replay-entry-seq {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--zr-text-muted);
+  min-width: 24px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.zd-replay-entry-dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--zr-success);
+  flex-shrink: 0;
+}
+.zd-replay-entry-dot.error {
+  background: var(--zr-error);
+}
+
+.zd-replay-entry-name {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  color: var(--zr-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.zd-replay-entry.selected .zd-replay-entry-name {
+  color: var(--zr-accent);
+}
+
+/* Conversation Column */
+.zd-conversation-col {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.zd-conversation-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Message bubbles */
+.zd-msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: var(--zr-r-md);
+  font-size: 13px;
+  line-height: 1.5;
+  word-wrap: break-word;
+}
+
+.zd-msg-user {
+  align-self: flex-end;
+  background: var(--zd-bubble-user);
+  border: 1px solid var(--zr-border-subtle);
+}
+
+.zd-msg-assistant {
+  align-self: flex-start;
+  background: var(--zd-bubble-agent);
+  border: 1px solid var(--zr-border-subtle);
+}
+
+.zd-msg-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.zd-msg-label-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.zd-msg-label.user-label { color: var(--zr-text-muted); }
+.zd-msg-label.agent-label { color: var(--zr-text-muted); }
+
+.zd-msg-content {
+  color: var(--zr-text-primary);
+}
+.zd-msg-content p { margin: 0 0 8px 0; }
+.zd-msg-content p:last-child { margin-bottom: 0; }
+.zd-msg-content code {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  background: var(--zr-bg-surface);
+  padding: 1px 4px;
+  border-radius: 3px;
+  border: 1px solid var(--zr-border-subtle);
+}
+.zd-msg-content pre {
+  background: var(--zr-bg-surface);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 10px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+.zd-msg-content pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Tool call blocks */
+.zd-tool-block {
+  align-self: stretch;
+  max-width: 100%;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-border-subtle);
+  overflow: hidden;
+  background: var(--zd-bubble-tool);
+}
+
+.zd-tool-block.zd-zenripple-tool {
+  border-left: 3px solid var(--zd-tool-zenripple);
+}
+.zd-tool-block.zd-other-tool {
+  border-left: 3px solid var(--zd-tool-other);
+}
+
+.zd-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.zd-tool-header:hover {
+  background: var(--zr-bg-hover);
+}
+
+.zd-tool-name {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+}
+
+.zd-tool-subtitle {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  color: var(--zr-text-secondary);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zd-tool-toggle {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+.zd-tool-toggle.expanded {
+  transform: rotate(90deg);
+}
+
+.zd-tool-body {
+  display: none;
+  padding: 0 12px 8px;
+}
+.zd-tool-body.expanded {
+  display: block;
+}
+
+.zd-tool-json {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--zr-text-secondary);
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 8px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.zd-tool-json .zr-key { color: #89b4fa; }
+.zd-tool-json .zr-str { color: #a6e3a1; }
+.zd-tool-json .zr-num { color: #fab387; }
+.zd-tool-json .zr-bool { color: #cba6f7; }
+.zd-tool-json .zr-null { color: #6b6b80; }
+
+.zd-tool-result-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--zr-text-muted);
+  margin: 6px 0 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.zd-tool-result-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+}
+.zd-tool-result-dot.success { background: var(--zr-success); }
+.zd-tool-result-dot.error { background: var(--zr-error); }
+
+.zd-tool-screenshot {
+  margin-top: 6px;
+  max-width: 200px;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-border-subtle);
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.zd-tool-screenshot:hover { opacity: 0.8; }
+
+/* Typing indicator */
+.zd-typing {
+  align-self: flex-start;
+  display: flex;
+  gap: 4px;
+  padding: 12px 16px;
+}
+.zd-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--zr-text-muted);
+  animation: zd-typing-dot 1.4s ease-in-out infinite;
+}
+.zd-typing-dot:nth-child(2) { animation-delay: 0.16s; }
+.zd-typing-dot:nth-child(3) { animation-delay: 0.32s; }
+
+/* Right Column: Approvals & Messages */
+.zd-right-col {
+  width: 260px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--zr-border-subtle);
+  overflow: hidden;
+}
+
+.zd-right-section {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.zd-right-section.zd-approvals-section {
+  flex: 0 1 auto;
+  max-height: 50%;
+  border-bottom: 1px solid var(--zr-border-subtle);
+}
+.zd-right-section.zd-messages-section {
+  flex: 1;
+}
+
+.zd-right-section-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zd-approvals-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.zd-approval-card {
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+  border-radius: var(--zr-r-sm);
+  padding: 10px;
+  margin-bottom: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.zd-approval-card.pending {
+  border-color: rgba(250,179,135,0.3);
+}
+.zd-approval-card.resolved {
+  opacity: 0.6;
+}
+
+.zd-approval-desc {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--zr-text-primary);
+}
+
+.zd-approval-url {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.zd-approval-time {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+}
+
+.zd-approval-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.zd-approval-btn {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  transition: all 0.12s;
+  border: 1px solid var(--zr-border-default);
+  background: var(--zr-bg-elevated);
+  color: var(--zr-text-primary);
+}
+.zd-approval-btn:hover {
+  background: var(--zr-bg-hover);
+}
+.zd-approval-btn.approve {
+  color: var(--zr-success);
+  border-color: rgba(166,227,161,0.3);
+}
+.zd-approval-btn.approve:hover {
+  background: rgba(166,227,161,0.1);
+}
+.zd-approval-btn.deny {
+  color: var(--zr-error);
+  border-color: rgba(243,139,168,0.3);
+}
+.zd-approval-btn.deny:hover {
+  background: rgba(243,139,168,0.1);
+}
+
+.zd-approval-resolved {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  font-style: italic;
+}
+
+/* Deny input */
+.zd-deny-input-wrapper {
+  display: none;
+  margin-top: 4px;
+}
+.zd-deny-input-wrapper.visible {
+  display: flex;
+  gap: 4px;
+}
+.zd-deny-input {
+  flex: 1;
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  padding: 4px 8px;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-border-default);
+  background: var(--zr-bg-surface);
+  color: var(--zr-text-primary);
+  outline: none;
+  min-height: 24px;
+}
+.zd-deny-input:focus {
+  border-color: var(--zr-accent);
+}
+
+/* Messages */
+.zd-messages-scroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zd-chat-msg {
+  padding: 6px 10px;
+  border-radius: var(--zr-r-sm);
+  font-size: 12px;
+  line-height: 1.4;
+  max-width: 90%;
+  word-wrap: break-word;
+}
+.zd-chat-msg.agent {
+  align-self: flex-start;
+  background: var(--zr-bg-raised);
+  border: 1px solid var(--zr-border-subtle);
+}
+.zd-chat-msg.human {
+  align-self: flex-end;
+  background: var(--zr-accent-dim);
+  border: 1px solid var(--zr-accent-20);
+}
+
+.zd-chat-msg-time {
+  font-family: var(--zr-font-mono);
+  font-size: 9px;
+  color: var(--zr-text-muted);
+  margin-top: 2px;
+}
+
+.zd-message-input-wrapper {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+
+.zd-message-input {
+  flex: 1;
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-border-default);
+  background: var(--zr-bg-raised);
+  color: var(--zr-text-primary);
+  outline: none;
+  min-height: 28px;
+}
+.zd-message-input:focus {
+  border-color: var(--zr-accent);
+}
+
+.zd-message-send {
+  font-family: var(--zr-font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  border: 1px solid var(--zr-accent-20);
+  background: var(--zr-accent-dim);
+  color: var(--zr-accent);
+  transition: all 0.12s;
+}
+.zd-message-send:hover {
+  background: var(--zr-accent-20);
+}
+
+/* Sync highlight pulse */
+.zd-sync-highlight {
+  animation: zd-sync-flash 0.5s ease-out;
+}
+@keyframes zd-sync-flash {
+  from { background: var(--zr-accent-dim); }
+  to { background: transparent; }
+}
+
+/* Empty state */
+.zd-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--zr-text-muted);
+  font-size: 12px;
+  font-style: italic;
+  padding: 20px;
+}
+
+/* Scrollbars */
+#zenripple-dashboard-modal * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--zr-border-strong) transparent;
+}
+`;
+
+  // ── Dashboard state ──
+  let _dashboardModal = null;
+  let _dashboardView = 'overview'; // 'overview' | 'detail'
+  let _dashboardDetailSession = null; // session ID
+  let _dashboardPollTimer = null;
+  const _DASHBOARD_POLL_MS = 2000;
+  let _dashboardConversationEntries = [];
+  let _dashboardReplayEntries = [];
+  let _dashboardReplayDir = '';
+  let _dashboardSelectedReplayIdx = -1;
+  let _dashboardSyncMap = new Map(); // replaySeq → conversationBlockIdx
+  let _dashboardScreenshotCache = new Map();
+  let _dashboardCurrentScreenshotURL = null;
+
+  function injectDashboardStyles() {
+    if (document.getElementById(DASHBOARD_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = DASHBOARD_STYLE_ID;
+    style.textContent = DASHBOARD_CSS;
+    document.head.appendChild(style);
+  }
+
+  // ── Markdown renderer (lightweight) ──
+
+  function renderMarkdown(text) {
+    if (!text) return '';
+    let html = escapeHTML(text);
+
+    // Code blocks (``` ... ```)
+    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+      return `<pre><code class="lang-${lang || 'text'}">${code.trim()}</code></pre>`;
+    });
+
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+    // Bold
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+    // Italic
+    html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+    // Headings
+    html = html.replace(/^### (.+)$/gm, '<h3 style="font-size:13px;font-weight:600;margin:8px 0 4px">$1</h3>');
+    html = html.replace(/^## (.+)$/gm, '<h2 style="font-size:14px;font-weight:600;margin:8px 0 4px">$1</h2>');
+    html = html.replace(/^# (.+)$/gm, '<h1 style="font-size:15px;font-weight:600;margin:8px 0 4px">$1</h1>');
+
+    // Lists
+    html = html.replace(/^- (.+)$/gm, '<li style="margin-left:16px;list-style:disc">$1</li>');
+    html = html.replace(/^\d+\. (.+)$/gm, '<li style="margin-left:16px;list-style:decimal">$1</li>');
+
+    // Paragraphs (double newline)
+    html = html.replace(/\n\n/g, '</p><p>');
+    html = '<p>' + html + '</p>';
+    html = html.replace(/<p><\/p>/g, '');
+
+    return html;
+  }
+
+  // ── Status computation ──
+
+  function computeSessionStatus(sessionId) {
+    const session = sessions.get(sessionId);
+    const now = Date.now();
+
+    // Check for pending approvals
+    // (We read from file, but also check if session has connections)
+    const hasConnections = session && session.connections.size > 0;
+    const lastActivity = session ? session.lastActivity : 0;
+    const elapsed = now - lastActivity;
+
+    // Check approvals from file
+    const hasPendingApproval = _checkPendingApprovals(sessionId);
+    if (hasPendingApproval) return 'approval';
+
+    if (!session || (!hasConnections && elapsed > 60000)) return 'ended';
+    if (elapsed < 15000) return 'active';
+    if (elapsed < 60000) return 'thinking';
+    return 'idle';
+  }
+
+  function _checkPendingApprovals(sessionId) {
+    try {
+      const tmpDir = PathUtils.tempDir;
+      const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+      const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
+      // Use synchronous check if possible — IOUtils.readUTF8 is async
+      // For status checks, we'll cache this
+      return _dashboardApprovalCache.get(sessionId) || false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Cache for approval status per session (refreshed by poll)
+  const _dashboardApprovalCache = new Map();
+
+  async function _refreshApprovalCache() {
+    const tmpDir = PathUtils.tempDir;
+    for (const [sessionId] of sessions) {
+      try {
+        const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+        const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
+        const content = await IOUtils.readUTF8(approvalsPath);
+        const lines = content.trim().split('\n').filter(Boolean);
+        // Track pending vs resolved
+        const pending = new Set();
+        const resolved = new Set();
+        for (const line of lines) {
+          try {
+            const entry = JSON.parse(line);
+            if (entry.status === 'pending') pending.add(entry.id);
+            else if (entry.status === 'approved' || entry.status === 'denied') resolved.add(entry.id);
+          } catch (_) {}
+        }
+        for (const id of resolved) pending.delete(id);
+        _dashboardApprovalCache.set(sessionId, pending.size > 0);
+      } catch (_) {
+        _dashboardApprovalCache.set(sessionId, false);
+      }
+    }
+  }
+
+  function statusLabel(status) {
+    switch (status) {
+      case 'active': return 'Active';
+      case 'thinking': return 'Thinking';
+      case 'approval': return 'Waiting for Approval';
+      case 'idle': return 'Idle';
+      case 'ended': return 'Ended';
+      default: return status;
+    }
+  }
+
+  function statusClass(status) {
+    return 'status-' + status;
+  }
+
+  // ── Session data for cards ──
+
+  async function gatherSessionCardData() {
+    const cards = [];
+    const tmpDir = PathUtils.tempDir;
+
+    // Live sessions from the sessions map
+    for (const [sessionId, session] of sessions) {
+      const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+      let toolCount = 0;
+      let lastAction = '';
+      let lastScreenshotFile = '';
+
+      try {
+        const logContent = await IOUtils.readUTF8(PathUtils.join(replayDir, 'tool_log.jsonl'));
+        const lines = logContent.trim().split('\n').filter(Boolean);
+        toolCount = lines.length;
+        if (lines.length > 0) {
+          try {
+            const lastEntry = JSON.parse(lines[lines.length - 1]);
+            lastAction = stripToolPrefix(lastEntry.tool || '') + ' ' + toolCallSubtitle(lastEntry.tool, lastEntry.args);
+            lastScreenshotFile = lastEntry.screenshot || '';
+          } catch (_) {}
+        }
+      } catch (_) {}
+
+      const status = computeSessionStatus(sessionId);
+      const color = SESSION_COLOR_PALETTE[session.colorIndex] || SESSION_COLOR_PALETTE[0];
+      const duration = Math.round((Date.now() - session.createdAt) / 1000);
+
+      cards.push({
+        sessionId,
+        name: session.name || sessionId.slice(0, 12),
+        status,
+        color,
+        toolCount,
+        lastAction: lastAction.trim(),
+        lastScreenshotFile,
+        replayDir,
+        duration,
+        hasPendingApproval: _dashboardApprovalCache.get(sessionId) || false,
+        isLive: true,
+        lastActivity: session.lastActivity,
+      });
+    }
+
+    // Also discover historical sessions from disk that aren't in live sessions
+    const discovered = await discoverAllSessions();
+    for (const s of discovered) {
+      if (sessions.has(s.sessionId)) continue; // Already included
+      cards.push({
+        sessionId: s.sessionId,
+        name: s.name || s.sessionId.slice(0, 12),
+        status: 'ended',
+        color: SESSION_COLOR_PALETTE[0], // Default color for historical
+        toolCount: s.toolCount,
+        lastAction: '',
+        lastScreenshotFile: '',
+        replayDir: s.dir,
+        duration: 0,
+        hasPendingApproval: false,
+        isLive: false,
+        lastActivity: 0,
+      });
+    }
+
+    // Sort: approval first, then active, then by last activity
+    const statusPriority = { approval: 0, active: 1, thinking: 2, idle: 3, ended: 4 };
+    cards.sort((a, b) => {
+      const pa = statusPriority[a.status] ?? 5;
+      const pb = statusPriority[b.status] ?? 5;
+      if (pa !== pb) return pa - pb;
+      return b.lastActivity - a.lastActivity;
+    });
+
+    return cards;
+  }
+
+  // ── Build overview HTML ──
+
+  function buildOverviewHTML(cards) {
+    const activeCards = cards.filter(c => c.status !== 'ended');
+    const endedCards = cards.filter(c => c.status === 'ended');
+
+    let html = '';
+
+    if (activeCards.length > 0) {
+      html += '<div class="zd-section-label">Active Sessions</div>';
+      html += '<div class="zd-cards">';
+      for (const card of activeCards) {
+        html += buildCardHTML(card);
+      }
+      html += '</div>';
+    }
+
+    if (endedCards.length > 0) {
+      html += '<div class="zd-section-label">Recent Sessions</div>';
+      html += '<div class="zd-cards">';
+      for (const card of endedCards) {
+        html += buildCardHTML(card);
+      }
+      html += '</div>';
+    }
+
+    if (cards.length === 0) {
+      html = '<div class="zd-empty">No agent sessions found.</div>';
+    }
+
+    return html;
+  }
+
+  function buildCardHTML(card) {
+    const cardClasses = ['zd-card'];
+    if (card.status === 'active') cardClasses.push('zd-card-active');
+    if (card.hasPendingApproval) cardClasses.push('zd-card-approval');
+
+    const durationStr = card.duration > 0 ? formatDuration(card.duration) : '';
+
+    return `<div class="${cardClasses.join(' ')}" data-session-id="${escapeHTML(card.sessionId)}" style="--card-sh: ${card.color}">
+      <div class="zd-card-header">
+        <span class="zd-card-dot" style="background: rgb(${card.color})"></span>
+        <span class="zd-card-name">${escapeHTML(card.name)}</span>
+        <span class="zd-card-status ${statusClass(card.status)}">${escapeHTML(statusLabel(card.status))}</span>
+      </div>
+      ${card.lastAction ? `<span class="zd-card-last-action">Last: ${escapeHTML(card.lastAction.slice(0, 60))}</span>` : ''}
+      <div class="zd-card-stats">
+        <span>${card.toolCount} tool call${card.toolCount !== 1 ? 's' : ''}</span>
+        ${durationStr ? `<span>${escapeHTML(durationStr)}</span>` : ''}
+      </div>
+      ${card.hasPendingApproval ? '<div class="zd-card-approval-badge">\u26A0 Pending approval</div>' : ''}
+    </div>`;
+  }
+
+  function formatDuration(totalSeconds) {
+    if (totalSeconds < 60) return totalSeconds + 's';
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes < 60) return minutes + 'm ' + seconds + 's';
+    const hours = Math.floor(minutes / 60);
+    return hours + 'h ' + (minutes % 60) + 'm';
+  }
+
+  // ── Build detail view ──
+
+  async function buildDetailView(sessionId) {
+    _dashboardDetailSession = sessionId;
+    _dashboardView = 'detail';
+
+    const container = _dashboardModal.querySelector('#zenripple-dashboard-container');
+    if (!container) return;
+
+    const session = sessions.get(sessionId);
+    const sessionName = (session && session.name) || sessionId.slice(0, 12);
+    const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+
+    // Update header
+    const title = container.querySelector('.zd-title');
+    if (title) title.textContent = sessionName;
+    const badge = container.querySelector('.zd-session-badge');
+    if (badge) {
+      badge.textContent = computeSessionStatus(sessionId);
+      badge.style.color = `rgb(${color})`;
+      badge.style.background = `rgba(${color}, 0.1)`;
+    }
+    const backBtn = container.querySelector('.zd-back');
+    if (backBtn) backBtn.style.display = '';
+
+    // Replace body content with detail layout
+    const body = container.querySelector('.zd-body');
+    if (!body) return;
+
+    body.innerHTML = `
+      <div class="zd-detail">
+        <div class="zd-replay-col">
+          <div class="zd-replay-screenshot" id="zd-replay-ss">
+            <span class="zd-no-screenshot">No screenshot</span>
+          </div>
+          <div class="zd-replay-list" id="zd-replay-entries"></div>
+        </div>
+        <div class="zd-conversation-col">
+          <div class="zd-conversation-scroll" id="zd-conversation"></div>
+        </div>
+        <div class="zd-right-col">
+          <div class="zd-right-section zd-approvals-section">
+            <div class="zd-right-section-header">Approvals</div>
+            <div class="zd-approvals-scroll" id="zd-approvals"></div>
+          </div>
+          <div class="zd-right-section zd-messages-section">
+            <div class="zd-right-section-header">Messages</div>
+            <div class="zd-messages-scroll" id="zd-messages"></div>
+            <div class="zd-message-input-wrapper">
+              <div class="zd-message-input" id="zd-msg-input" contenteditable="true" data-placeholder="Send message to agent..."></div>
+              <div class="zd-message-send" id="zd-msg-send">\u2192</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Set up message send
+    const sendBtn = body.querySelector('#zd-msg-send');
+    const msgInput = body.querySelector('#zd-msg-input');
+    if (sendBtn && msgInput) {
+      sendBtn.addEventListener('click', () => _sendHumanMessage(sessionId, msgInput));
+      msgInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          _sendHumanMessage(sessionId, msgInput);
+        }
+      });
+    }
+
+    // Load data
+    await _loadDetailData(sessionId);
+
+    // Update footer
+    _updateDashboardFooter(sessionId);
+  }
+
+  async function _sendHumanMessage(sessionId, inputEl) {
+    const text = (inputEl.textContent || '').trim();
+    if (!text) return;
+    inputEl.textContent = '';
+
+    const safe_id = sessionId.replace(/[^a-zA-Z0-9_-]/g, '');
+    const replayDir = PathUtils.join(PathUtils.tempDir, 'zenripple_replay_' + safe_id);
+    const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
+
+    const message = {
+      id: 'msg_' + crypto.randomUUID().replace(/-/g, '').slice(0, 12),
+      direction: 'human_to_agent',
+      text: text,
+      timestamp: new Date().toISOString(),
+    };
+
+    try {
+      const existing = await IOUtils.readUTF8(messagesPath).catch(() => '');
+      await IOUtils.writeUTF8(messagesPath, existing + JSON.stringify(message) + '\n');
+    } catch (e) {
+      log('Dashboard: failed to write message: ' + e);
+    }
+
+    // Refresh messages display
+    await _loadMessages(sessionId);
+  }
+
+  async function _loadDetailData(sessionId) {
+    await Promise.all([
+      _loadReplayData(sessionId),
+      _loadConversation(sessionId),
+      _loadApprovals(sessionId),
+      _loadMessages(sessionId),
+    ]);
+    _buildSyncMap();
+  }
+
+  // ── Replay data for detail view ──
+
+  async function _loadReplayData(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    _dashboardReplayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    _dashboardReplayEntries = [];
+
+    try {
+      const content = await IOUtils.readUTF8(PathUtils.join(_dashboardReplayDir, 'tool_log.jsonl'));
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { _dashboardReplayEntries.push(JSON.parse(line)); } catch (_) {}
+      }
+      _dashboardReplayEntries.sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+    } catch (_) {}
+
+    // Render replay list
+    const listEl = _dashboardModal?.querySelector('#zd-replay-entries');
+    if (!listEl) return;
+
+    listEl.innerHTML = '';
+    for (let i = _dashboardReplayEntries.length - 1; i >= 0; i--) {
+      const entry = _dashboardReplayEntries[i];
+      const el = document.createElement('div');
+      el.className = 'zd-replay-entry';
+      el.dataset.idx = String(i);
+      el.innerHTML = `
+        <span class="zd-replay-entry-seq">#${escapeHTML(String(entry.seq ?? i))}</span>
+        <span class="zd-replay-entry-dot${entry.error ? ' error' : ''}"></span>
+        <span class="zd-replay-entry-name">${escapeHTML(stripToolPrefix(entry.tool || ''))}</span>
+      `;
+      el.addEventListener('click', () => _selectDashboardReplayEntry(i));
+      listEl.appendChild(el);
+    }
+
+    // Select most recent
+    if (_dashboardReplayEntries.length > 0) {
+      _selectDashboardReplayEntry(_dashboardReplayEntries.length - 1);
+    }
+  }
+
+  async function _selectDashboardReplayEntry(idx) {
+    if (idx < 0 || idx >= _dashboardReplayEntries.length) return;
+    _dashboardSelectedReplayIdx = idx;
+    const entry = _dashboardReplayEntries[idx];
+
+    // Update selection visuals
+    const entries = _dashboardModal?.querySelectorAll('.zd-replay-entry');
+    if (entries) {
+      for (const el of entries) {
+        el.classList.toggle('selected', parseInt(el.dataset.idx, 10) === idx);
+      }
+    }
+
+    // Load screenshot
+    const ssContainer = _dashboardModal?.querySelector('#zd-replay-ss');
+    if (ssContainer && entry.screenshot) {
+      let url = _dashboardScreenshotCache.get(entry.screenshot);
+      if (!url) {
+        url = await loadScreenshot(_dashboardReplayDir, entry.screenshot);
+        if (url) _dashboardScreenshotCache.set(entry.screenshot, url);
+      }
+      if (url) {
+        if (_dashboardCurrentScreenshotURL && !_dashboardScreenshotCache.has(_dashboardCurrentScreenshotURL)) {
+          try { URL.revokeObjectURL(_dashboardCurrentScreenshotURL); } catch (_) {}
+        }
+        _dashboardCurrentScreenshotURL = url;
+        let img = ssContainer.querySelector('img');
+        if (img) {
+          img.src = url;
+        } else {
+          ssContainer.innerHTML = '';
+          img = document.createElement('img');
+          img.alt = 'Screenshot';
+          img.src = url;
+          ssContainer.appendChild(img);
+        }
+      } else {
+        ssContainer.innerHTML = '<span class="zd-no-screenshot">Screenshot unavailable</span>';
+      }
+    } else if (ssContainer) {
+      ssContainer.innerHTML = '<span class="zd-no-screenshot">No screenshot</span>';
+    }
+
+    // Scroll conversation to synced block
+    const syncedConvoIdx = _dashboardSyncMap.get(entry.seq);
+    if (syncedConvoIdx != null) {
+      const convoEl = _dashboardModal?.querySelector(`[data-conv-idx="${syncedConvoIdx}"]`);
+      if (convoEl) {
+        convoEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        convoEl.classList.add('zd-sync-highlight');
+        setTimeout(() => convoEl.classList.remove('zd-sync-highlight'), 500);
+      }
+    }
+  }
+
+  // ── Conversation loading and rendering ──
+
+  async function _loadConversation(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    let conversationPath = '';
+
+    // Read conversation.link
+    try {
+      conversationPath = (await IOUtils.readUTF8(PathUtils.join(replayDir, 'conversation.link'))).trim();
+    } catch (_) {}
+
+    _dashboardConversationEntries = [];
+    if (conversationPath) {
+      try {
+        const content = await IOUtils.readUTF8(conversationPath);
+        const lines = content.trim().split('\n').filter(Boolean);
+        for (const line of lines) {
+          try { _dashboardConversationEntries.push(JSON.parse(line)); } catch (_) {}
+        }
+      } catch (e) {
+        log('Dashboard: failed to read conversation file: ' + e);
+      }
+    }
+
+    _renderConversation();
+  }
+
+  function _renderConversation() {
+    const scrollEl = _dashboardModal?.querySelector('#zd-conversation');
+    if (!scrollEl) return;
+
+    if (_dashboardConversationEntries.length === 0) {
+      scrollEl.innerHTML = '<div class="zd-empty">No conversation linked. The conversation will appear here when the agent makes its first tool call.</div>';
+      return;
+    }
+
+    const session = sessions.get(_dashboardDetailSession);
+    const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+
+    let html = '';
+    let blockIdx = 0;
+
+    for (const entry of _dashboardConversationEntries) {
+      const role = entry.role || '';
+      const content = entry.content;
+
+      if (role === 'user') {
+        if (typeof content === 'string') {
+          // Check for system messages (compaction notices, etc.)
+          if (content.startsWith('[') || content.includes('system-reminder')) {
+            // Skip system messages
+            blockIdx++;
+            continue;
+          }
+          html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}">
+            <div class="zd-msg-label user-label">You</div>
+            <div class="zd-msg-content">${renderMarkdown(content)}</div>
+          </div>`;
+        } else if (Array.isArray(content)) {
+          // Tool results
+          for (const block of content) {
+            if (block.type === 'tool_result') {
+              const resultContent = typeof block.content === 'string' ? block.content : JSON.stringify(block.content);
+              const isError = block.is_error || false;
+
+              // Check for human message injection
+              if (resultContent.startsWith('[HUMAN_MESSAGE')) {
+                html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}" style="border-left: 3px solid var(--zd-status-approval)">
+                  <div class="zd-msg-label user-label">\u2709 Message from human</div>
+                  <div class="zd-msg-content">${renderMarkdown(resultContent)}</div>
+                </div>`;
+              }
+              // Tool results are rendered inline with their tool_use blocks
+            } else if (block.type === 'text') {
+              html += `<div class="zd-msg zd-msg-user" data-conv-idx="${blockIdx}">
+                <div class="zd-msg-label user-label">You</div>
+                <div class="zd-msg-content">${renderMarkdown(block.text || '')}</div>
+              </div>`;
+            }
+          }
+        }
+      } else if (role === 'assistant') {
+        if (typeof content === 'string') {
+          if (content.trim()) {
+            html += `<div class="zd-msg zd-msg-assistant" data-conv-idx="${blockIdx}">
+              <div class="zd-msg-label agent-label">
+                <span class="zd-msg-label-dot" style="background: rgb(${color})"></span>
+                Agent
+              </div>
+              <div class="zd-msg-content">${renderMarkdown(content)}</div>
+            </div>`;
+          }
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (block.type === 'text' && (block.text || '').trim()) {
+              html += `<div class="zd-msg zd-msg-assistant" data-conv-idx="${blockIdx}">
+                <div class="zd-msg-label agent-label">
+                  <span class="zd-msg-label-dot" style="background: rgb(${color})"></span>
+                  Agent
+                </div>
+                <div class="zd-msg-content">${renderMarkdown(block.text)}</div>
+              </div>`;
+            } else if (block.type === 'tool_use') {
+              const isZenripple = _isZenrippleTool(block.name, block.input);
+              const toolClass = isZenripple ? 'zd-zenripple-tool' : 'zd-other-tool';
+              const inputStr = block.input ? (typeof block.input === 'string' ? block.input : JSON.stringify(block.input, null, 2)) : '';
+              const subtitle = _toolUseSubtitle(block.name, block.input);
+
+              // Find matching tool_result
+              const resultEntry = _findToolResult(block.id);
+              const resultStr = resultEntry ? (typeof resultEntry.content === 'string' ? resultEntry.content : JSON.stringify(resultEntry.content, null, 2)) : '';
+              const isError = resultEntry ? resultEntry.is_error : false;
+
+              html += `<div class="zd-tool-block ${toolClass}" data-conv-idx="${blockIdx}" data-tool-use-id="${escapeHTML(block.id || '')}">
+                <div class="zd-tool-header" data-toggle="tool">
+                  <span class="zd-tool-name">${escapeHTML(block.name || '')}</span>
+                  <span class="zd-tool-subtitle">${escapeHTML(subtitle)}</span>
+                  <span class="zd-tool-toggle">\u25B6</span>
+                </div>
+                <div class="zd-tool-body">
+                  ${inputStr ? `<div class="zd-tool-json">${syntaxHighlightJSON(inputStr)}</div>` : ''}
+                  ${resultStr ? `
+                    <div class="zd-tool-result-label">
+                      <span class="zd-tool-result-dot ${isError ? 'error' : 'success'}"></span>
+                      Result
+                    </div>
+                    <div class="zd-tool-json">${syntaxHighlightJSON(_truncateResult(resultStr))}</div>
+                  ` : ''}
+                </div>
+              </div>`;
+            }
+          }
+        }
+      }
+      blockIdx++;
+    }
+
+    // Streaming indicator
+    if (_dashboardConversationEntries.length > 0) {
+      const lastEntry = _dashboardConversationEntries[_dashboardConversationEntries.length - 1];
+      // We can't easily check file mtime from chrome context, so show typing
+      // if last message is from user (agent is likely thinking)
+      if (lastEntry.role === 'user') {
+        const session = sessions.get(_dashboardDetailSession);
+        if (session && session.connections.size > 0) {
+          const color = SESSION_COLOR_PALETTE[session.colorIndex];
+          html += `<div class="zd-typing">
+            <span class="zd-typing-dot" style="background: rgb(${color})"></span>
+            <span class="zd-typing-dot" style="background: rgb(${color})"></span>
+            <span class="zd-typing-dot" style="background: rgb(${color})"></span>
+          </div>`;
+        }
+      }
+    }
+
+    scrollEl.innerHTML = html;
+
+    // Add toggle handlers for tool blocks
+    const toggles = scrollEl.querySelectorAll('[data-toggle="tool"]');
+    for (const toggle of toggles) {
+      toggle.addEventListener('click', () => {
+        const body = toggle.nextElementSibling;
+        const arrow = toggle.querySelector('.zd-tool-toggle');
+        if (body) body.classList.toggle('expanded');
+        if (arrow) arrow.classList.toggle('expanded');
+      });
+    }
+
+    // Auto-expand error tool results
+    const errorDots = scrollEl.querySelectorAll('.zd-tool-result-dot.error');
+    for (const dot of errorDots) {
+      const toolBlock = dot.closest('.zd-tool-block');
+      if (toolBlock) {
+        const body = toolBlock.querySelector('.zd-tool-body');
+        const arrow = toolBlock.querySelector('.zd-tool-toggle');
+        if (body) body.classList.add('expanded');
+        if (arrow) arrow.classList.add('expanded');
+      }
+    }
+
+    // Scroll to bottom
+    scrollEl.scrollTop = scrollEl.scrollHeight;
+  }
+
+  function _isZenrippleTool(name, input) {
+    if (!name) return false;
+    // MCP tools start with browser_
+    if (name.startsWith('browser_')) return true;
+    // Bash commands containing zenripple
+    if (name === 'Bash' && input) {
+      const cmd = typeof input === 'string' ? input : (input.command || '');
+      return cmd.includes('zenripple');
+    }
+    return false;
+  }
+
+  function _toolUseSubtitle(name, input) {
+    if (!input) return '';
+    if (typeof input === 'string') return input.slice(0, 60);
+    if (name === 'Bash') return (input.command || '').slice(0, 60);
+    if (name === 'Read') return (input.file_path || '').split('/').pop() || '';
+    if (name === 'Write') return (input.file_path || '').split('/').pop() || '';
+    if (name === 'Edit') return (input.file_path || '').split('/').pop() || '';
+    if (name === 'Grep') return (input.pattern || '').slice(0, 40);
+    if (name === 'Glob') return (input.pattern || '').slice(0, 40);
+    // For browser_ tools, try to get a summary
+    if (name.startsWith('browser_')) {
+      const bare = name.replace(/^browser_/, '');
+      return toolCallSubtitle('browser_' + bare, input);
+    }
+    // Fallback: first short string value
+    for (const v of Object.values(input)) {
+      if (typeof v === 'string' && v.length > 0 && v.length <= 80) return v.slice(0, 60);
+    }
+    return '';
+  }
+
+  function _findToolResult(toolUseId) {
+    if (!toolUseId) return null;
+    for (const entry of _dashboardConversationEntries) {
+      if (entry.role !== 'user' || !Array.isArray(entry.content)) continue;
+      for (const block of entry.content) {
+        if (block.type === 'tool_result' && block.tool_use_id === toolUseId) {
+          return block;
+        }
+      }
+    }
+    return null;
+  }
+
+  function _truncateResult(str) {
+    if (str.length <= 2000) return str;
+    return str.slice(0, 2000) + '\n... (truncated)';
+  }
+
+  // ── Sync map: replay entries ↔ conversation blocks ──
+
+  function _buildSyncMap() {
+    _dashboardSyncMap.clear();
+
+    for (let ri = 0; ri < _dashboardReplayEntries.length; ri++) {
+      const re = _dashboardReplayEntries[ri];
+      const reTime = re.timestamp ? new Date(re.timestamp).getTime() : 0;
+      const reTool = re.tool || '';
+
+      let bestConvoIdx = -1;
+      let bestDelta = Infinity;
+
+      for (let ci = 0; ci < _dashboardConversationEntries.length; ci++) {
+        const ce = _dashboardConversationEntries[ci];
+        if (ce.role !== 'assistant' || !Array.isArray(ce.content)) continue;
+        for (const block of ce.content) {
+          if (block.type !== 'tool_use') continue;
+          // Match by tool name
+          const toolName = block.name || '';
+          const matches = _toolNameMatches(reTool, toolName);
+          if (!matches) continue;
+          // Match by timestamp proximity
+          const ceTime = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
+          const delta = Math.abs(reTime - ceTime);
+          if (delta < bestDelta && delta < 10000) { // Within 10 seconds
+            bestDelta = delta;
+            bestConvoIdx = ci;
+          }
+        }
+      }
+
+      if (bestConvoIdx >= 0) {
+        _dashboardSyncMap.set(re.seq ?? ri, bestConvoIdx);
+      }
+    }
+  }
+
+  function _toolNameMatches(replayTool, conversationTool) {
+    // Replay uses CLI command names, conversation uses MCP tool names or Bash
+    if (!replayTool || !conversationTool) return false;
+    if (replayTool === conversationTool) return true;
+    // browser_click → click, browser_navigate → nav, etc.
+    const bareName = conversationTool.replace(/^browser_/, '');
+    if (replayTool === bareName) return true;
+    // CLI command → MCP tool: nav → browser_navigate
+    if (conversationTool === 'Bash') return true; // Bash commands with zenripple
+    // Map CLI names to browser method names
+    const cliEntry = COMMANDS_REVERSE.get(replayTool);
+    if (cliEntry && conversationTool.includes(cliEntry)) return true;
+    return false;
+  }
+
+  // Reverse map: CLI command → browser method name
+  const COMMANDS_REVERSE = new Map([
+    ['nav', 'navigate'], ['click', 'click'], ['fill', 'fill'],
+    ['type', 'type'], ['key', 'press_key'], ['scroll', 'scroll'],
+    ['hover', 'hover'], ['dom', 'get_dom'], ['text', 'get_page_text'],
+    ['screenshot', 'screenshot'], ['ss', 'screenshot'],
+    ['create-tab', 'create_tab'], ['close-tab', 'close_tab'],
+    ['switch-tab', 'switch_tab'], ['list-tabs', 'list_tabs'],
+    ['elements', 'get_elements_compact'], ['eval', 'console_eval'],
+    ['wait', 'wait'], ['wait-load', 'wait_for_load'],
+    ['gclick', 'grounded_click'], ['reflect', 'reflect'],
+  ]);
+
+  // ── Approvals loading ──
+
+  async function _loadApprovals(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
+    const approvalsEl = _dashboardModal?.querySelector('#zd-approvals');
+    if (!approvalsEl) return;
+
+    let entries = [];
+    try {
+      const content = await IOUtils.readUTF8(approvalsPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch (_) {}
+      }
+    } catch (_) {}
+
+    // Group by approval ID — find pending vs resolved
+    const approvals = new Map();
+    for (const entry of entries) {
+      if (entry.status === 'pending') {
+        approvals.set(entry.id, { ...entry, resolved: false });
+      } else if (entry.status === 'approved' || entry.status === 'denied') {
+        const existing = approvals.get(entry.id);
+        if (existing) {
+          existing.resolved = true;
+          existing.resolution = entry.status;
+          existing.resolution_message = entry.message || '';
+          existing.resolved_at = entry.resolved_at || '';
+        }
+      }
+    }
+
+    if (approvals.size === 0) {
+      approvalsEl.innerHTML = '<div class="zd-empty">No approvals</div>';
+      return;
+    }
+
+    let html = '';
+    for (const [id, approval] of approvals) {
+      if (approval.resolved) {
+        const ago = _timeAgo(approval.resolved_at);
+        html += `<div class="zd-approval-card resolved">
+          <div class="zd-approval-desc">${escapeHTML(approval.description || id)}</div>
+          <div class="zd-approval-resolved">${escapeHTML(approval.resolution === 'approved' ? 'Approved' : 'Denied')} ${escapeHTML(ago)}</div>
+          ${approval.resolution_message ? `<div class="zd-approval-resolved">"${escapeHTML(approval.resolution_message)}"</div>` : ''}
+        </div>`;
+      } else {
+        const ago = _timeAgo(approval.requested_at);
+        html += `<div class="zd-approval-card pending" data-approval-id="${escapeHTML(id)}">
+          <div class="zd-approval-desc">${escapeHTML(approval.description || id)}</div>
+          ${approval.tab_url ? `<div class="zd-approval-url">${escapeHTML(approval.tab_url)}</div>` : ''}
+          <div class="zd-approval-time">Requested ${escapeHTML(ago)}</div>
+          <div class="zd-approval-actions">
+            <div class="zd-approval-btn approve" data-action="approve" data-id="${escapeHTML(id)}">Approve</div>
+            <div class="zd-approval-btn deny" data-action="deny-toggle" data-id="${escapeHTML(id)}">Deny</div>
+          </div>
+          <div class="zd-deny-input-wrapper" data-deny-for="${escapeHTML(id)}">
+            <div class="zd-deny-input" contenteditable="true" data-placeholder="Reason (optional)"></div>
+            <div class="zd-approval-btn deny" data-action="deny-confirm" data-id="${escapeHTML(id)}">Deny</div>
+          </div>
+        </div>`;
+      }
+    }
+
+    approvalsEl.innerHTML = html;
+
+    // Wire up approve/deny buttons
+    const btns = approvalsEl.querySelectorAll('.zd-approval-btn');
+    for (const btn of btns) {
+      btn.addEventListener('click', () => {
+        const action = btn.dataset.action;
+        const approvalId = btn.dataset.id;
+        if (action === 'approve') {
+          _resolveApproval(sessionId, approvalId, 'approved', '');
+        } else if (action === 'deny-toggle') {
+          const wrapper = approvalsEl.querySelector(`[data-deny-for="${approvalId}"]`);
+          if (wrapper) wrapper.classList.toggle('visible');
+        } else if (action === 'deny-confirm') {
+          const wrapper = approvalsEl.querySelector(`[data-deny-for="${approvalId}"]`);
+          const input = wrapper?.querySelector('.zd-deny-input');
+          const message = (input?.textContent || '').trim();
+          _resolveApproval(sessionId, approvalId, 'denied', message);
+        }
+      });
+    }
+  }
+
+  async function _resolveApproval(sessionId, approvalId, status, message) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const approvalsPath = PathUtils.join(replayDir, 'approvals.jsonl');
+
+    const resolution = {
+      id: approvalId,
+      status: status,
+      resolved_at: new Date().toISOString(),
+    };
+    if (message) resolution.message = message;
+
+    try {
+      const existing = await IOUtils.readUTF8(approvalsPath).catch(() => '');
+      await IOUtils.writeUTF8(approvalsPath, existing + JSON.stringify(resolution) + '\n');
+    } catch (e) {
+      log('Dashboard: failed to write approval resolution: ' + e);
+    }
+
+    // Refresh approvals display
+    await _loadApprovals(sessionId);
+  }
+
+  function _timeAgo(isoTimestamp) {
+    if (!isoTimestamp) return '';
+    try {
+      const then = new Date(isoTimestamp).getTime();
+      const now = Date.now();
+      const secs = Math.round((now - then) / 1000);
+      if (secs < 5) return 'just now';
+      if (secs < 60) return secs + 's ago';
+      const mins = Math.round(secs / 60);
+      if (mins < 60) return mins + 'm ago';
+      const hours = Math.round(mins / 60);
+      if (hours < 24) return hours + 'h ago';
+      return Math.round(hours / 24) + 'd ago';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  // ── Messages loading ──
+
+  async function _loadMessages(sessionId) {
+    const tmpDir = PathUtils.tempDir;
+    const replayDir = PathUtils.join(tmpDir, 'zenripple_replay_' + sessionId);
+    const messagesPath = PathUtils.join(replayDir, 'messages.jsonl');
+    const messagesEl = _dashboardModal?.querySelector('#zd-messages');
+    if (!messagesEl) return;
+
+    let entries = [];
+    try {
+      const content = await IOUtils.readUTF8(messagesPath);
+      const lines = content.trim().split('\n').filter(Boolean);
+      for (const line of lines) {
+        try { entries.push(JSON.parse(line)); } catch (_) {}
+      }
+    } catch (_) {}
+
+    if (entries.length === 0) {
+      messagesEl.innerHTML = '<div class="zd-empty">No messages yet</div>';
+      return;
+    }
+
+    let html = '';
+    for (const msg of entries) {
+      const isAgent = msg.direction === 'agent_to_human';
+      const timeStr = extractTime(msg.timestamp);
+      html += `<div class="zd-chat-msg ${isAgent ? 'agent' : 'human'}">
+        <div>${escapeHTML(msg.text || '')}</div>
+        <div class="zd-chat-msg-time">${escapeHTML(timeStr)}</div>
+      </div>`;
+    }
+
+    messagesEl.innerHTML = html;
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ── Dashboard footer ──
+
+  function _updateDashboardFooter(sessionId) {
+    const footer = _dashboardModal?.querySelector('.zd-footer');
+    if (!footer) return;
+
+    if (_dashboardView === 'overview') {
+      const activeSessions = [...sessions.values()].filter(s => s.connections.size > 0).length;
+      let pendingApprovals = 0;
+      for (const [, v] of _dashboardApprovalCache) {
+        if (v) pendingApprovals++;
+      }
+      footer.innerHTML = `
+        <span class="zd-footer-item">${activeSessions} active session${activeSessions !== 1 ? 's' : ''}</span>
+        ${pendingApprovals > 0 ? `<span class="zd-footer-item" style="color: var(--zd-status-approval)">${pendingApprovals} approval${pendingApprovals !== 1 ? 's' : ''} pending</span>` : ''}
+      `;
+      return;
+    }
+
+    // Detail view
+    if (!sessionId) return;
+    const session = sessions.get(sessionId);
+    const status = computeSessionStatus(sessionId);
+    const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+    const toolCount = _dashboardReplayEntries.length;
+    const duration = session ? formatDuration(Math.round((Date.now() - session.createdAt) / 1000)) : '';
+    const connected = session && session.connections.size > 0 ? 'Connected' : 'Disconnected';
+
+    // Check conversation link
+    let convoStatus = 'Not linked';
+    if (_dashboardConversationEntries.length > 0) convoStatus = 'Linked';
+
+    footer.innerHTML = `
+      <span class="zd-footer-dot" style="background: rgb(${color})"></span>
+      <span class="zd-footer-item">${escapeHTML(statusLabel(status))}</span>
+      <span class="zd-footer-item">${toolCount} calls</span>
+      ${duration ? `<span class="zd-footer-item">${escapeHTML(duration)}</span>` : ''}
+      <span class="zd-footer-item">${escapeHTML(connected)}</span>
+      <span class="zd-footer-item">${escapeHTML(convoStatus)}</span>
+    `;
+  }
+
+  // ── Modal builder ──
+
+  function buildDashboardModal() {
+    const modal = document.createElement('div');
+    modal.id = DASHBOARD_MODAL_ID;
+
+    modal.innerHTML = `
+      <div id="zenripple-dashboard-backdrop"></div>
+      <div id="zenripple-dashboard-container">
+        <div class="zd-header">
+          <div class="zd-back" title="Back (Backspace)" style="display:none">\u2190</div>
+          <span class="zd-title">Agent Dashboard</span>
+          <span class="zd-session-badge">Overview</span>
+          <span class="zd-header-spacer"></span>
+          <div class="zd-close" title="Close (Esc)">\u2715</div>
+        </div>
+        <div class="zd-body">
+          <div class="zd-overview" id="zd-overview"></div>
+        </div>
+        <div class="zd-footer"></div>
+      </div>
+    `;
+
+    // Close handlers
+    modal.querySelector('#zenripple-dashboard-backdrop').addEventListener('click', closeDashboardModal);
+    modal.querySelector('.zd-close').addEventListener('click', closeDashboardModal);
+    modal.querySelector('.zd-back').addEventListener('click', () => _showOverview());
+
+    return modal;
+  }
+
+  async function _showOverview() {
+    _dashboardView = 'overview';
+    _dashboardDetailSession = null;
+
+    const container = _dashboardModal?.querySelector('#zenripple-dashboard-container');
+    if (!container) return;
+
+    // Update header
+    const title = container.querySelector('.zd-title');
+    if (title) title.textContent = 'Agent Dashboard';
+    const badge = container.querySelector('.zd-session-badge');
+    if (badge) {
+      badge.textContent = 'Overview';
+      badge.style.color = '';
+      badge.style.background = '';
+    }
+    const backBtn = container.querySelector('.zd-back');
+    if (backBtn) backBtn.style.display = 'none';
+
+    // Replace body
+    const body = container.querySelector('.zd-body');
+    if (!body) return;
+    body.innerHTML = '<div class="zd-overview" id="zd-overview"></div>';
+
+    await _refreshOverview();
+    _updateDashboardFooter(null);
+  }
+
+  async function _refreshOverview() {
+    await _refreshApprovalCache();
+    const cards = await gatherSessionCardData();
+    const overviewEl = _dashboardModal?.querySelector('#zd-overview');
+    if (overviewEl) {
+      overviewEl.innerHTML = buildOverviewHTML(cards);
+
+      // Add click handlers to cards
+      const cardEls = overviewEl.querySelectorAll('.zd-card');
+      for (const cardEl of cardEls) {
+        cardEl.addEventListener('click', () => {
+          const sid = cardEl.dataset.sessionId;
+          if (sid) buildDetailView(sid);
+        });
+      }
+    }
+  }
+
+  // ── Polling ──
+
+  function _startDashboardPolling() {
+    _stopDashboardPolling();
+    _dashboardPollTimer = setInterval(() => _dashboardPoll(), _DASHBOARD_POLL_MS);
+  }
+
+  function _stopDashboardPolling() {
+    if (_dashboardPollTimer) {
+      clearInterval(_dashboardPollTimer);
+      _dashboardPollTimer = null;
+    }
+  }
+
+  async function _dashboardPoll() {
+    if (!_dashboardModal) return;
+
+    if (_dashboardView === 'overview') {
+      await _refreshOverview();
+    } else if (_dashboardView === 'detail' && _dashboardDetailSession) {
+      await _loadDetailData(_dashboardDetailSession);
+      _updateDashboardFooter(_dashboardDetailSession);
+    }
+  }
+
+  // ── Open/Close ──
+
+  async function openDashboardModal() {
+    if (_dashboardModal) return;
+
+    closeDashboardModal();
+    injectDashboardStyles();
+
+    _dashboardModal = buildDashboardModal();
+    _dashboardView = 'overview';
+    _dashboardDetailSession = null;
+
+    document.documentElement.appendChild(_dashboardModal);
+    window.addEventListener('keydown', handleDashboardKeydown, true);
+    window.addEventListener('keyup', _blockDashboardKeyEvent, true);
+    window.addEventListener('keypress', _blockDashboardKeyEvent, true);
+
+    await _refreshOverview();
+    _updateDashboardFooter(null);
+    _startDashboardPolling();
+
+    log('Dashboard opened');
+  }
+
+  function closeDashboardModal() {
+    if (!_dashboardModal) return;
+
+    _stopDashboardPolling();
+    window.removeEventListener('keydown', handleDashboardKeydown, true);
+    window.removeEventListener('keyup', _blockDashboardKeyEvent, true);
+    window.removeEventListener('keypress', _blockDashboardKeyEvent, true);
+
+    // Clean up screenshot cache
+    for (const [, url] of _dashboardScreenshotCache) {
+      try { URL.revokeObjectURL(url); } catch (_) {}
+    }
+    _dashboardScreenshotCache.clear();
+    if (_dashboardCurrentScreenshotURL) {
+      try { URL.revokeObjectURL(_dashboardCurrentScreenshotURL); } catch (_) {}
+      _dashboardCurrentScreenshotURL = null;
+    }
+
+    _dashboardModal.remove();
+    _dashboardModal = null;
+    _dashboardView = 'overview';
+    _dashboardDetailSession = null;
+    _dashboardConversationEntries = [];
+    _dashboardReplayEntries = [];
+    _dashboardSyncMap.clear();
+
+    log('Dashboard closed');
+  }
+
+  // ── Keyboard handling ──
+
+  function handleDashboardKeydown(e) {
+    if (!_dashboardModal) return;
+
+    // Let Ctrl+Shift+D through for toggle
+    if (e.ctrlKey && e.shiftKey && e.code === 'KeyD') return;
+
+    // Block keys from leaking to page
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+
+    if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+
+    if (e.key === 'Escape') {
+      if (_dashboardView === 'detail') {
+        _showOverview();
+      } else {
+        closeDashboardModal();
+      }
+      return;
+    }
+
+    if (e.key === 'Backspace' && _dashboardView === 'detail') {
+      _showOverview();
+      return;
+    }
+
+    // Focus message input
+    if (e.key === 'm' && _dashboardView === 'detail') {
+      const input = _dashboardModal.querySelector('#zd-msg-input');
+      if (input) input.focus();
+      return;
+    }
+
+    // Focus approval
+    if (e.key === 'a' && _dashboardView === 'detail') {
+      const approveBtn = _dashboardModal.querySelector('.zd-approval-btn.approve');
+      if (approveBtn) approveBtn.click();
+      return;
+    }
+
+    // Quick-open by number
+    if (_dashboardView === 'overview' && e.key >= '1' && e.key <= '9') {
+      const cards = _dashboardModal.querySelectorAll('.zd-card');
+      const idx = parseInt(e.key) - 1;
+      if (cards[idx]) cards[idx].click();
+      return;
+    }
+
+    // j/k navigation in detail view (replay entries)
+    if (_dashboardView === 'detail') {
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        if (_dashboardReplayEntries.length > 0) {
+          const newIdx = Math.max(0, _dashboardSelectedReplayIdx - 1);
+          _selectDashboardReplayEntry(newIdx);
+        }
+        return;
+      }
+      if (e.key === 'k' || e.key === 'ArrowUp') {
+        if (_dashboardReplayEntries.length > 0) {
+          const newIdx = Math.min(_dashboardReplayEntries.length - 1, _dashboardSelectedReplayIdx + 1);
+          _selectDashboardReplayEntry(newIdx);
+        }
+        return;
+      }
+    }
+  }
+
+  function _blockDashboardKeyEvent(e) {
+    if (!_dashboardModal) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+  }
+
+  // ── Shortcut handler ──
+
+  function handleDashboardShortcut(e) {
+    if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && e.code === 'KeyD') {
+      if (!isCurrentWorkspaceAgent()) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+
+      if (_dashboardModal) {
+        closeDashboardModal();
+      } else {
+        openDashboardModal().catch(err => log('Dashboard modal error: ' + err));
+      }
+    }
+  }
+
+  function setupDashboardShortcut() {
+    window.addEventListener('keydown', handleDashboardShortcut, true);
+    log('Dashboard shortcut registered (Ctrl+Shift+D)');
+  }
+
+  // ============================================
   // INITIALIZATION
   // ============================================
 
@@ -5548,6 +7719,7 @@
       setupPopupBlockedTracking();
       setupReplayShortcut();
       setupReplayContextMenu();
+      setupDashboardShortcut();
 
       log('ZenRipple v' + VERSION + ' initialized. Server on localhost:' + AGENT_PORT);
     } catch (e) {

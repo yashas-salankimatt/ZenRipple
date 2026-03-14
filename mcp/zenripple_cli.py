@@ -376,6 +376,7 @@ SPECIAL_COMMANDS = {
     "logs", "errors", "net-log",
     "intercept-add",
     "replay-status",
+    "approve", "notify",
 }
 
 # ── Arg Parsing Helpers ───────────────────────────────────────
@@ -977,6 +978,416 @@ async def handle_intercept_add(client: BrowserClient, params: dict) -> int:
     return 0
 
 
+# ── Conversation Linking ──────────────────────────────────────
+
+
+def _find_claude_code_conversation() -> str | None:
+    """Walk up PID tree to find the Claude Code process and its conversation JSONL.
+
+    Returns the absolute path to the conversation file, or None if not found.
+    """
+    import subprocess
+
+    try:
+        pid = os.getpid()
+        # Walk up the process tree (max 20 levels)
+        for _ in range(20):
+            pid = _get_parent_pid(pid)
+            if pid <= 1:
+                break
+            cmdline = _get_process_cmdline(pid)
+            if not cmdline:
+                continue
+            # Claude Code runs as a Node.js process with "claude" in the command
+            cmdline_str = " ".join(cmdline).lower()
+            if "claude" in cmdline_str and ("node" in cmdline_str or "claude" in cmdline[0].lower()):
+                # Found Claude Code process — resolve its working directory
+                cwd = _get_process_cwd(pid)
+                if cwd:
+                    return _find_conversation_jsonl(cwd)
+    except Exception:
+        pass
+
+    # Fallback: check CLAUDE_PROJECT_DIR env var if set
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    if project_dir:
+        return _find_conversation_jsonl(project_dir)
+
+    return None
+
+
+def _get_parent_pid(pid: int) -> int:
+    """Get parent PID of a process."""
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split(":")[1].strip())
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    # macOS fallback: use ps
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-o", "ppid=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return 0
+
+
+def _get_process_cmdline(pid: int) -> list[str] | None:
+    """Get command line of a process."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            data = f.read()
+            if data:
+                return data.rstrip(b"\x00").split(b"\x00")
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    # macOS fallback
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["ps", "-o", "command=", "-p", str(pid)],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip().split()
+    except Exception:
+        pass
+    return None
+
+
+def _get_process_cwd(pid: int) -> str | None:
+    """Get working directory of a process."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except (FileNotFoundError, PermissionError, OSError):
+        pass
+    # macOS fallback: use lsof
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["lsof", "-a", "-p", str(pid), "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=2,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                if line.startswith("n") and line[1:].startswith("/"):
+                    return line[1:]
+    except Exception:
+        pass
+    return None
+
+
+def _find_conversation_jsonl(project_cwd: str) -> str | None:
+    """Find the most recent Claude Code conversation JSONL for a project directory."""
+    home = Path.home()
+    # Claude Code stores conversations at ~/.claude/projects/<path-hash>/<uuid>.jsonl
+    # The path hash replaces / with - and prepends -
+    path_hash = "-" + project_cwd.replace("/", "-")
+    projects_dir = home / ".claude" / "projects" / path_hash
+    if not projects_dir.is_dir():
+        return None
+
+    # Find the most recently modified .jsonl file
+    best_path = None
+    best_mtime = 0.0
+    try:
+        for f in projects_dir.iterdir():
+            if f.suffix == ".jsonl" and f.is_file():
+                mtime = f.stat().st_mtime
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best_path = str(f)
+    except OSError:
+        pass
+
+    # Only return if modified within last 60 seconds (active conversation)
+    if best_path and (time.time() - best_mtime) < 60:
+        return best_path
+
+    return None
+
+
+def _write_conversation_link(session_id: str, conversation_path: str) -> None:
+    """Write conversation.link file to the replay directory."""
+    safe_id = _sanitize_session_id(session_id)
+    if not safe_id:
+        return
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    os.makedirs(replay_dir, exist_ok=True)
+    link_path = os.path.join(replay_dir, "conversation.link")
+    try:
+        with open(link_path, "w") as f:
+            f.write(conversation_path)
+    except OSError:
+        pass
+
+
+def _try_link_conversation(session_id: str) -> None:
+    """Attempt to link the current session to a Claude Code conversation."""
+    if not session_id:
+        return
+    safe_id = _sanitize_session_id(session_id)
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    link_path = os.path.join(replay_dir, "conversation.link")
+    # Don't re-link if already linked
+    if os.path.exists(link_path):
+        try:
+            existing = open(link_path).read().strip()
+            if existing and os.path.exists(existing):
+                return
+        except OSError:
+            pass
+    conversation_path = _find_claude_code_conversation()
+    if conversation_path:
+        _write_conversation_link(session_id, conversation_path)
+
+
+# ── Approval Gates ────────────────────────────────────────────
+
+
+async def handle_approve(client: BrowserClient, params: dict) -> int:
+    """Request human approval. Blocks until approved/denied or timeout."""
+    description = params.get("description", "")
+    if not description:
+        print("Usage: zenripple approve <description> [--tab-id ID] [--timeout SECONDS]",
+              file=sys.stderr)
+        return 1
+
+    session_id = client.session_id or SESSION_ID
+    if not session_id:
+        print("Error: no active session for approval", file=sys.stderr)
+        return 1
+
+    safe_id = _sanitize_session_id(session_id)
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    os.makedirs(replay_dir, exist_ok=True)
+
+    approval_id = f"appr_{uuid4().hex[:12]}"
+    timeout_secs = params.get("timeout", 300)  # Default 5 minutes
+
+    # Take a screenshot for context
+    screenshot_file = None
+    tab_url = ""
+    try:
+        tab_id = params.get("tab_id", "")
+        ss_result = await client.command("screenshot", {"tab_id": tab_id or None})
+        data_url = ss_result.get("image", "")
+        if data_url:
+            b64 = data_url.split(",", 1)[1] if "," in data_url else data_url
+            raw_bytes = base64.b64decode(b64)
+            screenshot_file = f"approval_{approval_id}.jpg"
+            with open(os.path.join(replay_dir, screenshot_file), "wb") as f:
+                f.write(raw_bytes)
+        # Get current tab URL
+        try:
+            info = await client.command("get_page_info", {"tab_id": tab_id or None})
+            tab_url = info.get("url", "")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Write approval request
+    request = {
+        "id": approval_id,
+        "description": description,
+        "screenshot": screenshot_file,
+        "tab_url": tab_url,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "status": "pending",
+    }
+    approvals_path = os.path.join(replay_dir, "approvals.jsonl")
+    _append_jsonl(approvals_path, request)
+
+    print(json.dumps({
+        "approval_id": approval_id,
+        "status": "pending",
+        "message": f"Waiting for human approval: {description}",
+    }), file=sys.stderr)
+
+    # Poll for resolution
+    deadline = time.monotonic() + timeout_secs
+    while time.monotonic() < deadline:
+        await asyncio.sleep(0.5)
+        resolution = _check_approval_status(approvals_path, approval_id)
+        if resolution:
+            result = {
+                "approved": resolution["status"] == "approved",
+                "approval_id": approval_id,
+            }
+            if resolution.get("message"):
+                result["message"] = resolution["message"]
+            print(json.dumps(result))
+            return 0
+
+    # Timeout
+    timeout_entry = {
+        "id": approval_id,
+        "status": "denied",
+        "message": "Timed out waiting for human approval",
+        "resolved_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _append_jsonl(approvals_path, timeout_entry)
+    print(json.dumps({
+        "approved": False,
+        "approval_id": approval_id,
+        "message": "Timed out waiting for human approval",
+    }))
+    return 0
+
+
+def _check_approval_status(approvals_path: str, approval_id: str) -> dict | None:
+    """Check if an approval has been resolved."""
+    try:
+        with open(approvals_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if entry.get("id") == approval_id and entry.get("status") in ("approved", "denied"):
+                        return entry
+                except json.JSONDecodeError:
+                    continue
+    except (FileNotFoundError, OSError):
+        pass
+    return None
+
+
+# ── Agent Messages ────────────────────────────────────────────
+
+
+async def handle_notify(client: BrowserClient, params: dict) -> int:
+    """Send a non-blocking message from agent to human."""
+    text = params.get("text", "")
+    if not text:
+        print("Usage: zenripple notify <message>", file=sys.stderr)
+        return 1
+
+    session_id = client.session_id or SESSION_ID
+    if not session_id:
+        print("Error: no active session for notification", file=sys.stderr)
+        return 1
+
+    safe_id = _sanitize_session_id(session_id)
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    os.makedirs(replay_dir, exist_ok=True)
+
+    message = {
+        "id": f"msg_{uuid4().hex[:12]}",
+        "direction": "agent_to_human",
+        "text": text,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    messages_path = os.path.join(replay_dir, "messages.jsonl")
+    _append_jsonl(messages_path, message)
+    print(json.dumps({"sent": True, "message_id": message["id"]}))
+    return 0
+
+
+def _append_jsonl(path: str, entry: dict) -> None:
+    """Append a JSON line to a JSONL file under file lock."""
+    lock_path = path + ".lock"
+    line = json.dumps(entry, default=str) + "\n"
+    try:
+        if fcntl:
+            with open(lock_path, "a") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    with open(path, "a") as f:
+                        f.write(line)
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        else:
+            with open(path, "a") as f:
+                f.write(line)
+    except Exception:
+        pass
+
+
+def _read_undelivered_messages(session_id: str) -> list[dict]:
+    """Read human→agent messages that haven't been delivered yet."""
+    safe_id = _sanitize_session_id(session_id)
+    if not safe_id:
+        return []
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    messages_path = os.path.join(replay_dir, "messages.jsonl")
+    undelivered = []
+    try:
+        with open(messages_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                    if (entry.get("direction") == "human_to_agent"
+                            and not entry.get("delivered_at")):
+                        undelivered.append(entry)
+                except json.JSONDecodeError:
+                    continue
+    except (FileNotFoundError, OSError):
+        pass
+    return undelivered
+
+
+def _mark_messages_delivered(session_id: str, message_ids: list[str]) -> None:
+    """Mark messages as delivered by rewriting messages.jsonl."""
+    if not message_ids:
+        return
+    safe_id = _sanitize_session_id(session_id)
+    if not safe_id:
+        return
+    replay_dir = os.path.join(tempfile.gettempdir(), f"zenripple_replay_{safe_id}")
+    messages_path = os.path.join(replay_dir, "messages.jsonl")
+    lock_path = messages_path + ".lock"
+    delivered_ids = set(message_ids)
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _do_mark():
+        lines = []
+        try:
+            with open(messages_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("id") in delivered_ids and not entry.get("delivered_at"):
+                            entry["delivered_at"] = now
+                        lines.append(json.dumps(entry, default=str))
+                    except json.JSONDecodeError:
+                        lines.append(line)
+        except (FileNotFoundError, OSError):
+            return
+        tmp = messages_path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, messages_path)
+
+    try:
+        if fcntl:
+            with open(lock_path, "a") as lock_f:
+                fcntl.flock(lock_f, fcntl.LOCK_EX)
+                try:
+                    _do_mark()
+                finally:
+                    fcntl.flock(lock_f, fcntl.LOCK_UN)
+        else:
+            _do_mark()
+    except Exception:
+        pass
+
+
 async def handle_replay_status(client: BrowserClient) -> int:
     """Get replay/tool-call logging status."""
     session_id = client.session_id or SESSION_ID
@@ -1412,6 +1823,10 @@ Network:
   intercept-remove <id>     Remove interception rule
   intercept-list            List interception rules
 
+Dashboard:
+  approve <description>     Request human approval (blocks until response)
+  notify <message>          Send message to human (non-blocking)
+
 Other:
   ping                      Health check
   reflect [--goal TEXT]     Full page snapshot (JSON output)
@@ -1588,6 +2003,16 @@ async def _dispatch(command: str, args: list[str], client: BrowserClient) -> int
         await client.connect()
         return await handle_replay_status(client)
 
+    if command == "approve":
+        params = _parse_tool_args(args, ["description"])
+        await client.connect()
+        return await handle_approve(client, params)
+
+    if command == "notify":
+        params = _parse_tool_args(args, ["text"])
+        await client.connect()
+        return await handle_notify(client, params)
+
     # ── Generic command dispatch ──
     if command in COMMANDS:
         method, positional_names = COMMANDS[command]
@@ -1683,6 +2108,14 @@ async def main(argv: list[str] | None = None) -> int:
 
         # Record replay if session is active and replay is enabled
         session_id = client.session_id or SESSION_ID
+
+        # Attempt conversation linking on first tool call
+        if session_id and command not in ("ping", "session", "replay-status"):
+            try:
+                _try_link_conversation(session_id)
+            except Exception:
+                pass
+
         if session_id and not REPLAY_DISABLED and command not in ("ping", "session", "replay-status"):
             try:
                 replay_dir = _init_replay_dir(session_id)
