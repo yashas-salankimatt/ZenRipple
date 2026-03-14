@@ -5582,7 +5582,7 @@
   --zd-status-ended: var(--zr-text-muted);
   --zd-bubble-user: var(--zr-bg-elevated);
   --zd-bubble-agent: var(--zr-bg-raised);
-  --zd-bubble-tool: var(--zr-bg-surface);
+  --zd-bubble-tool: var(--zr-bg-raised);
   --zd-tool-zenripple: var(--zr-accent);
   --zd-tool-other: var(--zr-border-default);
 
@@ -7382,7 +7382,24 @@
     // Preserve scroll position if user has scrolled up; auto-scroll if at bottom
     const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 50;
 
-    scrollEl.innerHTML = sanitizeForXHTML(html);
+    // Use DOMParser with text/html (lenient HTML5 parser) instead of XHTML
+    // innerHTML. Firefox chrome context uses XHTML which silently discards
+    // inner content of elements when it encounters even minor markup issues.
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(
+        '<html><body><div>' + sanitizeForXHTML(html) + '</div></body></html>',
+        'text/html'
+      );
+      const wrapper = doc.body.firstChild;
+      scrollEl.textContent = ''; // Clear existing content
+      while (wrapper.firstChild) {
+        scrollEl.appendChild(document.adoptNode(wrapper.firstChild));
+      }
+    } catch (e) {
+      log('Dashboard: DOMParser fallback to innerHTML: ' + e);
+      scrollEl.innerHTML = sanitizeForXHTML(html);
+    }
 
     // Add toggle handlers for tool blocks
     const toggles = scrollEl.querySelectorAll('[data-toggle="tool"]');
