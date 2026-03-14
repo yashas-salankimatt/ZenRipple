@@ -5875,7 +5875,7 @@
 
 /* Replay Preview Column */
 .zd-replay-col {
-  width: 320px;
+  width: 400px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -5884,8 +5884,8 @@
 }
 
 .zd-replay-screenshot {
-  flex: 0 0 45%;
-  min-height: 120px;
+  flex: 2;
+  min-height: 80px;
   background: var(--zr-bg-raised);
   position: relative;
   overflow: hidden;
@@ -6065,9 +6065,14 @@
   padding: 10px;
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 300px;
+  max-height: 400px;
   overflow-y: auto;
 }
+.zd-detail-json .zr-key { color: #89b4fa; }
+.zd-detail-json .zr-str { color: #a6e3a1; }
+.zd-detail-json .zr-num { color: #fab387; }
+.zd-detail-json .zr-bool { color: #cba6f7; }
+.zd-detail-json .zr-null { color: #6b6b80; }
 
 .zd-replay-entry {
   display: flex;
@@ -7090,6 +7095,21 @@
   // ── Detail view splitters ──
 
   let _detailSplitterCleanup = null;
+  const _ZD_SPLITTER_PREF = 'zenripple.dashboard_splitter_layout';
+
+  function _loadDashboardSplitterState() {
+    try {
+      const raw = Services.prefs.getStringPref(_ZD_SPLITTER_PREF, '');
+      if (raw) return JSON.parse(raw);
+    } catch (_) {}
+    return {};
+  }
+
+  function _saveDashboardSplitterState(state) {
+    try {
+      Services.prefs.setStringPref(_ZD_SPLITTER_PREF, JSON.stringify(state));
+    } catch (_) {}
+  }
 
   function _setupDetailSplitters(body) {
     if (_detailSplitterCleanup) _detailSplitterCleanup();
@@ -7098,12 +7118,19 @@
     if (!detail) return;
 
     const replayCol = detail.querySelector('#zd-replay-col');
-    const convoCol = detail.querySelector('#zd-conversation-col');
     const rightCol = detail.querySelector('#zd-right-col');
     const ssPanel = detail.querySelector('#zd-replay-ss');
-    const replayList = detail.querySelector('#zd-replay-entries');
 
-    let dragTarget = null; // 'left' | 'right' | 'replay-inner'
+    // Restore saved positions
+    const saved = _loadDashboardSplitterState();
+    if (saved.leftWidth) replayCol.style.width = saved.leftWidth + 'px';
+    if (saved.rightWidth) rightCol.style.width = saved.rightWidth + 'px';
+    if (saved.ssHeight) {
+      ssPanel.style.flex = 'none';
+      ssPanel.style.height = saved.ssHeight + 'px';
+    }
+
+    let dragTarget = null;
 
     function onDown(e) {
       const which = e.currentTarget.dataset.split;
@@ -7120,22 +7147,30 @@
       const rect = detail.getBoundingClientRect();
 
       if (dragTarget === 'left') {
-        const pct = Math.max(100, Math.min(rect.width * 0.5, e.clientX - rect.left));
-        replayCol.style.width = pct + 'px';
+        const px = Math.max(100, Math.min(rect.width * 0.6, e.clientX - rect.left));
+        replayCol.style.width = px + 'px';
       } else if (dragTarget === 'right') {
         const fromRight = rect.right - e.clientX;
-        const pct = Math.max(180, Math.min(rect.width * 0.4, fromRight));
-        rightCol.style.width = pct + 'px';
+        const px = Math.max(150, Math.min(rect.width * 0.5, fromRight));
+        rightCol.style.width = px + 'px';
       } else if (dragTarget === 'replay-inner') {
         const colRect = replayCol.getBoundingClientRect();
-        const pct = Math.max(80, Math.min(colRect.height * 0.8, e.clientY - colRect.top));
-        ssPanel.style.height = pct + 'px';
-        ssPanel.style.flexShrink = '0';
+        // Calculate height for screenshot relative to top of replay column
+        const px = Math.max(60, Math.min(colRect.height - 80, e.clientY - colRect.top));
+        ssPanel.style.flex = 'none';
+        ssPanel.style.height = px + 'px';
       }
     }
 
     function onUp() {
       if (!dragTarget) return;
+      // Save positions to prefs
+      const state = {};
+      state.leftWidth = replayCol.getBoundingClientRect().width;
+      state.rightWidth = rightCol.getBoundingClientRect().width;
+      if (ssPanel.style.height) state.ssHeight = parseInt(ssPanel.style.height, 10);
+      _saveDashboardSplitterState(state);
+
       for (const s of detail.querySelectorAll('.zd-splitter')) s.classList.remove('dragging');
       dragTarget = null;
       document.documentElement.style.cursor = '';
@@ -7362,7 +7397,7 @@
     }
     detailEl.appendChild(meta);
 
-    // Arguments
+    // Arguments (with syntax highlighting)
     if (entry.args && Object.keys(entry.args).length > 0) {
       const argsLabel = document.createElement('div');
       argsLabel.className = 'zd-detail-section-label';
@@ -7370,11 +7405,16 @@
       detailEl.appendChild(argsLabel);
       const argsJson = document.createElement('div');
       argsJson.className = 'zd-detail-json';
-      argsJson.textContent = formatJSON(entry.args);
+      try {
+        // Use innerHTML for syntax highlighting — safe here since we control the content
+        argsJson.innerHTML = sanitizeForXHTML(syntaxHighlightJSON(formatJSON(entry.args)));
+      } catch (_) {
+        argsJson.textContent = formatJSON(entry.args);
+      }
       detailEl.appendChild(argsJson);
     }
 
-    // Result
+    // Result (with syntax highlighting)
     if (entry.result) {
       const resultLabel = document.createElement('div');
       resultLabel.className = 'zd-detail-section-label';
@@ -7382,7 +7422,12 @@
       detailEl.appendChild(resultLabel);
       const resultJson = document.createElement('div');
       resultJson.className = 'zd-detail-json';
-      resultJson.textContent = typeof entry.result === 'string' ? entry.result : formatJSON(entry.result);
+      const resultStr = typeof entry.result === 'string' ? entry.result : formatJSON(entry.result);
+      try {
+        resultJson.innerHTML = sanitizeForXHTML(syntaxHighlightJSON(resultStr.slice(0, 5000)));
+      } catch (_) {
+        resultJson.textContent = resultStr.slice(0, 5000);
+      }
       detailEl.appendChild(resultJson);
     }
   }
