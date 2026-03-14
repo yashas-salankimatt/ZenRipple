@@ -1648,6 +1648,7 @@ async def _record_replay(
     params: dict, timestamp: str, duration_ms: float,
     error: bool = False,
     pre_seq: int = -1, pre_screenshot: str | None = None,
+    result_text: str = "",
 ) -> None:
     """Log a tool call with screenshot to the session replay directory."""
     seq = pre_seq if pre_seq >= 0 else _claim_next_seq(replay_dir)
@@ -1676,6 +1677,9 @@ async def _record_replay(
     }
     if client.last_tab_url:
         entry["tab_url"] = client.last_tab_url
+    if result_text:
+        # Truncate large results to keep log manageable
+        entry["result"] = result_text[:5000] if len(result_text) > 5000 else result_text
     _append_log_entry(replay_dir, entry)
 
 
@@ -2131,10 +2135,31 @@ async def main(argv: list[str] | None = None) -> int:
     result_code = 0
     had_error = False
 
+    captured_output = ""
     try:
-        # Initialize replay after connecting (need session ID)
-        # For commands that don't connect, replay is skipped
-        result_code = await _dispatch(command, args, client)
+        # Capture stdout to include result in replay log
+        import io
+        _capture_buf = io.StringIO()
+        _real_stdout = sys.stdout
+
+        class _TeeWriter:
+            """Write to both the real stdout and a capture buffer."""
+            def write(self, s):
+                _real_stdout.write(s)
+                _capture_buf.write(s)
+                return len(s)
+            def flush(self):
+                _real_stdout.flush()
+            # Forward any other attributes to real stdout
+            def __getattr__(self, name):
+                return getattr(_real_stdout, name)
+
+        sys.stdout = _TeeWriter()
+        try:
+            result_code = await _dispatch(command, args, client)
+        finally:
+            sys.stdout = _real_stdout
+            captured_output = _capture_buf.getvalue()
 
         # Inject undelivered human→agent messages into output.
         # Print to BOTH stdout (for MCP server to pick up) and stderr
@@ -2190,6 +2215,7 @@ async def main(argv: list[str] | None = None) -> int:
                     await _record_replay(
                         client, replay_dir, command, parsed_params,
                         timestamp, duration_ms, error=had_error,
+                        result_text=captured_output.strip(),
                     )
             except Exception as e:
                 print(f"Warning: replay recording failed: {e}", file=sys.stderr)

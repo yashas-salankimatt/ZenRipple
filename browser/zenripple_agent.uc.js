@@ -6810,8 +6810,18 @@
     if (!container) return;
 
     const session = sessions.get(sessionId);
-    const sessionName = (session && session.name) || sessionId.slice(0, 12);
+    let sessionName = (session && session.name) || '';
     const color = session ? SESSION_COLOR_PALETTE[session.colorIndex] : SESSION_COLOR_PALETTE[0];
+
+    // For historical sessions, read name from manifest
+    if (!sessionName) {
+      try {
+        const manifestPath = PathUtils.join(_replayDirForSession(sessionId), 'manifest.json');
+        const manifest = JSON.parse(await IOUtils.readUTF8(manifestPath));
+        sessionName = manifest.name || '';
+      } catch (_) {}
+    }
+    if (!sessionName) sessionName = sessionId.slice(0, 12);
 
     // Update header
     const title = container.querySelector('.zd-title');
