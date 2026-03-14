@@ -6425,6 +6425,50 @@
   padding: 20px;
 }
 
+/* ── Splitters ── */
+.zd-splitter {
+  flex-shrink: 0;
+  background: var(--zr-border-subtle);
+  position: relative;
+  z-index: 2;
+  transition: background 0.12s;
+}
+.zd-splitter-v {
+  width: 1px;
+  cursor: col-resize;
+}
+.zd-splitter-v::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+.zd-splitter-h {
+  height: 1px;
+  cursor: row-resize;
+}
+.zd-splitter-h::after {
+  content: '';
+  position: absolute;
+  inset: -3px 0;
+}
+.zd-splitter:hover,
+.zd-splitter.dragging {
+  background: var(--zr-accent);
+}
+
+/* Conversation load-more indicator */
+.zd-load-more {
+  text-align: center;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--zr-text-muted);
+  font-style: italic;
+  cursor: pointer;
+}
+.zd-load-more:hover {
+  color: var(--zr-accent);
+}
+
 /* Scrollbars */
 #zenripple-dashboard-modal * {
   scrollbar-width: thin;
@@ -6785,16 +6829,19 @@
 
     body.innerHTML = `
       <div class="zd-detail">
-        <div class="zd-replay-col">
+        <div class="zd-replay-col" id="zd-replay-col">
           <div class="zd-replay-screenshot" id="zd-replay-ss">
             <span class="zd-no-screenshot">No screenshot</span>
           </div>
+          <div class="zd-splitter zd-splitter-h" data-split="replay-inner"></div>
           <div class="zd-replay-list" id="zd-replay-entries"></div>
         </div>
-        <div class="zd-conversation-col">
+        <div class="zd-splitter zd-splitter-v" data-split="left"></div>
+        <div class="zd-conversation-col" id="zd-conversation-col">
           <div class="zd-conversation-scroll" id="zd-conversation"></div>
         </div>
-        <div class="zd-right-col">
+        <div class="zd-splitter zd-splitter-v" data-split="right"></div>
+        <div class="zd-right-col" id="zd-right-col">
           <div class="zd-right-section zd-approvals-section">
             <div class="zd-right-section-header">Approvals</div>
             <div class="zd-approvals-scroll" id="zd-approvals"></div>
@@ -6811,6 +6858,9 @@
       </div>
     `;
 
+    // ── Splitter drag handling ──
+    _setupDetailSplitters(body);
+
     // Set up message send
     const sendBtn = body.querySelector('#zd-msg-send');
     const msgInput = body.querySelector('#zd-msg-input');
@@ -6825,10 +6875,100 @@
     }
 
     // Load data
+    _dashboardRenderWindow = 200; // Reset on session switch
     await _loadDetailData(sessionId);
+    _setupConversationScrollLoader();
 
     // Update footer
     _updateDashboardFooter(sessionId);
+  }
+
+  // ── Detail view splitters ──
+
+  let _detailSplitterCleanup = null;
+
+  function _setupDetailSplitters(body) {
+    if (_detailSplitterCleanup) _detailSplitterCleanup();
+
+    const detail = body.querySelector('.zd-detail');
+    if (!detail) return;
+
+    const replayCol = detail.querySelector('#zd-replay-col');
+    const convoCol = detail.querySelector('#zd-conversation-col');
+    const rightCol = detail.querySelector('#zd-right-col');
+    const ssPanel = detail.querySelector('#zd-replay-ss');
+    const replayList = detail.querySelector('#zd-replay-entries');
+
+    let dragTarget = null; // 'left' | 'right' | 'replay-inner'
+
+    function onDown(e) {
+      const which = e.currentTarget.dataset.split;
+      if (!which) return;
+      e.preventDefault();
+      dragTarget = which;
+      e.currentTarget.classList.add('dragging');
+      document.documentElement.style.cursor = which === 'replay-inner' ? 'row-resize' : 'col-resize';
+      document.documentElement.style.userSelect = 'none';
+    }
+
+    function onMove(e) {
+      if (!dragTarget) return;
+      const rect = detail.getBoundingClientRect();
+
+      if (dragTarget === 'left') {
+        const pct = Math.max(150, Math.min(rect.width * 0.4, e.clientX - rect.left));
+        replayCol.style.width = pct + 'px';
+      } else if (dragTarget === 'right') {
+        const fromRight = rect.right - e.clientX;
+        const pct = Math.max(180, Math.min(rect.width * 0.4, fromRight));
+        rightCol.style.width = pct + 'px';
+      } else if (dragTarget === 'replay-inner') {
+        const colRect = replayCol.getBoundingClientRect();
+        const pct = Math.max(80, Math.min(colRect.height * 0.8, e.clientY - colRect.top));
+        ssPanel.style.height = pct + 'px';
+        ssPanel.style.flexShrink = '0';
+      }
+    }
+
+    function onUp() {
+      if (!dragTarget) return;
+      for (const s of detail.querySelectorAll('.zd-splitter')) s.classList.remove('dragging');
+      dragTarget = null;
+      document.documentElement.style.cursor = '';
+      document.documentElement.style.userSelect = '';
+    }
+
+    const splitters = detail.querySelectorAll('.zd-splitter');
+    for (const s of splitters) s.addEventListener('mousedown', onDown);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
+    _detailSplitterCleanup = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      _detailSplitterCleanup = null;
+    };
+  }
+
+  // ── Scroll-up lazy loading for conversation ──
+
+  let _dashboardRenderWindow = 200; // How many entries to render from the end
+
+  function _setupConversationScrollLoader() {
+    const scrollEl = _dashboardModal?.querySelector('#zd-conversation');
+    if (!scrollEl) return;
+
+    scrollEl.addEventListener('scroll', () => {
+      // When user scrolls near the top, load more entries
+      if (scrollEl.scrollTop < 100 && _dashboardConversationEntries.length > _dashboardRenderWindow) {
+        const oldHeight = scrollEl.scrollHeight;
+        _dashboardRenderWindow = Math.min(_dashboardConversationEntries.length, _dashboardRenderWindow + 200);
+        _renderConversation();
+        // Preserve scroll position after prepending content
+        const newHeight = scrollEl.scrollHeight;
+        scrollEl.scrollTop += (newHeight - oldHeight);
+      }
+    });
   }
 
   async function _sendHumanMessage(sessionId, inputEl) {
@@ -7053,11 +7193,10 @@
     let html = '';
     let blockIdx = 0;
 
-    // For very long conversations, only render the last N entries
-    const MAX_RENDER = 200;
-    const startIdx = Math.max(0, _dashboardConversationEntries.length - MAX_RENDER);
+    // Render a window of entries from the end; scroll-up loads more
+    const startIdx = Math.max(0, _dashboardConversationEntries.length - _dashboardRenderWindow);
     if (startIdx > 0) {
-      html += `<div class="zd-empty" style="padding:8px;font-size:11px">Showing last ${MAX_RENDER} of ${_dashboardConversationEntries.length} entries</div>`;
+      html += `<div class="zd-load-more" id="zd-load-more">\u2191 ${startIdx} earlier entries \u2014 scroll up to load</div>`;
       blockIdx = startIdx;
     }
 
@@ -7226,6 +7365,44 @@
     // Only auto-scroll to bottom if user was already at (or near) the bottom
     if (wasAtBottom) {
       scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
+
+    // Set up IntersectionObserver for conversation→replay sync
+    _setupConversationSyncObserver(scrollEl);
+  }
+
+  let _dashboardSyncObserver = null;
+
+  function _setupConversationSyncObserver(scrollEl) {
+    if (_dashboardSyncObserver) _dashboardSyncObserver.disconnect();
+
+    // Build reverse map: conversationIdx → replaySeq
+    const reverseSync = new Map();
+    for (const [replaySeq, convoIdx] of _dashboardSyncMap) {
+      reverseSync.set(convoIdx, replaySeq);
+    }
+
+    if (reverseSync.size === 0) return;
+
+    _dashboardSyncObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const convoIdx = parseInt(entry.target.dataset.convIdx, 10);
+        if (isNaN(convoIdx)) continue;
+        const replaySeq = reverseSync.get(convoIdx);
+        if (replaySeq == null) continue;
+        // Find the replay entry index for this seq
+        const replayIdx = _dashboardReplayEntries.findIndex(e => (e.seq ?? 0) === replaySeq);
+        if (replayIdx >= 0 && replayIdx !== _dashboardSelectedReplayIdx) {
+          _selectDashboardReplayEntry(replayIdx);
+        }
+      }
+    }, { root: scrollEl, threshold: 0.5 });
+
+    // Observe all ZenRipple tool blocks in conversation
+    const toolBlocks = scrollEl.querySelectorAll('.zd-zenripple-tool[data-conv-idx]');
+    for (const block of toolBlocks) {
+      _dashboardSyncObserver.observe(block);
     }
   }
 
@@ -7718,6 +7895,8 @@
     if (!_dashboardModal) return;
 
     _stopDashboardPolling();
+    if (_detailSplitterCleanup) _detailSplitterCleanup();
+    if (_dashboardSyncObserver) { _dashboardSyncObserver.disconnect(); _dashboardSyncObserver = null; }
     window.removeEventListener('keydown', handleDashboardKeydown, true);
     window.removeEventListener('keyup', _blockDashboardKeyEvent, true);
     window.removeEventListener('keypress', _blockDashboardKeyEvent, true);
@@ -7774,15 +7953,23 @@
     if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
 
     // If user is typing in a contenteditable input, let most keys through
-    if (_isDashboardInput(e)) {
-      // Only intercept Escape (to blur) and Enter+Shift for send
+    const inInput = _isDashboardInput(e);
+    if (e.key === 'Backspace') {
+      log('Dashboard key: Backspace, inInput=' + inInput +
+          ', target=' + (e.target?.tagName || '?') + '.' + (e.target?.className || '') +
+          ', activeEl=' + (document.activeElement?.tagName || '?') + '.' + (document.activeElement?.className || '') +
+          ', isContentEditable=' + (document.activeElement?.isContentEditable) +
+          ', contenteditable=' + (document.activeElement?.getAttribute?.('contenteditable')));
+    }
+    if (inInput) {
+      // Only intercept Escape (to blur)
       if (e.key === 'Escape') {
         e.target.blur();
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
       }
-      // Enter without shift is handled by the input's own keydown listener
+      // All other keys (including Backspace, Enter) pass through to the input
       return;
     }
 

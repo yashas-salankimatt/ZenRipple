@@ -1772,10 +1772,17 @@ async def handle_session(client: BrowserClient, args: list[str]) -> int:
             return 1
         await client.connect()
         result = await client.command("set_session_name", {"name": name})
-        # Persist name to manifest.json so it survives browser restarts
+        # Persist name to manifest.json so it survives browser restarts.
+        # Use client.session_id (the session we're actually connected to).
         session_id = client.session_id or SESSION_ID
         if session_id:
             _persist_session_name(session_id, name)
+        # Also persist to the session file's session (may differ from
+        # client.session_id when ZENRIPPLE_SESSION_ID is not set and
+        # each CLI invocation gets a new connection)
+        sf_session = read_session_file()
+        if sf_session and sf_session != session_id:
+            _persist_session_name(sf_session, name)
         print(json.dumps(result, indent=2))
 
     else:
