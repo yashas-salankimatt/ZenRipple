@@ -7787,6 +7787,13 @@
       log('Dashboard: failed to write approval resolution: ' + e);
     }
 
+    // Clear any open deny input so _loadApprovals doesn't skip the refresh
+    const approvalsEl = _dashboardModal?.querySelector('#zd-approvals');
+    if (approvalsEl) {
+      const openDeny = approvalsEl.querySelector('.zd-deny-input-wrapper.visible');
+      if (openDeny) openDeny.classList.remove('visible');
+    }
+
     // Refresh approvals display
     await _loadApprovals(sessionId);
   }

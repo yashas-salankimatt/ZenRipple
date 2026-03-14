@@ -2136,8 +2136,9 @@ async def main(argv: list[str] | None = None) -> int:
         # For commands that don't connect, replay is skipped
         result_code = await _dispatch(command, args, client)
 
-        # Inject undelivered human→agent messages into output
-        # (same injection the MCP server does, so CLI users also get messages)
+        # Inject undelivered human→agent messages into output.
+        # Print to BOTH stdout (for MCP server to pick up) and stderr
+        # (for visibility when stdout is piped through JSON parsers).
         if command not in ("ping", "session", "replay-status", "approve", "notify"):
             _session = client.session_id or SESSION_ID
             if _session:
@@ -2149,7 +2150,12 @@ async def main(argv: list[str] | None = None) -> int:
                         ts = m.get("timestamp", "")
                         time_str = ts.split("T")[1][:8] if "T" in ts else ts
                         parts.append(f"[HUMAN_MESSAGE at {time_str}] {m.get('text', '')}")
-                    print("\n".join(parts))
+                    msg_text = "\n".join(parts)
+                    print(msg_text)
+                    # Also print to stderr so it's visible when stdout is piped
+                    print(f"\n--- {len(msgs)} human message(s) received ---",
+                          file=sys.stderr)
+                    print(msg_text, file=sys.stderr)
 
     except ConnectionError as e:
         print(f"Connection error: {e}", file=sys.stderr)
