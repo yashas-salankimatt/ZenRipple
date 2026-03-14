@@ -30,10 +30,15 @@ if [ -d "$REPO_DIR/.git" ]; then
   LOCAL=$(git -C "$REPO_DIR" rev-parse HEAD)
   REMOTE=$(git -C "$REPO_DIR" rev-parse @{u} 2>/dev/null || echo "$LOCAL")
   if [ "$LOCAL" != "$REMOTE" ]; then
+    # Stash local changes to avoid conflicts (don't pop — keeps working tree clean)
+    if ! git -C "$REPO_DIR" diff --quiet 2>/dev/null || ! git -C "$REPO_DIR" diff --cached --quiet 2>/dev/null; then
+      git -C "$REPO_DIR" stash --quiet 2>/dev/null && echo "REPO: stashed local changes"
+    fi
     if git -C "$REPO_DIR" pull --ff-only 2>/dev/null; then
       echo "REPO: updated to $(git -C "$REPO_DIR" rev-parse --short HEAD)"
     else
-      echo "REPO: WARNING — pull failed (local changes?). Run 'git -C $REPO_DIR status' to investigate."
+      git -C "$REPO_DIR" reset --hard origin/main 2>/dev/null
+      echo "REPO: reset to origin/main ($(git -C "$REPO_DIR" rev-parse --short HEAD))"
     fi
   else
     echo "REPO: up to date"
