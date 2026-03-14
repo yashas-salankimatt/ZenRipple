@@ -7310,6 +7310,7 @@
               const toolClass = isZenripple ? 'zd-zenripple-tool' : 'zd-other-tool';
               const friendlyName = isZenripple ? _friendlyToolName(block.name) : (block.name || '?');
               const subtitle = _toolUseSubtitle(block.name, block.input);
+              log('Dashboard render tool_use: name=' + block.name + ' friendly=' + friendlyName + ' zenripple=' + isZenripple + ' subtitle=' + subtitle.slice(0, 40));
 
               // For Bash tool, show the command inline
               let inlineContent = '';
@@ -7410,6 +7411,11 @@
     if (wasAtBottom) {
       scrollEl.scrollTop = scrollEl.scrollHeight;
     }
+
+    // Log render stats
+    const toolBlocks = scrollEl.querySelectorAll('.zd-tool-block');
+    const msgBlocks = scrollEl.querySelectorAll('.zd-msg');
+    log('Dashboard render: ' + msgBlocks.length + ' messages, ' + toolBlocks.length + ' tool blocks, html length=' + html.length);
 
     // Set up IntersectionObserver for conversation→replay sync
     _setupConversationSyncObserver(scrollEl);
