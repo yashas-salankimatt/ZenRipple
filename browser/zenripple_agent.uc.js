@@ -7433,8 +7433,10 @@
       proc.init(file);
 
       const tmpFile = PathUtils.join(PathUtils.tempDir, 'zenripple_cmd_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6) + '.tmp');
-      // Source user profile for PATH (claude binary location), redirect output to temp file
-      const fullCmd = 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" ; ' +
+      // Ensure HOME and PATH are set (nsIProcess may not inherit user environment)
+      const home = PathUtils.profileDir.split('/Library/')[0] || '/Users/' + (Cc['@mozilla.org/process/environment;1'].getService(Ci.nsIEnvironment).get('USER') || 'unknown');
+      const fullCmd = 'export HOME=' + _shellQuote(home) + ' ; ' +
+                      'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" ; ' +
                       cmd + ' > ' + _shellQuote(tmpFile) + ' 2>&1';
 
       proc.runAsync(['-c', fullCmd], 2, {
