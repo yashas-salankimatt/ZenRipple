@@ -6059,7 +6059,6 @@
   max-width: 100%;
   border-radius: var(--zr-r-sm);
   border: 1px solid var(--zr-border-subtle);
-  overflow: hidden;
   background: var(--zd-bubble-tool);
 }
 
@@ -7343,13 +7342,16 @@
     scrollEl.innerHTML = sanitizeForXHTML(html);
 
     // Build tool block content programmatically (XHTML innerHTML strips inner elements)
-    for (const { block, isZenripple, blockIdx: bIdx } of _pendingToolBlocks) {
-      const placeholder = scrollEl.querySelector(`[data-tool-idx="${_pendingToolBlocks.indexOf(arguments[0] || { block, isZenripple, blockIdx: bIdx })}"]`);
-    }
+    const allToolPlaceholders = scrollEl.querySelectorAll('.zd-tool-block[data-tool-idx]');
+    log('Dashboard: found ' + allToolPlaceholders.length + ' tool placeholders in DOM, pending=' + _pendingToolBlocks.length);
+
     for (let ti = 0; ti < _pendingToolBlocks.length; ti++) {
       const { block, isZenripple } = _pendingToolBlocks[ti];
       const el = scrollEl.querySelector('[data-tool-idx="' + ti + '"]');
-      if (!el) continue;
+      if (!el) {
+        log('Dashboard: tool placeholder NOT FOUND for idx=' + ti + ' name=' + block.name);
+        continue;
+      }
 
       const friendlyName = isZenripple ? _friendlyToolName(block.name) : (block.name || '?');
       const subtitle = _toolUseSubtitle(block.name, block.input);
@@ -7437,6 +7439,14 @@
       if (isError) {
         body.classList.add('expanded');
         toggle.classList.add('expanded');
+      }
+
+      if (ti === 0) {
+        log('Dashboard: first tool block built — el.childNodes=' + el.childNodes.length +
+            ' el.offsetHeight=' + el.offsetHeight +
+            ' header.offsetHeight=' + header.offsetHeight +
+            ' nameSpan.textContent=' + nameSpan.textContent +
+            ' el.innerHTML.length=' + el.innerHTML.length);
       }
     }
 
