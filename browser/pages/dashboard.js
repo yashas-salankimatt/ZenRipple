@@ -902,8 +902,8 @@ async function _loadSessionData() {
       }
     }
 
-    // Load conversation with incremental reads
-    await _loadConversation();
+    // Load conversation with incremental reads (skip for headless — has its own renderer)
+    if (!_headlessName) await _loadConversation();
 
     if (data.approvals) _renderApprovals(data.approvals);
     if (data.messages) _renderMessages(data.messages);
@@ -1531,7 +1531,7 @@ function startPolling() {
   stopPolling();
   _pollTimer = setInterval(async () => {
     if (document.hidden) return;
-    if (_tmuxSession || _headlessName) return; // Terminal/headless views have their own polling
+    if (_tmuxSession) return; // Terminal view has its own polling (no conversation to load)
     if (_pageType === 'overview') await refreshOverview();
     else await _loadSessionData();
   }, _POLL_MS);
