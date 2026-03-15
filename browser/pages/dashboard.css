@@ -460,11 +460,6 @@ body { display: flex; }
   border-color: var(--zr-accent);
   box-shadow: 0 0 0 1px var(--zr-accent-dim);
 }
-.zd-claude-input:empty::before {
-  content: attr(data-placeholder);
-  color: var(--zr-text-muted);
-  pointer-events: none;
-}
 .zd-claude-send {
   font-family: var(--zr-font-mono);
   font-size: 13px;
@@ -824,25 +819,6 @@ body { display: flex; }
 .zd-tool-json .zr-bool { color: #cba6f7; }
 .zd-tool-json .zr-null { color: #6b6b80; }
 
-/* Sync highlight pulse */
-.zd-sync-highlight {
-  animation: zd-sync-flash 0.5s ease-out;
-}
-@keyframes zd-sync-flash {
-  from { background: rgba(122,162,247,0.15); }
-  to { background: transparent; }
-}
-
-/* Load more indicator */
-.zd-load-more {
-  text-align: center;
-  padding: 8px;
-  font-size: 11px;
-  color: var(--zr-text-muted);
-  font-style: italic;
-  cursor: pointer;
-}
-.zd-load-more:hover { color: var(--zr-accent); }
 
 .zd-tool-header {
   display: flex;
@@ -1265,6 +1241,258 @@ body { display: flex; }
 }
 .zd-load-more:hover {
   color: var(--zr-accent);
+}
+
+/* ── Terminal View ── */
+.zd-terminal-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.zd-terminal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+}
+.zd-terminal-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+}
+.zd-terminal-session {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  padding: 1px 6px;
+  border-radius: var(--zr-r-sm);
+}
+.zd-terminal-dims {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+}
+.zd-terminal-focus-hint {
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  font-style: italic;
+}
+.zd-terminal-output {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 12px;
+  margin: 0;
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  line-height: 1.3;
+  color: #cdd6f4;
+  background: #1e1e2e;
+  white-space: pre;
+  cursor: text;
+  outline: none;
+  border: 2px solid transparent;
+  transition: border-color 0.15s;
+}
+.zd-terminal-output.focused {
+  border-color: var(--zr-accent);
+}
+.zd-terminal-output::-moz-selection {
+  background: rgba(122,162,247,0.3);
+}
+.zd-terminal-status {
+  padding: 4px 12px;
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  color: var(--zr-text-muted);
+  border-top: 1px solid var(--zr-border-subtle);
+  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Headless View ── */
+.zd-headless-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.zd-headless-output {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.zd-headless-status {
+  font-family: var(--zr-font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: var(--zr-r-sm);
+}
+
+/* ── Spawn Button ── */
+.zd-spawn-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  border: 1px solid var(--zr-accent-20);
+  border-radius: var(--zr-r-sm);
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: all 0.12s;
+  margin-bottom: 16px;
+}
+.zd-spawn-btn:hover {
+  background: var(--zr-accent-20);
+}
+
+/* ── Spawn Dialog Overlay ── */
+.zd-spawn-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.zd-spawn-dialog {
+  width: 480px;
+  max-width: 90vw;
+  background: var(--zr-bg-surface);
+  border: 1px solid var(--zr-border-default);
+  border-radius: var(--zr-r-xl);
+  box-shadow: var(--zr-shadow-modal);
+  overflow: hidden;
+}
+.zd-spawn-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--zr-border-subtle);
+}
+.zd-spawn-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--zr-text-primary);
+  flex: 1;
+}
+.zd-spawn-close {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--zr-r-sm);
+  color: var(--zr-text-muted);
+  cursor: pointer;
+  font-size: 18px;
+  transition: all 0.12s;
+}
+.zd-spawn-close:hover {
+  background: var(--zr-bg-hover);
+  color: var(--zr-text-primary);
+}
+.zd-spawn-body {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.zd-spawn-row {
+  display: flex;
+  gap: 12px;
+}
+.zd-spawn-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.zd-spawn-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--zr-text-muted);
+}
+.zd-spawn-textarea,
+.zd-spawn-input,
+.zd-spawn-select {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: var(--zr-r-sm);
+  border: 1px solid var(--zr-border-default);
+  background: var(--zr-bg-raised);
+  color: var(--zr-text-primary);
+  outline: none;
+  resize: vertical;
+}
+.zd-spawn-textarea:focus,
+.zd-spawn-input:focus,
+.zd-spawn-select:focus {
+  border-color: var(--zr-accent);
+  box-shadow: 0 0 0 1px var(--zr-accent-dim);
+}
+.zd-spawn-select {
+  -moz-appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+.zd-spawn-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--zr-border-subtle);
+}
+.zd-spawn-cancel {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  color: var(--zr-text-secondary);
+  border: 1px solid var(--zr-border-default);
+  background: var(--zr-bg-raised);
+  transition: all 0.12s;
+}
+.zd-spawn-cancel:hover {
+  background: var(--zr-bg-hover);
+}
+.zd-spawn-submit {
+  font-family: var(--zr-font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--zr-r-sm);
+  cursor: pointer;
+  color: var(--zr-accent);
+  background: var(--zr-accent-dim);
+  border: 1px solid var(--zr-accent-20);
+  transition: all 0.12s;
+}
+.zd-spawn-submit:hover {
+  background: var(--zr-accent-20);
 }
 
 /* Scrollbars */

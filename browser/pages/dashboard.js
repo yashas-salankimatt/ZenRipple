@@ -170,7 +170,8 @@ function buildCardHTML(card) {
 }
 
 function buildOverviewHTML(cards) {
-  if (!cards.length) return '<div class="zd-empty">No agent sessions found.</div>';
+  let spawnBtn = '<div class="zd-spawn-btn" id="zd-spawn-btn">+ New Agent</div>';
+  if (!cards.length) return spawnBtn + '<div class="zd-empty">No agent sessions found.</div>';
   const groups = new Map(), ungrouped = [];
   for (const c of cards) {
     if (c.conversationPath) {
@@ -184,7 +185,7 @@ function buildOverviewHTML(cards) {
       if (c.status !== 'ended') g.hasActive = true;
     } else ungrouped.push(c);
   }
-  let html = '';
+  let html = spawnBtn;
   const sorted = [...groups.entries()].sort((a,b) => (a[1].hasActive===b[1].hasActive?0:a[1].hasActive?-1:1) || Math.max(0,...b[1].cards.map(c=>c.lastActivity||0))-Math.max(0,...a[1].cards.map(c=>c.lastActivity||0)));
   for (const [cp, g] of sorted) {
     html += '<div class="zd-convo-group"><div class="zd-convo-group-header">';
@@ -214,6 +215,9 @@ async function refreshOverview() {
       c.addEventListener('click', () => { const sid = c.dataset.sessionId; if (sid) bridgeCall('openSessionTab', {sessionId:sid}); });
     for (const b of el.querySelectorAll('.zd-convo-group-viewall'))
       b.addEventListener('click', (e) => { e.stopPropagation(); bridgeCall('openMergedTab', {convoPath:b.dataset.convoPath}); });
+    // Wire spawn button
+    const spawnBtn = document.getElementById('zd-spawn-btn');
+    if (spawnBtn) spawnBtn.addEventListener('click', _showSpawnDialog);
     const footer = document.getElementById('zd-footer');
     if (footer) {
       const active = cards.filter(c=>c.status!=='ended').length;
@@ -222,7 +226,424 @@ async function refreshOverview() {
   } catch (e) { console.error('[ZenRipple] Overview error:', e); }
 }
 
+// ── Spawn Dialog ──────────────────────────────────────────
+
+function _showSpawnDialog() {
+  // Remove existing dialog if any
+  const existing = document.getElementById('zd-spawn-overlay');
+  if (existing) existing.remove();
+
+  const overlay = document.createElement('div');
+  overlay.id = 'zd-spawn-overlay';
+  overlay.className = 'zd-spawn-overlay';
+  overlay.innerHTML = `
+    <div class="zd-spawn-dialog">
+      <div class="zd-spawn-header">
+        <span class="zd-spawn-title">Spawn New Agent</span>
+        <div class="zd-spawn-close" id="zd-spawn-close">&times;</div>
+      </div>
+      <div class="zd-spawn-body">
+        <div class="zd-spawn-field">
+          <label class="zd-spawn-label">Prompt</label>
+          <textarea class="zd-spawn-textarea" id="zd-spawn-prompt" rows="4" maxlength="50000" placeholder="What should the agent do?"></textarea>
+        </div>
+        <div class="zd-spawn-row">
+          <div class="zd-spawn-field" style="flex:1">
+            <label class="zd-spawn-label">Name (optional)</label>
+            <input class="zd-spawn-input" id="zd-spawn-name" type="text" placeholder="my-agent">
+          </div>
+          <div class="zd-spawn-field" style="flex:1">
+            <label class="zd-spawn-label">Mode</label>
+            <select class="zd-spawn-select" id="zd-spawn-mode">
+              <option value="tmux">tmux (interactive)</option>
+              <option value="headless">headless (background)</option>
+            </select>
+          </div>
+        </div>
+        <div class="zd-spawn-field">
+          <label class="zd-spawn-label">Working Directory (optional)</label>
+          <input class="zd-spawn-input" id="zd-spawn-workdir" type="text" placeholder="~/.zenripple/workspaces/...">
+        </div>
+      </div>
+      <div class="zd-spawn-footer">
+        <div class="zd-spawn-cancel" id="zd-spawn-cancel">Cancel</div>
+        <div class="zd-spawn-submit" id="zd-spawn-submit">Spawn Agent</div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Wire events
+  const close = () => overlay.remove();
+  overlay.querySelector('#zd-spawn-close').addEventListener('click', close);
+  overlay.querySelector('#zd-spawn-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+  overlay.querySelector('#zd-spawn-submit').addEventListener('click', async () => {
+    const prompt = document.getElementById('zd-spawn-prompt').value.trim();
+    if (!prompt) return;
+    const name = document.getElementById('zd-spawn-name').value.trim() || undefined;
+    const mode = document.getElementById('zd-spawn-mode').value;
+    const workdir = document.getElementById('zd-spawn-workdir').value.trim() || undefined;
+
+    const submitBtn = overlay.querySelector('#zd-spawn-submit');
+    submitBtn.textContent = 'Spawning...';
+    submitBtn.style.pointerEvents = 'none';
+
+    try {
+      const result = await bridgeCall('spawnAgent', { prompt, mode, name, workdir });
+      console.log('[ZenRipple] Agent spawned:', result);
+      close();
+      // The bridge opens a session tab automatically — refresh overview after a delay
+      setTimeout(() => refreshOverview(), 3000);
+    } catch (e) {
+      console.error('[ZenRipple] Spawn failed:', e);
+      submitBtn.textContent = 'Failed — Retry';
+      submitBtn.style.pointerEvents = '';
+    }
+  });
+
+  // Focus prompt
+  setTimeout(() => document.getElementById('zd-spawn-prompt')?.focus(), 100);
+}
+
+// ── Tmux Terminal View ────────────────────────────────────
+
+function _initTerminalView(body, manifest) {
+  body.innerHTML = `
+    <div class="zd-terminal-view" id="zd-terminal-view">
+      <div class="zd-terminal-header">
+        <span class="zd-terminal-label">Terminal</span>
+        <span class="zd-terminal-session">${escapeHTML(manifest.tmuxSession || '')}</span>
+        <span class="zd-header-spacer"></span>
+        <span class="zd-terminal-dims" id="zd-term-dims">--x--</span>
+        <div class="zd-terminal-focus-hint" id="zd-term-focus-hint">Click to interact</div>
+      </div>
+      <pre class="zd-terminal-output" id="zd-term-output" tabindex="0"></pre>
+      <div class="zd-terminal-status" id="zd-term-status">Connecting...</div>
+    </div>
+  `;
+
+  const termEl = document.getElementById('zd-term-output');
+  if (!termEl) return;
+
+  // Focus/blur tracking
+  termEl.addEventListener('focus', () => {
+    _tmuxFocused = true;
+    termEl.classList.add('focused');
+    const hint = document.getElementById('zd-term-focus-hint');
+    if (hint) hint.style.display = 'none';
+  });
+  termEl.addEventListener('blur', () => {
+    _tmuxFocused = false;
+    termEl.classList.remove('focused');
+    const hint = document.getElementById('zd-term-focus-hint');
+    if (hint) hint.style.display = '';
+  });
+
+  // Key handling — forward all keys to tmux when focused
+  termEl.addEventListener('keydown', _handleTerminalKey);
+
+  // Resize observer — resize tmux pane to match terminal element
+  const resizeObs = new ResizeObserver(_debounce(() => _syncTerminalSize(termEl), 200));
+  resizeObs.observe(termEl);
+
+  // Initial size sync
+  setTimeout(() => _syncTerminalSize(termEl), 500);
+
+  // Start polling
+  _startTmuxPolling();
+
+  const statusEl = document.getElementById('zd-term-status');
+  if (statusEl) statusEl.textContent = manifest.prompt?.slice(0, 100) || '';
+}
+
+function _debounce(fn, ms) {
+  let timer;
+  return (...args) => { clearTimeout(timer); timer = setTimeout(() => fn(...args), ms); };
+}
+
+async function _syncTerminalSize(termEl) {
+  if (!_tmuxSession || !termEl) return;
+  // Calculate cols/rows from element size and font metrics
+  const style = getComputedStyle(termEl);
+  const fontSize = parseFloat(style.fontSize) || 12;
+  const charWidth = fontSize * 0.6; // monospace approximation
+  const lineHeight = parseFloat(style.lineHeight) || fontSize * 1.3;
+  const width = Math.floor(termEl.clientWidth / charWidth);
+  const height = Math.floor(termEl.clientHeight / lineHeight);
+  if (width < 10 || height < 3) return;
+  try {
+    await bridgeCall('resizeTmuxPane', { tmuxSession: _tmuxSession, width, height });
+    const dimsEl = document.getElementById('zd-term-dims');
+    if (dimsEl) dimsEl.textContent = width + 'x' + height;
+  } catch (_) {}
+}
+
+function _startTmuxPolling() {
+  _stopTmuxPolling();
+  _pollTmuxPane(); // immediate
+  _tmuxPollTimer = setInterval(_pollTmuxPane, 300);
+}
+
+function _stopTmuxPolling() {
+  if (_tmuxPollTimer) { clearInterval(_tmuxPollTimer); _tmuxPollTimer = null; }
+}
+
+async function _pollTmuxPane() {
+  if (!_tmuxSession) return;
+  try {
+    const result = await bridgeCall('captureTmuxPane', { tmuxSession: _tmuxSession });
+    if (!result?.content && result?.content !== '') return;
+    // Only update DOM if content changed
+    if (result.content === _tmuxLastContent) return;
+    _tmuxLastContent = result.content;
+    const termEl = document.getElementById('zd-term-output');
+    if (!termEl) return;
+    termEl.innerHTML = _ansiToHtml(result.content);
+    // Auto-scroll to bottom
+    termEl.scrollTop = termEl.scrollHeight;
+  } catch (_) {}
+}
+
+// Map KeyboardEvent to tmux key name
+function _mapKeyToTmux(e) {
+  // Modifier prefixes
+  const ctrl = e.ctrlKey, alt = e.altKey, shift = e.shiftKey, meta = e.metaKey;
+
+  // Special keys
+  const specialMap = {
+    'Enter': 'Enter', 'Backspace': 'BSpace', 'Tab': 'Tab',
+    'Escape': 'Escape', 'Delete': 'DC',
+    'ArrowUp': 'Up', 'ArrowDown': 'Down', 'ArrowLeft': 'Left', 'ArrowRight': 'Right',
+    'Home': 'Home', 'End': 'End', 'PageUp': 'PPage', 'PageDown': 'NPage',
+    'F1': 'F1', 'F2': 'F2', 'F3': 'F3', 'F4': 'F4', 'F5': 'F5',
+    'F6': 'F6', 'F7': 'F7', 'F8': 'F8', 'F9': 'F9', 'F10': 'F10',
+    'F11': 'F11', 'F12': 'F12',
+  };
+  if (specialMap[e.key]) {
+    let k = specialMap[e.key];
+    if (shift && k.length > 1) k = 'S-' + k;
+    if (alt) k = 'M-' + k;
+    if (ctrl) k = 'C-' + k;
+    return { key: k, literal: false };
+  }
+  // Ctrl+letter
+  if (ctrl && e.key.length === 1 && /[a-z\\[\]^_@]/.test(e.key)) {
+    return { key: 'C-' + e.key, literal: false };
+  }
+  // Alt+letter
+  if (alt && e.key.length === 1) {
+    return { key: 'M-' + e.key, literal: false };
+  }
+  // Space
+  if (e.key === ' ') return { key: ' ', literal: true };
+  // Regular printable character
+  if (e.key.length === 1 && !ctrl && !alt && !meta) {
+    return { key: e.key, literal: true };
+  }
+  return null;
+}
+
+async function _handleTerminalKey(e) {
+  if (!_tmuxSession || !_tmuxFocused) return;
+  // Don't intercept browser shortcuts (Cmd+C, Cmd+V, etc.)
+  if (e.metaKey) return;
+
+  const mapped = _mapKeyToTmux(e);
+  if (!mapped) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  try {
+    await bridgeCall('sendKeysToTmux', {
+      tmuxSession: _tmuxSession,
+      keys: mapped.key,
+      literal: mapped.literal,
+    });
+    // Poll immediately after key press for responsiveness
+    setTimeout(_pollTmuxPane, 50);
+  } catch (err) {
+    console.error('[ZenRipple] sendKeys error:', err);
+  }
+}
+
+// ── ANSI to HTML Converter ────────────────────────────────
+
+const _ANSI_COLORS = [
+  '#1e1e2e','#f38ba8','#a6e3a1','#f9e2af','#89b4fa','#cba6f7','#94e2d5','#cdd6f4', // 0-7
+  '#585b70','#f38ba8','#a6e3a1','#f9e2af','#89b4fa','#cba6f7','#94e2d5','#ffffff', // 8-15
+];
+
+function _ansi256Color(n) {
+  if (n < 16) return _ANSI_COLORS[n] || '#cdd6f4';
+  if (n < 232) {
+    n -= 16;
+    const r = Math.floor(n / 36) * 51, g = Math.floor((n % 36) / 6) * 51, b = (n % 6) * 51;
+    return `rgb(${r},${g},${b})`;
+  }
+  const v = (n - 232) * 10 + 8;
+  return `rgb(${v},${v},${v})`;
+}
+
+function _ansiToHtml(text) {
+  let html = '';
+  let fg = '', bg = '', bold = false, dim = false, italic = false, underline = false, strikethrough = false, inverse = false;
+  let spanOpen = false;
+
+  function openSpan() {
+    if (spanOpen) html += '</span>';
+    const styles = [];
+    let fgColor = fg, bgColor = bg;
+    if (inverse) { const tmp = fgColor; fgColor = bgColor || '#1e1e2e'; bgColor = tmp || '#cdd6f4'; }
+    if (fgColor) styles.push('color:' + fgColor);
+    if (bgColor) styles.push('background:' + bgColor);
+    if (bold) styles.push('font-weight:bold');
+    if (dim) styles.push('opacity:0.5');
+    if (italic) styles.push('font-style:italic');
+    if (underline) styles.push('text-decoration:underline');
+    if (strikethrough) styles.push('text-decoration:line-through');
+    if (styles.length) {
+      html += '<span style="' + styles.join(';') + '">';
+      spanOpen = true;
+    } else {
+      spanOpen = false;
+    }
+  }
+
+  const re = /\x1b\[([0-9;]*)m/g;
+  let lastIdx = 0, match;
+  while ((match = re.exec(text)) !== null) {
+    // Output text before this escape
+    const chunk = text.slice(lastIdx, match.index);
+    if (chunk) html += escapeHTML(chunk);
+    lastIdx = re.lastIndex;
+
+    // Parse SGR codes
+    const codes = match[1] ? match[1].split(';').map(Number) : [0];
+    for (let i = 0; i < codes.length; i++) {
+      const c = codes[i];
+      if (c === 0) { fg = ''; bg = ''; bold = false; dim = false; italic = false; underline = false; strikethrough = false; inverse = false; }
+      else if (c === 1) bold = true;
+      else if (c === 2) dim = true;
+      else if (c === 3) italic = true;
+      else if (c === 4) underline = true;
+      else if (c === 7) inverse = true;
+      else if (c === 9) strikethrough = true;
+      else if (c === 22) { bold = false; dim = false; }
+      else if (c === 23) italic = false;
+      else if (c === 24) underline = false;
+      else if (c === 27) inverse = false;
+      else if (c === 29) strikethrough = false;
+      else if (c >= 30 && c <= 37) fg = _ANSI_COLORS[c - 30];
+      else if (c === 38 && codes[i+1] === 5) { fg = _ansi256Color(codes[i+2]); i += 2; }
+      else if (c === 38 && codes[i+1] === 2) { fg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4; }
+      else if (c === 39) fg = '';
+      else if (c >= 40 && c <= 47) bg = _ANSI_COLORS[c - 40];
+      else if (c === 48 && codes[i+1] === 5) { bg = _ansi256Color(codes[i+2]); i += 2; }
+      else if (c === 48 && codes[i+1] === 2) { bg = `rgb(${codes[i+2]},${codes[i+3]},${codes[i+4]})`; i += 4; }
+      else if (c === 49) bg = '';
+      else if (c >= 90 && c <= 97) fg = _ANSI_COLORS[c - 90 + 8];
+      else if (c >= 100 && c <= 107) bg = _ANSI_COLORS[c - 100 + 8];
+    }
+    openSpan();
+  }
+  // Remaining text
+  const tail = text.slice(lastIdx);
+  if (tail) html += escapeHTML(tail);
+  if (spanOpen) html += '</span>';
+
+  // Strip other escape sequences (cursor, window title, etc.)
+  html = html.replace(/\x1b\[[0-9;]*[A-HJKSTfhlmn]/g, '');
+  html = html.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '');
+  html = html.replace(/\x1b[()][AB012]/g, '');
+  html = html.replace(/\x1b\[[\?]?[0-9;]*[hlrm]/g, '');
+
+  return html;
+}
+
+// ── Headless Output View ──────────────────────────────────
+
+let _headlessName = null;
+let _headlessPollTimer = null;
+let _headlessLastCount = -1;
+
+function _initHeadlessView(body, manifest) {
+  _headlessName = manifest.name;
+  body.innerHTML = `
+    <div class="zd-headless-view" id="zd-headless-view">
+      <div class="zd-terminal-header">
+        <span class="zd-terminal-label">Headless Agent</span>
+        <span class="zd-terminal-session">${escapeHTML(manifest.name || '')}</span>
+        <span class="zd-header-spacer"></span>
+        <span class="zd-headless-status" id="zd-headless-status">Checking...</span>
+      </div>
+      <div class="zd-headless-output" id="zd-headless-output"><div class="zd-empty">Loading output...</div></div>
+      <div class="zd-terminal-status" id="zd-headless-prompt">${escapeHTML((manifest.prompt || '').slice(0, 200))}</div>
+    </div>
+  `;
+  _startHeadlessPolling();
+}
+
+function _startHeadlessPolling() {
+  _stopHeadlessPolling();
+  _pollHeadlessOutput();
+  _headlessPollTimer = setInterval(_pollHeadlessOutput, 2000);
+}
+
+function _stopHeadlessPolling() {
+  if (_headlessPollTimer) { clearInterval(_headlessPollTimer); _headlessPollTimer = null; }
+}
+
+async function _pollHeadlessOutput() {
+  if (!_headlessName) return;
+  try {
+    const data = await bridgeCall('getHeadlessOutput', { name: _headlessName });
+    if (!data) return;
+
+    const statusEl = document.getElementById('zd-headless-status') || document.getElementById('zd-claude-status');
+    if (statusEl) {
+      statusEl.textContent = data.alive ? 'Headless agent running...' : 'Headless agent completed';
+    }
+
+    // Only re-render if line count changed
+    if (data.lineCount === _headlessLastCount) return;
+    _headlessLastCount = data.lineCount;
+
+    const el = document.getElementById('zd-headless-output') || document.getElementById('zd-conversation');
+    if (!el || !data.entries?.length) {
+      if (el && !data.entries?.length) el.innerHTML = '<div class="zd-empty">No output yet...</div>';
+      return;
+    }
+
+    let html = '';
+    for (const entry of data.entries) {
+      if (entry.role === 'assistant' && entry.type === 'text') {
+        html += '<div class="zd-msg zd-msg-assistant"><div class="zd-msg-label agent-label">Agent</div><div class="zd-msg-content">' + escapeHTML(entry.content.slice(0, 2000)) + '</div></div>';
+      } else if (entry.role === 'assistant' && entry.type === 'tool_use') {
+        const inputStr = entry.input ? JSON.stringify(entry.input, null, 2).slice(0, 500) : '';
+        html += '<div class="zd-tool-block zd-other-tool"><div class="zd-tool-header"><span class="zd-tool-name">' + escapeHTML(entry.name) + '</span></div>';
+        if (inputStr) html += '<div class="zd-tool-body expanded"><div class="zd-tool-json">' + syntaxHighlightJSON(inputStr) + '</div></div>';
+        html += '</div>';
+      } else if (entry.role === 'result') {
+        html += '<div class="zd-msg zd-msg-assistant" style="border-left:3px solid var(--zr-success);"><div class="zd-msg-label agent-label">Result</div><div class="zd-msg-content">' + escapeHTML(entry.content.slice(0, 2000)) + '</div></div>';
+      }
+    }
+    el.innerHTML = html;
+    el.scrollTop = el.scrollHeight;
+
+    // Stop polling once complete
+    if (!data.alive) _stopHeadlessPolling();
+  } catch (_) {}
+}
+
 // ── Session Detail ─────────────────────────────────────────
+
+// ── Tmux Terminal View State ───────────────────────────────
+let _tmuxSession = null; // Set when session has a tmux pane to capture
+let _tmuxPollTimer = null;
+let _tmuxLastContent = '';
+let _tmuxFocused = false;
 
 async function initSessionDetail() {
   const back = document.getElementById('zd-back');
@@ -238,10 +659,24 @@ async function initSessionDetail() {
     info = await bridgeCall(method, params);
   } catch (_) {}
 
+  // Check if this is a spawned tmux session
+  let manifest = null;
+  if (_pageType === 'session' && _sessionId) {
+    try { manifest = await bridgeCall('getSessionManifest', { sessionId: _sessionId }); } catch (_) {}
+  }
+
   const title = document.getElementById('zd-title');
   const badge = document.getElementById('zd-badge');
-  if (title) title.textContent = info?.name || _sessionId?.slice(0,12) || 'Session';
-  if (badge) badge.textContent = info?.status || '';
+  if (title) title.textContent = manifest?.name || info?.name || _sessionId?.slice(0,12) || 'Session';
+  if (badge) badge.textContent = manifest?.mode === 'tmux' ? 'tmux' : (info?.status || '');
+
+  // For spawned sessions, track mode for rendering
+  if (manifest?.tmuxSession) {
+    _tmuxSession = manifest.name;
+  }
+  if (manifest?.mode === 'headless') {
+    _headlessName = manifest.name;
+  }
 
   body.innerHTML = `
     <div class="zd-detail">
@@ -270,9 +705,11 @@ async function initSessionDetail() {
         </div>
         <div class="zd-conversation-scroll" id="zd-conversation"><div class="zd-empty">Loading...</div></div>
         <div class="zd-tool-detail-view" id="zd-tool-detail"></div>
+        <div class="zd-claude-status" id="zd-claude-status"></div>
         <div class="zd-claude-input-wrapper">
           <input class="zd-claude-input" id="zd-claude-input" type="text" placeholder="Send to Claude Code...">
           <div class="zd-claude-send" id="zd-claude-send">&#x2192;</div>
+          <div class="zd-claude-stop" id="zd-claude-stop" style="display:none" title="Stop Claude">&#x25A0;</div>
         </div>
       </div>
       <div class="zd-splitter zd-splitter-v" data-split="right"></div>
@@ -293,9 +730,120 @@ async function initSessionDetail() {
     </div>
   `;
 
-  // Wire inputs
+  // For tmux sessions: replace conversation column with terminal view
+  if (_tmuxSession) {
+    // Replace conversation scroll with terminal pre
+    const convoScroll = document.getElementById('zd-conversation');
+    if (convoScroll) {
+      convoScroll.outerHTML = '<pre class="zd-terminal-output" id="zd-term-output" tabindex="0"></pre>';
+    }
+    // Hide convo tabs + tool detail (not applicable for terminal view)
+    const convoTabs = document.querySelector('.zd-convo-tabs');
+    if (convoTabs) convoTabs.style.display = 'none';
+    const toolDetail = document.getElementById('zd-tool-detail');
+    if (toolDetail) toolDetail.style.display = 'none';
+
+    // Wire terminal input — input field sends keys to tmux
+    const claudeInput = document.getElementById('zd-claude-input');
+    const claudeSend = document.getElementById('zd-claude-send');
+    if (claudeInput) claudeInput.placeholder = 'Type to send to agent...';
+    const doTmuxSend = async () => {
+      if (!claudeInput) return;
+      const text = claudeInput.value.trim();
+      if (!text) return;
+      claudeInput.value = '';
+      try {
+        await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: text, literal: true });
+        await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'Enter' });
+        setTimeout(_pollTmuxPane, 100);
+      } catch (e) { console.error('[ZenRipple] tmux send error:', e); }
+    };
+    if (claudeSend) claudeSend.addEventListener('click', doTmuxSend);
+    if (claudeInput) claudeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doTmuxSend(); });
+
+    // Wire terminal keyboard interactivity (when <pre> is focused)
+    const termEl = document.getElementById('zd-term-output');
+    if (termEl) {
+      termEl.addEventListener('focus', () => { _tmuxFocused = true; termEl.classList.add('focused'); });
+      termEl.addEventListener('blur', () => { _tmuxFocused = false; termEl.classList.remove('focused'); });
+      termEl.addEventListener('keydown', _handleTerminalKey);
+      // Resize observer
+      const resizeObs = new ResizeObserver(_debounce(() => _syncTerminalSize(termEl), 200));
+      resizeObs.observe(termEl);
+      setTimeout(() => _syncTerminalSize(termEl), 500);
+    }
+
+    // Wire stop — kill tmux session
+    const stopBtn = document.getElementById('zd-claude-stop');
+    if (stopBtn) {
+      stopBtn.style.display = '';
+      stopBtn.addEventListener('click', async () => {
+        try {
+          // Send Ctrl+C then Escape x3
+          await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'C-c' });
+          for (let i = 0; i < 3; i++) {
+            await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'Escape' });
+          }
+          const statusEl = document.getElementById('zd-claude-status');
+          if (statusEl) statusEl.textContent = 'Interrupted';
+        } catch (e) { console.error('[ZenRipple] tmux stop error:', e); }
+      });
+    }
+
+    _wireInput('zd-msg-input', 'zd-msg-send', (text) => bridgeCall('sendHumanMessage', { sessionId: _sessionId, text }));
+    _setupTransportControls();
+    _setupSplitters();
+    _convoReadBytes = _CONVO_CHUNK_SIZE;
+    await _loadSessionData();
+    _startTmuxPolling();
+    return;
+  }
+
+  // For headless sessions: replace conversation content with headless output polling
+  if (_headlessName) {
+    // Hide convo tabs (no tool detail for headless)
+    const convoTabs = document.querySelector('.zd-convo-tabs');
+    if (convoTabs) convoTabs.style.display = 'none';
+    const toolDetail = document.getElementById('zd-tool-detail');
+    if (toolDetail) toolDetail.style.display = 'none';
+
+    // Wire input — sends via sendToClaudeCode which uses --resume for headless
+    _wireInput('zd-claude-input', 'zd-claude-send', (text) => bridgeCall('sendToClaudeCode', { sessionId: _sessionId, text }));
+    _wireInput('zd-msg-input', 'zd-msg-send', (text) => bridgeCall('sendHumanMessage', { sessionId: _sessionId, text }));
+
+    // Wire stop
+    const hStopBtn = document.getElementById('zd-claude-stop');
+    if (hStopBtn) hStopBtn.addEventListener('click', async () => {
+      try {
+        await bridgeCall('stopClaude', { sessionId: _sessionId });
+        const hStatus = document.getElementById('zd-claude-status');
+        if (hStatus) hStatus.textContent = 'Stopped';
+        hStopBtn.style.display = 'none';
+      } catch (_) {}
+    });
+
+    _setupTransportControls();
+    _setupSplitters();
+    _convoReadBytes = _CONVO_CHUNK_SIZE;
+    await _loadSessionData();
+    _startHeadlessPolling();
+    return;
+  }
+
+  // Wire inputs (standard conversation mode)
   _wireInput('zd-claude-input', 'zd-claude-send', (text) => bridgeCall('sendToClaudeCode', { sessionId: _sessionId, text }));
   _wireInput('zd-msg-input', 'zd-msg-send', (text) => bridgeCall('sendHumanMessage', { sessionId: _sessionId, text }));
+
+  // Wire stop button
+  const stopBtn = document.getElementById('zd-claude-stop');
+  if (stopBtn) stopBtn.addEventListener('click', async () => {
+    try {
+      await bridgeCall('stopClaude', { sessionId: _sessionId });
+      const statusEl = document.getElementById('zd-claude-status');
+      if (statusEl) statusEl.textContent = 'Stopped';
+      stopBtn.style.display = 'none';
+    } catch (e) { console.error('[ZenRipple] Stop failed:', e); }
+  });
 
   // Tab switching
   for (const tab of document.querySelectorAll('.zd-convo-tab')) {
@@ -359,6 +907,9 @@ async function _loadSessionData() {
 
     if (data.approvals) _renderApprovals(data.approvals);
     if (data.messages) _renderMessages(data.messages);
+
+    // Poll Claude status for stop button
+    _pollClaudeStatus();
 
     const footer = document.getElementById('zd-footer');
     if (footer) footer.innerHTML = `<span class="zd-footer-item">${_replayEntries.length} calls</span><span class="zd-footer-item">${escapeHTML(data.status||'')}</span>`;
@@ -541,7 +1092,14 @@ async function _selectReplayEntry(idx, scrollConversation = true) {
       try {
         const result = await bridgeCall('getScreenshot', { replayDir: entry._sourceReplayDir || entry._replayDir || '', filename: entry.screenshot });
         url = result?.url || null;
-        if (url) _screenshotCache.set(cacheKey, url);
+        if (url) {
+          // Cap cache at 100 entries to prevent unbounded memory growth
+          if (_screenshotCache.size >= 100) {
+            const oldest = _screenshotCache.keys().next().value;
+            _screenshotCache.delete(oldest);
+          }
+          _screenshotCache.set(cacheKey, url);
+        }
       } catch (_) {}
     }
     if (url) {
@@ -921,11 +1479,39 @@ function _renderMessages(entries) {
   el.scrollTop = el.scrollHeight;
 }
 
+// ── Claude Status Polling ──────────────────────────────────
+
+let _claudeStatusPollCount = 0;
+
+async function _pollClaudeStatus() {
+  if (_pageType === 'overview' || _pageType === 'merged') return;
+  // Throttle: only poll every 3rd cycle (~6 seconds instead of ~2)
+  if (++_claudeStatusPollCount % 3 !== 0) return;
+  try {
+    const result = await bridgeCall('getClaudeStatus', { sessionId: _sessionId });
+    const statusEl = document.getElementById('zd-claude-status');
+    const stopBtn = document.getElementById('zd-claude-stop');
+    if (!statusEl || !stopBtn) return;
+
+    if (result.status === 'fork_running') {
+      statusEl.textContent = 'Fork running (PID ' + result.pid + ')';
+      stopBtn.style.display = '';
+    } else if (result.status === 'tmux_running') {
+      statusEl.textContent = 'Claude running in tmux ' + (result.tmuxPane || '');
+      stopBtn.style.display = '';
+    } else {
+      // idle or no_conversation — only clear if not showing "Stopped"
+      if (statusEl.textContent !== 'Stopped') statusEl.textContent = '';
+      stopBtn.style.display = 'none';
+    }
+  } catch (_) {}
+}
+
 // ── Keyboard Shortcuts ─────────────────────────────────────
 
 document.addEventListener('keydown', (e) => {
   if (_pageType === 'overview') return;
-  if (e.target.tagName === 'INPUT' || e.target.isContentEditable) return;
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.isContentEditable) return;
 
   if (e.key === ' ') { e.preventDefault(); _togglePlayback(); }
   else if (e.key === '[') _setSpeed(_playbackSpeedIdx - 1);
@@ -942,14 +1528,27 @@ function startPolling() {
   stopPolling();
   _pollTimer = setInterval(async () => {
     if (document.hidden) return;
+    if (_tmuxSession || _headlessName) return; // Terminal/headless views have their own polling
     if (_pageType === 'overview') await refreshOverview();
     else await _loadSessionData();
   }, _POLL_MS);
 }
 
-function stopPolling() { if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; } }
+function stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+  _stopTmuxPolling();
+  _stopHeadlessPolling();
+}
 
-document.addEventListener('visibilitychange', () => { document.hidden ? stopPolling() : startPolling(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    stopPolling();
+  } else {
+    startPolling();
+    if (_tmuxSession) _startTmuxPolling();
+    if (_headlessName) _startHeadlessPolling();
+  }
+});
 
 // ── Init ───────────────────────────────────────────────────
 

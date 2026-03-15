@@ -507,6 +507,30 @@ do_install() {
 
     clear_cache
 
+    # ── Sync ~/zenripple repo and update SKILL.md ──────────────
+    local ZENRIPPLE_HOME="$HOME/zenripple"
+    if [ -d "$ZENRIPPLE_HOME/.git" ]; then
+        # Update existing repo
+        (cd "$ZENRIPPLE_HOME" && git pull --ff-only 2>/dev/null) && \
+            echo -e "  ${GREEN}+${NC} Updated ~/zenripple repo" || \
+            echo -e "  ${DIM}~/zenripple: git pull skipped (local changes?)${NC}"
+    else
+        # Copy current source to ~/zenripple
+        mkdir -p "$ZENRIPPLE_HOME"
+        rsync -a --exclude='.git' --exclude='bench/results' "$SCRIPT_DIR/" "$ZENRIPPLE_HOME/" 2>/dev/null && \
+            echo -e "  ${GREEN}+${NC} Synced source to ~/zenripple" || true
+    fi
+
+    # Update SKILL.md in Claude skills directory
+    local SKILL_DEST="$HOME/.claude/skills/zenripple"
+    if [ -f "$SCRIPT_DIR/SKILL.md" ]; then
+        mkdir -p "$SKILL_DEST"
+        if ! diff -q "$SCRIPT_DIR/SKILL.md" "$SKILL_DEST/SKILL.md" >/dev/null 2>&1; then
+            cp "$SCRIPT_DIR/SKILL.md" "$SKILL_DEST/SKILL.md"
+            echo -e "  ${GREEN}+${NC} Updated SKILL.md in ~/.claude/skills/zenripple/"
+        fi
+    fi
+
     local installed_v
     installed_v=$(get_version "$SCRIPT_DIR/browser/zenripple_agent.uc.js")
 

@@ -363,6 +363,170 @@
   color: rgb(var(--sh)) !important;
   opacity: 0.35 !important;
 }
+
+/* --- Agent Halo (chrome-level, invisible to screenshots) --- */
+@keyframes zenripple-halo-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+
+#zenripple-agent-halo {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  border: 3px solid transparent;
+  border-radius: 4px;
+  z-index: 1;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+#zenripple-agent-halo.active {
+  animation: zenripple-halo-pulse 3s ease-in-out infinite;
+}
+
+/* --- Spotlight Bar (chrome-level, invisible to screenshots) --- */
+@keyframes zenripple-spot-fadein {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+#zenripple-spotlight-bar {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 320px;
+  background: var(--zen-dialog-background, #1e1e2e);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.06);
+  z-index: 10;
+  pointer-events: auto;
+  display: none;
+  flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 12px;
+  color: #e0e0e6;
+  overflow: hidden;
+}
+#zenripple-spotlight-bar.visible {
+  display: flex;
+  animation: zenripple-spot-fadein 0.2s ease-out;
+}
+
+#zr-spot-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  cursor: move;
+  user-select: none;
+}
+#zr-spot-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+#zr-spot-name {
+  font-weight: 600;
+  font-size: 11px;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#zr-spot-status {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+#zr-spot-preview {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: #a0a0b0;
+  max-height: 60px;
+  overflow-y: auto;
+  line-height: 1.4;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
+}
+
+#zr-spot-input-row {
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px;
+  align-items: flex-end;
+}
+#zr-spot-input {
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(122,162,247,0.2);
+  background: rgba(255,255,255,0.04);
+  color: #e0e0e6;
+  outline: none;
+  min-height: 24px;
+  max-height: 60px;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+#zr-spot-input:focus {
+  border-color: rgba(122,162,247,0.5);
+  box-shadow: 0 0 0 1px rgba(122,162,247,0.1);
+}
+#zr-spot-input:empty::before {
+  content: 'Message...';
+  color: #6b6b80;
+  pointer-events: none;
+}
+#zr-spot-send {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  color: rgba(122,162,247,0.8);
+  background: rgba(122,162,247,0.1);
+  border: 1px solid rgba(122,162,247,0.2);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+#zr-spot-send:hover {
+  background: rgba(122,162,247,0.2);
+  color: #7aa2f7;
+}
+#zr-spot-stop {
+  width: 26px;
+  height: 26px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: pointer;
+  color: rgba(243,139,168,0.8);
+  background: rgba(243,139,168,0.1);
+  border: 1px solid rgba(243,139,168,0.2);
+  font-size: 10px;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+#zr-spot-stop:hover {
+  background: rgba(243,139,168,0.2);
+  color: #f38ba8;
+}
+#zr-spot-stop.visible {
+  display: flex;
+}
 `;
 
   function staleSweep() {
@@ -7544,7 +7708,8 @@
     _dashboardForkPidFile = null; // Reset before checking current session
     const { convoSessionId } = await _getConvoInfo(sessionId);
     if (!convoSessionId) return;
-    const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + convoSessionId + '.pid');
+    const safeConvoId = _sanitizeSessionId(convoSessionId);
+    const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + safeConvoId + '.pid');
     let pidStr = '';
     try { pidStr = (await IOUtils.readUTF8(pidFile)).trim(); } catch (_) { return; }
     const pid = parseInt(pidStr, 10);
@@ -7609,9 +7774,10 @@
   }
 
   async function _sendToClaudeCode(sessionId, inputEl) {
-    const text = (inputEl.textContent || '').trim();
-    if (!text) return;
+    const rawText = (inputEl.textContent || '').trim();
+    if (!rawText) return;
     inputEl.textContent = '';
+    const text = rawText.replace(/[\n\r]/g, ' ').slice(0, 50000);
 
     const { convoPath, convoSessionId } = await _getConvoInfo(sessionId);
     if (!convoSessionId) {
@@ -7644,7 +7810,7 @@
         matchedCwd = info.cwd;
       }
       const cdPrefix = matchedCwd ? 'cd ' + _shellQuote(matchedCwd) + ' && ' : '';
-      const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + convoSessionId + '.pid');
+      const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + _sanitizeSessionId(convoSessionId) + '.pid');
       const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
         ' | claude -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
         ' --output-format text 2>&1 & echo $! > ' + _shellQuote(pidFile) + ' ; wait';
@@ -9774,6 +9940,15 @@
         return result;
       }
 
+      case 'getMergedSessionInfo': {
+        const cp = params.convoPath || '';
+        const parts = cp.split('/');
+        const pp = (parts[parts.length - 2] || '').split('-').filter(Boolean);
+        const name = pp[pp.length - 1] || 'Merged';
+        const convoId = (parts[parts.length - 1] || '').replace('.jsonl', '').slice(0, 8);
+        return { name: name + ' (' + convoId + ')', status: 'merged' };
+      }
+
       case 'getMergedSessionData': {
         const convoPath = params.convoPath;
         // Find all sessions sharing this conversation
@@ -9871,10 +10046,12 @@
         try {
           const filepath = PathUtils.join(replayDir, filename);
           const bytes = await IOUtils.read(filepath);
-          const blob = new Blob([bytes], { type: 'image/jpeg' });
-          // Create object URL in chrome context — need to transfer to content
-          // Actually, send as base64 data URL instead
-          const b64 = btoa(String.fromCharCode(...new Uint8Array(bytes)));
+          const arr = new Uint8Array(bytes);
+          let binary = '';
+          for (let i = 0; i < arr.length; i += 8192) {
+            binary += String.fromCharCode.apply(null, arr.subarray(i, i + 8192));
+          }
+          const b64 = btoa(binary);
           return { url: 'data:image/jpeg;base64,' + b64 };
         } catch (_) {
           return { url: null };
@@ -9914,9 +10091,9 @@
       }
 
       case 'sendToClaudeCode': {
-        const { sessionId, text } = params;
-        // Delegate to existing _sendToClaudeCode logic
-        // For now, just use the tmux/resume path directly
+        const { sessionId } = params;
+        const text = String(params.text || '').replace(/[\n\r]/g, ' ').slice(0, 50000);
+        if (!text.trim()) throw new Error('text required');
         const { convoSessionId } = await _getConvoInfo(sessionId);
         if (!convoSessionId) throw new Error('No conversation link');
 
@@ -9936,8 +10113,305 @@
       }
 
       case 'stopClaude': {
-        await _stopClaude();
-        return { stopped: true };
+        const { sessionId } = params;
+        if (!sessionId) throw new Error('sessionId required');
+        const { convoSessionId } = await _getConvoInfo(sessionId);
+        if (!convoSessionId) throw new Error('No conversation link');
+        const stopped = await _stopClaudeForConvo(convoSessionId);
+        return { stopped };
+      }
+
+      case 'getClaudeStatus': {
+        const { sessionId } = params;
+        if (!sessionId) throw new Error('sessionId required');
+        const { convoSessionId } = await _getConvoInfo(sessionId);
+        if (!convoSessionId) return { status: 'no_conversation' };
+        const safeConvoId = _sanitizeSessionId(convoSessionId);
+
+        // Check fork PID file
+        const forkPidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + safeConvoId + '.pid');
+        let forkPid = null;
+        try {
+          const pidStr = (await IOUtils.readUTF8(forkPidFile)).trim();
+          const pid = parseInt(pidStr, 10);
+          if (pid > 0) {
+            const checkOut = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+            if (checkOut.trim() === 'alive') forkPid = pid;
+            else try { await IOUtils.remove(forkPidFile); } catch (_) {}
+          }
+        } catch (_) {}
+
+        if (forkPid) return { status: 'fork_running', pid: forkPid };
+
+        // Detect tmux pane
+        const info = await _detectClaudeProcess(convoSessionId);
+        if (info.tmuxPane) return { status: 'tmux_running', tmuxPane: info.tmuxPane, pid: info.pid };
+
+        return { status: 'idle' };
+      }
+
+      case 'getHeadlessOutput':
+        return await (async () => {
+          const agentName = _sanitizeSessionId(params.name);
+          if (!agentName) throw new Error('name required');
+          const outputFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.jsonl');
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.pid');
+          let content = '';
+          try { content = await IOUtils.readUTF8(outputFile); } catch (_) {}
+          let alive = false;
+          try {
+            const pidStr = (await IOUtils.readUTF8(pidFile)).trim();
+            const pid = parseInt(pidStr, 10);
+            if (pid > 0) {
+              const check = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+              alive = check.trim() === 'alive';
+            }
+          } catch (_) {}
+          // Parse JSONL into conversation entries
+          const entries = [];
+          for (const line of content.split('\n')) {
+            if (!line.trim()) continue;
+            try {
+              const d = JSON.parse(line);
+              if (d.type === 'assistant' && d.message) {
+                const msg = d.message;
+                const blocks = Array.isArray(msg.content) ? msg.content : [];
+                for (const b of blocks) {
+                  if (b.type === 'text' && (b.text || '').trim()) {
+                    entries.push({ role: 'assistant', type: 'text', content: b.text });
+                  } else if (b.type === 'tool_use') {
+                    entries.push({ role: 'assistant', type: 'tool_use', name: b.name, input: b.input });
+                  }
+                }
+              } else if (d.type === 'result') {
+                entries.push({ role: 'result', content: typeof d.result === 'string' ? d.result : JSON.stringify(d.result) });
+              }
+            } catch (_) {}
+          }
+          return { entries, alive, lineCount: content.split('\n').filter(Boolean).length };
+        })();
+
+      case 'getSessionManifest':
+        return await (async () => {
+          const sid = params.sessionId;
+          if (!sid) throw new Error('sessionId required');
+          const rd = _replayDirForSession(sid);
+          try { return JSON.parse(await IOUtils.readUTF8(PathUtils.join(rd, 'manifest.json'))); }
+          catch (_) { return null; }
+        })();
+
+      case 'captureTmuxPane':
+        return await (async () => {
+          const ts = params.tmuxSession;
+          const captureLines = params.lines || 300;
+          if (!ts) throw new Error('tmuxSession required');
+          const sn = _sanitizeSessionId(ts);
+          if (!sn) throw new Error('invalid tmuxSession');
+          const tgt = 'zenripple-' + sn;
+          const output = await _runShellCommand(
+            'tmux capture-pane -p -e -S -' + Math.min(captureLines, 1000) + ' -t ' + _shellQuote(tgt) + ' 2>/dev/null'
+          );
+          const cursorOut = await _runShellCommand(
+            'tmux display-message -t ' + _shellQuote(tgt) + " -p '#{cursor_x},#{cursor_y},#{cursor_flag},#{pane_height},#{pane_width}' 2>/dev/null"
+          );
+          const cp = cursorOut.trim().split(',');
+          return {
+            content: output,
+            cursorX: parseInt(cp[0]) || 0, cursorY: parseInt(cp[1]) || 0,
+            cursorVisible: cp[2] !== '0',
+            paneHeight: parseInt(cp[3]) || 24, paneWidth: parseInt(cp[4]) || 80,
+          };
+        })();
+
+      case 'sendKeysToTmux':
+        return await (async () => {
+          const ts = params.tmuxSession;
+          const k = params.keys;
+          const lit = params.literal || false;
+          if (!ts || !k) throw new Error('tmuxSession and keys required');
+          const sn = _sanitizeSessionId(ts);
+          if (!sn) throw new Error('invalid tmuxSession');
+          const tgt = 'zenripple-' + sn;
+          if (lit) {
+            if (k.includes(';')) {
+              const hx = Array.from(new TextEncoder().encode(k)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+              await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' -H ' + hx);
+            } else {
+              await _runShellCommand('tmux send-keys -l -t ' + _shellQuote(tgt) + ' ' + _shellQuote(k));
+            }
+          } else {
+            await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' ' + _shellQuote(k));
+          }
+          return { sent: true };
+        })();
+
+      case 'resizeTmuxPane':
+        return await (async () => {
+          const ts = params.tmuxSession;
+          if (!ts) throw new Error('tmuxSession required');
+          const sn = _sanitizeSessionId(ts);
+          if (!sn) throw new Error('invalid tmuxSession');
+          const tgt = 'zenripple-' + sn;
+          const w = Math.max(10, Math.min(400, params.width || 80));
+          const h = Math.max(3, Math.min(200, params.height || 24));
+          const res = await _runShellCommand(
+            'tmux resize-window -t ' + _shellQuote(tgt) + ' -x ' + w + ' -y ' + h + ' 2>/dev/null && echo ok || echo fail'
+          );
+          if (res.trim() !== 'ok') {
+            await _runShellCommand('tmux resize-pane -t ' + _shellQuote(tgt) + ' -x ' + w + ' -y ' + h + ' 2>/dev/null');
+          }
+          return { resized: true, width: w, height: h };
+        })();
+
+      case 'spawnAgent': {
+        const { prompt, mode = 'tmux', workdir, name } = params;
+        if (!prompt) throw new Error('prompt required');
+        if (prompt.length > 100000) throw new Error('prompt too long (max 100KB)');
+        if (mode !== 'tmux' && mode !== 'headless') throw new Error('mode must be tmux or headless');
+        const rawName = name || ('agent-' + Date.now().toString(36));
+        const agentName = _sanitizeSessionId(rawName) || ('agent-' + Date.now().toString(36));
+        const home = PathUtils.profileDir.split('/Library/')[0] || '/Users/unknown';
+        const wd = workdir || PathUtils.join(home, '.zenripple', 'workspaces', agentName);
+
+        // Ensure workdir exists
+        await _runShellCommand('mkdir -p ' + _shellQuote(wd));
+
+        // Find the real claude binary (bypass shell aliases that add --dangerously-skip-permissions)
+        const claudeBin = (await _runShellCommand('command -v claude')).trim() || 'claude';
+
+        // Create a real session in the sessions Map so it shows up immediately
+        const spawnedSessionId = crypto.randomUUID();
+        const spawnedSession = new Session(spawnedSessionId);
+        spawnedSession.colorIndex = _nextColorIndex;
+        _nextColorIndex = (_nextColorIndex + 1) % SESSION_COLOR_PALETTE.length;
+        spawnedSession.name = agentName;
+        spawnedSession.touch();
+        sessions.set(spawnedSessionId, spawnedSession);
+        log('spawnAgent: registered session ' + spawnedSessionId + ' [' + agentName + ']');
+
+        // Pre-create replay directory + manifest
+        const spawnReplayDir = PathUtils.join(PathUtils.tempDir, 'zenripple_replay_' + spawnedSessionId);
+        const tmuxSessionName = mode === 'tmux' ? 'zenripple-' + agentName : undefined;
+        try {
+          await IOUtils.makeDirectory(spawnReplayDir, { ignoreExisting: true });
+          const manifest = {
+            session_id: spawnedSessionId,
+            started_at: new Date().toISOString(),
+            next_seq: 0,
+            name: agentName,
+            mode,
+            workdir: wd,
+            prompt: prompt.slice(0, 500),
+            tmuxSession: tmuxSessionName,
+          };
+          await IOUtils.writeUTF8(PathUtils.join(spawnReplayDir, 'manifest.json'), JSON.stringify(manifest));
+          await IOUtils.writeUTF8(PathUtils.join(spawnReplayDir, 'tool_log.jsonl'), '');
+        } catch (e) { log('spawnAgent: failed to create replay dir: ' + e); }
+
+        // Monitor for the conversation file and write conversation.link
+        // Claude Code writes session files to ~/.claude/sessions/<pid>.json
+        // We poll for the file to appear and link it
+        const _monitorConvoLink = async () => {
+          const linkPath = PathUtils.join(spawnReplayDir, 'conversation.link');
+          for (let attempt = 0; attempt < 30; attempt++) {
+            await new Promise(r => setTimeout(r, 2000));
+            // Check if link already exists
+            try { await IOUtils.readUTF8(linkPath); return; } catch (_) {}
+            // Scan session files for matching workdir
+            try {
+              const findCmd = 'for f in $HOME/.claude/sessions/*.json; do cat "$f" 2>/dev/null; echo; done';
+              const out = await _runShellCommand(findCmd);
+              for (const line of out.split('\n')) {
+                if (!line.trim()) continue;
+                try {
+                  const sess = JSON.parse(line);
+                  if (sess.cwd === wd && sess.pid) {
+                    // Found a matching session — check if it's alive
+                    const check = await _runShellCommand('kill -0 ' + sess.pid + ' 2>/dev/null && echo alive || echo dead');
+                    if (check.trim() === 'alive') {
+                      const convoPath = PathUtils.join(
+                        home, '.claude', 'projects',
+                        '-' + wd.replace(/\//g, '-').replace(/^-/, ''),
+                        sess.sessionId + '.jsonl'
+                      );
+                      try {
+                        await IOUtils.readUTF8(convoPath); // Verify it exists
+                        await IOUtils.writeUTF8(linkPath, convoPath);
+                        log('spawnAgent: linked conversation ' + convoPath);
+                        return;
+                      } catch (_) {}
+                    }
+                  }
+                } catch (_) {}
+              }
+            } catch (_) {}
+          }
+          log('spawnAgent: conversation link monitor timed out for ' + agentName);
+        };
+        // Fire and forget — don't block the spawn response
+        _monitorConvoLink().catch(e => log('spawnAgent: monitor error: ' + e));
+
+        // Keep session alive with periodic touches while the agent runs
+        const _keepAlive = setInterval(() => {
+          const s = sessions.get(spawnedSessionId);
+          if (!s) { clearInterval(_keepAlive); return; }
+          // Check if tmux session or headless process is still alive
+          if (tmuxSessionName) {
+            _runShellCommand('tmux has-session -t ' + _shellQuote(tmuxSessionName) + ' 2>/dev/null && echo alive || echo dead')
+              .then(out => { if (out.trim() === 'alive') s.touch(); else clearInterval(_keepAlive); });
+          }
+        }, 10000);
+
+        // SKILL.md is auto-loaded by Claude Code from ~/.claude/skills/zenripple/
+        // so no need to pass --system-prompt or --append-system-prompt
+
+        if (mode === 'headless') {
+          const outputFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.jsonl');
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.pid');
+          // Write prompt to a file to avoid shell arg length limits
+          const promptFile = PathUtils.join(PathUtils.tempDir, 'zenripple_prompt_' + agentName + '.txt');
+          await IOUtils.writeUTF8(promptFile, prompt);
+          // nohup so the process survives _runShellCommand's shell exit
+          // Run zenripple ping first to establish the session, then claude -p
+          const cmd = 'cd ' + _shellQuote(wd) +
+            ' && export ZENRIPPLE_SESSION_ID=' + _shellQuote(spawnedSessionId) +
+            ' && nohup sh -c ' + _shellQuote(
+              claudeBin + ' -p --dangerously-skip-permissions --verbose' +
+              ' --output-format stream-json' +
+              ' < ' + _shellQuote(promptFile) +
+              ' > ' + _shellQuote(outputFile) + ' 2>&1'
+            ) + ' &' +
+            ' echo $! > ' + _shellQuote(pidFile);
+          await _runShellCommand(cmd);
+          // Also keep alive for headless by polling PID
+          const _headlessKeepAlive = setInterval(async () => {
+            const s = sessions.get(spawnedSessionId);
+            if (!s) { clearInterval(_headlessKeepAlive); return; }
+            try {
+              const p = (await IOUtils.readUTF8(pidFile)).trim();
+              const chk = await _runShellCommand('kill -0 ' + p + ' 2>/dev/null && echo alive || echo dead');
+              if (chk.trim() === 'alive') s.touch();
+              else clearInterval(_headlessKeepAlive);
+            } catch (_) { clearInterval(_headlessKeepAlive); }
+          }, 10000);
+          log('spawnAgent: headless agent ' + agentName + ' started, session=' + spawnedSessionId);
+          await _openSessionDetailTab(spawnedSessionId);
+          return { name: agentName, mode: 'headless', sessionId: spawnedSessionId, pidFile, outputFile, workdir: wd };
+        } else {
+          // tmux mode
+          const tmuxSession = 'zenripple-' + agentName;
+          await _runShellCommand('tmux new-session -d -s ' + _shellQuote(tmuxSession) + ' -c ' + _shellQuote(wd));
+          // Build command for the tmux pane — use the resolved binary path to avoid alias doubling
+          const tmuxCmd = 'export ZENRIPPLE_SESSION_ID=' + _shellQuote(spawnedSessionId) +
+            ' && ' + _shellQuote(claudeBin) + ' --dangerously-skip-permissions ' + _shellQuote(prompt);
+          await _runShellCommand('tmux send-keys -t ' + _shellQuote(tmuxSession) + ' ' + _shellQuote(tmuxCmd) + ' Enter');
+          // Send Enter after a delay to auto-accept the workspace trust prompt
+          await new Promise(r => setTimeout(r, 2000));
+          await _runShellCommand('tmux send-keys -t ' + _shellQuote(tmuxSession) + ' Enter');
+          log('spawnAgent: tmux agent ' + agentName + ' started in session ' + tmuxSession + ', session=' + spawnedSessionId);
+          await _openSessionDetailTab(spawnedSessionId);
+          return { name: agentName, mode: 'tmux', sessionId: spawnedSessionId, tmuxSession, workdir: wd };
+        }
       }
 
       case 'openSessionTab': {
@@ -9959,6 +10433,268 @@
       default:
         throw new Error('Unknown bridge method: ' + method);
     }
+  }
+
+  // ============================================
+  // AGENT HALO & SPOTLIGHT BAR
+  // ============================================
+
+  let _haloEl = null;
+  let _spotlightEl = null;
+  let _spotlightSessionId = null;
+  let _spotlightPreviewTimer = null;
+
+  function _findAppContainer() {
+    return document.getElementById('appcontent')
+        || document.getElementById('zen-appcontent-wrapper')
+        || document.getElementById('browser');
+  }
+
+  function setupAgentHalo() {
+    const appcontent = _findAppContainer();
+    if (!appcontent) { log('Halo: no app container found'); return; }
+
+    _haloEl = document.createElement('div');
+    _haloEl.id = 'zenripple-agent-halo';
+    appcontent.appendChild(_haloEl);
+
+    gBrowser.tabContainer.addEventListener('TabSelect', _updateAgentHalo);
+    log('Agent halo initialized');
+  }
+
+  function _updateAgentHalo() {
+    if (!_haloEl) return;
+    const tab = gBrowser.selectedTab;
+    const indicator = tab?.getAttribute('data-agent-indicator');
+    if (indicator === 'active') {
+      const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
+      _haloEl.style.borderColor = 'rgba(' + sh + ', 0.4)';
+      _haloEl.style.boxShadow = 'inset 0 0 20px rgba(' + sh + ', 0.08)';
+      _haloEl.classList.add('active');
+    } else {
+      _haloEl.style.borderColor = 'transparent';
+      _haloEl.style.boxShadow = 'none';
+      _haloEl.classList.remove('active');
+    }
+  }
+
+  function setupSpotlightBar() {
+    const appcontent = _findAppContainer();
+    if (!appcontent) { log('Spotlight: no app container found'); return; }
+
+    _spotlightEl = document.createElement('div');
+    _spotlightEl.id = 'zenripple-spotlight-bar';
+    _spotlightEl.innerHTML =
+      '<div id="zr-spot-header">' +
+        '<span id="zr-spot-dot"></span>' +
+        '<span id="zr-spot-name">Agent</span>' +
+        '<span id="zr-spot-status">idle</span>' +
+      '</div>' +
+      '<div id="zr-spot-preview">No recent activity</div>' +
+      '<div id="zr-spot-input-row">' +
+        '<div id="zr-spot-input" contenteditable="true"></div>' +
+        '<div id="zr-spot-send">&#x2192;</div>' +
+        '<div id="zr-spot-stop">&#x25A0;</div>' +
+      '</div>';
+    appcontent.appendChild(_spotlightEl);
+
+    // Drag handling on header
+    const header = _spotlightEl.querySelector('#zr-spot-header');
+    let dragging = false, dragOffX = 0, dragOffY = 0;
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.id === 'zr-spot-send' || e.target.id === 'zr-spot-stop') return;
+      dragging = true;
+      const rect = _spotlightEl.getBoundingClientRect();
+      dragOffX = e.clientX - rect.left;
+      dragOffY = e.clientY - rect.top;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!dragging) return;
+      const rect = _spotlightEl.getBoundingClientRect();
+      const x = Math.max(0, Math.min(window.innerWidth - rect.width, e.clientX - dragOffX));
+      const y = Math.max(0, Math.min(window.innerHeight - rect.height, e.clientY - dragOffY));
+      _spotlightEl.style.left = x + 'px';
+      _spotlightEl.style.top = y + 'px';
+      _spotlightEl.style.right = 'auto';
+      _spotlightEl.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+
+    // Send handler
+    _spotlightEl.querySelector('#zr-spot-send').addEventListener('click', _spotlightSend);
+    const inputEl = _spotlightEl.querySelector('#zr-spot-input');
+    inputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); _spotlightSend(); }
+    });
+
+    // Stop handler
+    _spotlightEl.querySelector('#zr-spot-stop').addEventListener('click', _spotlightStop);
+
+    // Listen for tab selection
+    gBrowser.tabContainer.addEventListener('TabSelect', _updateSpotlightBar);
+    log('Spotlight bar initialized');
+  }
+
+  function _updateSpotlightBar() {
+    if (!_spotlightEl) return;
+    const tab = gBrowser.selectedTab;
+    const indicator = tab?.getAttribute('data-agent-indicator');
+    const sessionId = tab?.getAttribute('data-agent-session-id');
+
+    if (indicator && sessionId) {
+      _spotlightSessionId = sessionId;
+      const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
+      _spotlightEl.querySelector('#zr-spot-dot').style.background = 'rgb(' + sh + ')';
+      _spotlightEl.style.borderColor = 'rgba(' + sh + ', 0.15)';
+
+      const session = sessions.get(sessionId);
+      _spotlightEl.querySelector('#zr-spot-name').textContent = session?.name || sessionId.slice(0, 12);
+
+      const isActive = indicator === 'active';
+      const statusEl = _spotlightEl.querySelector('#zr-spot-status');
+      statusEl.textContent = isActive ? 'active' : 'claimed';
+      statusEl.style.color = isActive ? '#a6e3a1' : '#a0a0b0';
+      statusEl.style.background = isActive ? 'rgba(166,227,161,0.1)' : 'rgba(255,255,255,0.06)';
+
+      _spotlightEl.classList.add('visible');
+      if (isActive) _startSpotlightPreview();
+      else _stopSpotlightPreview();
+    } else {
+      _spotlightEl.classList.remove('visible');
+      _spotlightSessionId = null;
+      _stopSpotlightPreview();
+    }
+  }
+
+  async function _spotlightSend() {
+    if (!_spotlightSessionId || !_spotlightEl) return;
+    const inputEl = _spotlightEl.querySelector('#zr-spot-input');
+    const rawText = (inputEl.textContent || '').trim();
+    if (!rawText) return;
+    inputEl.textContent = '';
+    // Sanitize: strip newlines (prevent multi-command injection) and limit length
+    const text = rawText.replace(/[\n\r]/g, ' ').slice(0, 10000);
+
+    try {
+      const { convoSessionId } = await _getConvoInfo(_spotlightSessionId);
+      if (!convoSessionId) return;
+      const info = await _detectClaudeProcess(convoSessionId);
+      if (info.tmuxPane) {
+        await _runShellCommand('tmux send-keys -l -t ' + info.tmuxPane + ' ' + _shellQuote(text));
+        await _runShellCommand('tmux send-keys -t ' + info.tmuxPane + ' Enter');
+        log('Spotlight: sent to tmux ' + info.tmuxPane);
+      }
+    } catch (e) { log('Spotlight send error: ' + e); }
+  }
+
+  // Shared stop logic: kills fork PID + interrupts tmux for a convoSessionId
+  async function _stopClaudeForConvo(convoSessionId) {
+    const safeId = _sanitizeSessionId(convoSessionId);
+    let stopped = false;
+
+    // Kill fork if any
+    const forkPidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + safeId + '.pid');
+    try {
+      const pidStr = (await IOUtils.readUTF8(forkPidFile)).trim();
+      const pid = parseInt(pidStr, 10);
+      if (pid > 0) {
+        const checkOut = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+        if (checkOut.trim() === 'alive') {
+          await _runShellCommand('kill ' + pid + ' 2>/dev/null ; kill -9 ' + pid + ' 2>/dev/null');
+          stopped = true;
+        }
+      }
+      try { await IOUtils.remove(forkPidFile); } catch (_) {}
+    } catch (_) {}
+
+    // Interrupt tmux
+    const info = await _detectClaudeProcess(convoSessionId);
+    if (info.tmuxPane) {
+      for (let i = 0; i < 3; i++) {
+        await _runShellCommand('tmux send-keys -t ' + info.tmuxPane + ' Escape');
+        if (i < 2) await new Promise(r => setTimeout(r, 100));
+      }
+      stopped = true;
+    }
+    return stopped;
+  }
+
+  async function _spotlightStop() {
+    if (!_spotlightSessionId || !_spotlightEl) return;
+    try {
+      const { convoSessionId } = await _getConvoInfo(_spotlightSessionId);
+      if (!convoSessionId) return;
+
+      await _stopClaudeForConvo(convoSessionId);
+
+      const statusEl = _spotlightEl.querySelector('#zr-spot-status');
+      statusEl.textContent = 'stopped';
+      statusEl.style.color = '#f38ba8';
+      statusEl.style.background = 'rgba(243,139,168,0.1)';
+      log('Spotlight: stopped agent ' + _spotlightSessionId);
+    } catch (e) { log('Spotlight stop error: ' + e); }
+  }
+
+  function _startSpotlightPreview() {
+    _stopSpotlightPreview();
+    _fetchSpotlightPreview(); // Immediate
+    _spotlightPreviewTimer = setInterval(_fetchSpotlightPreview, 3000);
+  }
+
+  function _stopSpotlightPreview() {
+    if (_spotlightPreviewTimer) { clearInterval(_spotlightPreviewTimer); _spotlightPreviewTimer = null; }
+  }
+
+  async function _fetchSpotlightPreview() {
+    if (!_spotlightSessionId || !_spotlightEl) return;
+    const sid = _spotlightSessionId; // Capture to detect stale results
+    try {
+      const { convoPath, convoSessionId } = await _getConvoInfo(sid);
+      if (!convoPath || sid !== _spotlightSessionId) return; // Stale check
+
+      // Read last 4KB of conversation file via tail (avoid reading entire file)
+      let content = '';
+      try {
+        content = await _runShellCommand('tail -c 4096 ' + _shellQuote(convoPath));
+      } catch (_) { return; }
+
+      const lines = content.split('\n').filter(Boolean);
+      let lastMsg = '';
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const entry = JSON.parse(lines[i]);
+          const msg = entry.message;
+          if (!msg) continue;
+          if (msg.role === 'assistant') {
+            if (Array.isArray(msg.content)) {
+              for (const block of msg.content) {
+                if (block.type === 'text' && (block.text || '').trim()) {
+                  lastMsg = block.text.trim().slice(0, 200);
+                  break;
+                }
+              }
+            } else if (typeof msg.content === 'string') {
+              lastMsg = msg.content.trim().slice(0, 200);
+            }
+            if (lastMsg) break;
+          }
+        } catch (_) {}
+      }
+
+      if (sid !== _spotlightSessionId) return; // Stale check after async work
+
+      const previewEl = _spotlightEl.querySelector('#zr-spot-preview');
+      if (previewEl && lastMsg) previewEl.textContent = lastMsg;
+
+      // Update stop button visibility
+      if (convoSessionId) {
+        const info = await _detectClaudeProcess(convoSessionId);
+        if (sid !== _spotlightSessionId) return;
+        const stopBtn = _spotlightEl.querySelector('#zr-spot-stop');
+        if (stopBtn) stopBtn.classList.toggle('visible', !!info.tmuxPane || !!info.pid);
+      }
+    } catch (_) {}
   }
 
   // ============================================
@@ -9998,6 +10734,8 @@
       setupDashboardShortcut();
       _registerPagesResource();
       _setupDashboardBridge();
+      setupAgentHalo();
+      setupSpotlightBar();
 
       // Auto-create pinned dashboard tab (deferred for workspace init)
       setTimeout(async () => {
@@ -10017,6 +10755,7 @@
 
   // Clean up on window close
   window.addEventListener('unload', () => {
+    _stopSpotlightPreview();
     stopServer();
   });
 
