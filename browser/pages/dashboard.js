@@ -1427,6 +1427,7 @@ function _setupSplitters() {
       if (narrow) {
         const h = Math.max(40, Math.min(rect.height * 0.8, e.clientY - rect.top));
         replayCol.style.setProperty('height', h + 'px', 'important');
+        replayCol.style.setProperty('flex', '0 0 ' + h + 'px', 'important');
       } else {
         replayCol.style.width = Math.max(100, Math.min(rect.width*0.6, e.clientX - rect.left)) + 'px';
       }
