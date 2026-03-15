@@ -1497,7 +1497,10 @@ async function _pollClaudeStatus() {
       statusEl.textContent = 'Fork running (PID ' + result.pid + ')';
       stopBtn.style.display = '';
     } else if (result.status === 'tmux_running') {
-      statusEl.textContent = 'Claude running in tmux ' + (result.tmuxPane || '');
+      statusEl.textContent = 'Running in tmux ' + (result.tmuxSession || result.tmuxPane || '');
+      stopBtn.style.display = '';
+    } else if (result.status === 'headless_running') {
+      statusEl.textContent = 'Headless agent running (PID ' + result.pid + ')';
       stopBtn.style.display = '';
     } else {
       // idle or no_conversation — only clear if not showing "Stopped"

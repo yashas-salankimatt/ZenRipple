@@ -10115,6 +10115,44 @@
       case 'stopClaude': {
         const { sessionId } = params;
         if (!sessionId) throw new Error('sessionId required');
+
+        // Check if this is a spawned agent via manifest
+        const stopReplayDir = _replayDirForSession(sessionId);
+        let stopManifest = null;
+        try { stopManifest = JSON.parse(await IOUtils.readUTF8(PathUtils.join(stopReplayDir, 'manifest.json'))); } catch (_) {}
+
+        if (stopManifest?.mode === 'headless' && stopManifest?.name) {
+          const safeName = _sanitizeSessionId(stopManifest.name);
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + safeName + '.pid');
+          try {
+            const pidStr = (await IOUtils.readUTF8(pidFile)).trim();
+            const pid = parseInt(pidStr, 10);
+            if (pid > 0) {
+              const check = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+              if (check.trim() === 'alive') {
+                await _runShellCommand('kill ' + pid + ' 2>/dev/null ; sleep 0.5 ; kill -9 ' + pid + ' 2>/dev/null');
+                log('stopClaude: killed headless PID ' + pid);
+              }
+            }
+            try { await IOUtils.remove(pidFile); } catch (_) {}
+          } catch (_) {}
+          return { stopped: true };
+        }
+
+        if (stopManifest?.tmuxSession) {
+          const safeName = _sanitizeSessionId(stopManifest.name || '');
+          const tgt = 'zenripple-' + safeName;
+          // Send Ctrl+C then Escape x3
+          await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' C-c 2>/dev/null');
+          for (let i = 0; i < 3; i++) {
+            await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' Escape 2>/dev/null');
+            if (i < 2) await new Promise(r => setTimeout(r, 100));
+          }
+          log('stopClaude: interrupted tmux session ' + tgt);
+          return { stopped: true };
+        }
+
+        // Standard session — stop via conversation link
         const { convoSessionId } = await _getConvoInfo(sessionId);
         if (!convoSessionId) throw new Error('No conversation link');
         const stopped = await _stopClaudeForConvo(convoSessionId);
@@ -10124,6 +10162,35 @@
       case 'getClaudeStatus': {
         const { sessionId } = params;
         if (!sessionId) throw new Error('sessionId required');
+
+        // Check if this is a spawned agent (headless or tmux) via manifest
+        const replayDir = _replayDirForSession(sessionId);
+        let manifest = null;
+        try { manifest = JSON.parse(await IOUtils.readUTF8(PathUtils.join(replayDir, 'manifest.json'))); } catch (_) {}
+
+        if (manifest?.mode === 'headless' && manifest?.name) {
+          const safeName = _sanitizeSessionId(manifest.name);
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + safeName + '.pid');
+          try {
+            const pidStr = (await IOUtils.readUTF8(pidFile)).trim();
+            const pid = parseInt(pidStr, 10);
+            if (pid > 0) {
+              const check = await _runShellCommand('kill -0 ' + pid + ' 2>/dev/null && echo alive || echo dead');
+              if (check.trim() === 'alive') return { status: 'headless_running', pid };
+            }
+          } catch (_) {}
+          return { status: 'idle' };
+        }
+
+        if (manifest?.tmuxSession) {
+          const safeName = _sanitizeSessionId(manifest.name || '');
+          const tgt = 'zenripple-' + safeName;
+          const check = await _runShellCommand('tmux has-session -t ' + _shellQuote(tgt) + ' 2>/dev/null && echo alive || echo dead');
+          if (check.trim() === 'alive') return { status: 'tmux_running', tmuxSession: tgt };
+          return { status: 'idle' };
+        }
+
+        // Standard session — check conversation link
         const { convoSessionId } = await _getConvoInfo(sessionId);
         if (!convoSessionId) return { status: 'no_conversation' };
         const safeConvoId = _sanitizeSessionId(convoSessionId);
@@ -10309,46 +10376,44 @@
         } catch (e) { log('spawnAgent: failed to create replay dir: ' + e); }
 
         // Monitor for the conversation file and write conversation.link
-        // Claude Code writes session files to ~/.claude/sessions/<pid>.json
-        // We poll for the file to appear and link it
+        // Scan the projects directory for JSONL files matching this workdir's path hash
         const _monitorConvoLink = async () => {
           const linkPath = PathUtils.join(spawnReplayDir, 'conversation.link');
-          for (let attempt = 0; attempt < 30; attempt++) {
+          const pathHash = wd.replace(/[^a-zA-Z0-9-]/g, '-');
+          const projectsDir = PathUtils.join(home, '.claude', 'projects', pathHash);
+
+          for (let attempt = 0; attempt < 60; attempt++) {
             await new Promise(r => setTimeout(r, 2000));
-            // Check if link already exists
-            try { await IOUtils.readUTF8(linkPath); return; } catch (_) {}
-            // Scan session files for matching workdir
+            // Check if link already exists and is valid
             try {
-              const findCmd = 'for f in $HOME/.claude/sessions/*.json; do cat "$f" 2>/dev/null; echo; done';
-              const out = await _runShellCommand(findCmd);
-              for (const line of out.split('\n')) {
-                if (!line.trim()) continue;
+              const existing = (await IOUtils.readUTF8(linkPath)).trim();
+              if (existing) { await IOUtils.readUTF8(existing); return; } // File exists and is readable
+            } catch (_) {}
+            // Scan for the most recent .jsonl file in the project dir
+            try {
+              const children = await IOUtils.getChildren(projectsDir);
+              let bestPath = null;
+              let bestMtime = 0;
+              for (const child of children) {
+                if (!child.endsWith('.jsonl')) continue;
                 try {
-                  const sess = JSON.parse(line);
-                  if (sess.cwd === wd && sess.pid) {
-                    // Found a matching session — check if it's alive
-                    const check = await _runShellCommand('kill -0 ' + sess.pid + ' 2>/dev/null && echo alive || echo dead');
-                    if (check.trim() === 'alive') {
-                      const convoPath = PathUtils.join(
-                        home, '.claude', 'projects',
-                        '-' + wd.replace(/\//g, '-').replace(/^-/, ''),
-                        sess.sessionId + '.jsonl'
-                      );
-                      try {
-                        await IOUtils.readUTF8(convoPath); // Verify it exists
-                        await IOUtils.writeUTF8(linkPath, convoPath);
-                        log('spawnAgent: linked conversation ' + convoPath);
-                        return;
-                      } catch (_) {}
-                    }
+                  const stat = await IOUtils.stat(child);
+                  if (stat.lastModified > bestMtime) {
+                    bestMtime = stat.lastModified;
+                    bestPath = child;
                   }
                 } catch (_) {}
+              }
+              // Only link if modified within last 5 minutes
+              if (bestPath && (Date.now() - bestMtime) < 300000) {
+                await IOUtils.writeUTF8(linkPath, bestPath);
+                log('spawnAgent: linked conversation ' + bestPath);
+                return;
               }
             } catch (_) {}
           }
           log('spawnAgent: conversation link monitor timed out for ' + agentName);
         };
-        // Fire and forget — don't block the spawn response
         _monitorConvoLink().catch(e => log('spawnAgent: monitor error: ' + e));
 
         // Keep session alive with periodic touches while the agent runs
