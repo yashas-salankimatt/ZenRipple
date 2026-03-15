@@ -891,14 +891,31 @@
         const existingId = sessionMatch[1];
         session = sessions.get(existingId);
         if (!session) {
-          log('Session not found: ' + existingId + ' — returning 404');
-          const errResp =
-            'HTTP/1.1 404 Not Found\r\n' +
-            'Content-Length: 0\r\n' +
-            'Connection: close\r\n\r\n';
-          this.#writeRaw(errResp);
-          this.close();
-          return;
+          // Session not in memory — check if replay dir exists on disk (e.g. after browser restart)
+          const replayDir = _replayDirForSession(existingId);
+          let restoredFromDisk = false;
+          try {
+            const manifestRaw = await IOUtils.readUTF8(PathUtils.join(replayDir, 'manifest.json'));
+            const manifest = JSON.parse(manifestRaw);
+            // Restore session from disk
+            session = new Session(existingId);
+            session.colorIndex = _nextColorIndex;
+            _nextColorIndex = (_nextColorIndex + 1) % SESSION_COLOR_PALETTE.length;
+            session.name = manifest.name || null;
+            sessions.set(existingId, session);
+            restoredFromDisk = true;
+            log('Session restored from disk: ' + existingId + ' [' + (session.name || '') + ']');
+          } catch (_) {}
+          if (!restoredFromDisk) {
+            log('Session not found: ' + existingId + ' — returning 404');
+            const errResp =
+              'HTTP/1.1 404 Not Found\r\n' +
+              'Content-Length: 0\r\n' +
+              'Connection: close\r\n\r\n';
+            this.#writeRaw(errResp);
+            this.close();
+            return;
+          }
         }
         log('Joining existing session: ' + existingId);
       } else {
