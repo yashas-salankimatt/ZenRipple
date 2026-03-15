@@ -778,6 +778,30 @@ async function initSessionDetail() {
     </div>
   `;
 
+  // Tool list collapse/expand toggle (applies to all session types)
+  const replayToggle = document.getElementById('zd-replay-toggle');
+  if (replayToggle) {
+    const replayListForToggle = document.getElementById('zd-replay-entries');
+    const replaySplitterForToggle = document.querySelector('.zd-splitter-h[data-split="replay-inner"]');
+
+    const setCollapsed = (collapsed) => {
+      if (replayListForToggle) replayListForToggle.style.display = collapsed ? 'none' : '';
+      if (replaySplitterForToggle) replaySplitterForToggle.style.display = collapsed ? 'none' : '';
+      replayToggle.textContent = collapsed ? '\u25B6' : '\u25BC';
+      replayToggle.title = collapsed ? 'Expand tool list' : 'Collapse tool list';
+      const state = _loadSplitterState();
+      state.toolListCollapsed = collapsed;
+      _saveSplitterState(state);
+    };
+
+    const savedToggle = _loadSplitterState();
+    if (savedToggle.toolListCollapsed) setCollapsed(true);
+
+    replayToggle.addEventListener('click', () => {
+      setCollapsed(replayListForToggle?.style.display !== 'none');
+    });
+  }
+
   // For tmux sessions: replace conversation column with terminal view
   if (_tmuxSession) {
     // Replace conversation scroll with terminal pre
@@ -859,32 +883,6 @@ async function initSessionDetail() {
 
   // Transport controls
   _setupTransportControls();
-
-  // Tool list collapse/expand toggle
-  const replayToggle = document.getElementById('zd-replay-toggle');
-  if (replayToggle) {
-    const replayList = document.getElementById('zd-replay-entries');
-    const replaySplitter = document.querySelector('.zd-splitter-h[data-split="replay-inner"]');
-
-    const setCollapsed = (collapsed) => {
-      if (replayList) replayList.style.display = collapsed ? 'none' : '';
-      if (replaySplitter) replaySplitter.style.display = collapsed ? 'none' : '';
-      replayToggle.textContent = collapsed ? '\u25B6' : '\u25BC';
-      replayToggle.title = collapsed ? 'Expand tool list' : 'Collapse tool list';
-      // Save preference
-      const state = _loadSplitterState();
-      state.toolListCollapsed = collapsed;
-      _saveSplitterState(state);
-    };
-
-    // Restore saved state
-    const savedState = _loadSplitterState();
-    if (savedState.toolListCollapsed) setCollapsed(true);
-
-    replayToggle.addEventListener('click', () => {
-      setCollapsed(replayList?.style.display !== 'none');
-    });
-  }
 
   // Splitters
   _setupSplitters();
