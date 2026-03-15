@@ -1399,11 +1399,14 @@ function _setupSplitters() {
   const ssPanel = document.getElementById('zd-replay-ss');
   let dragTarget = null;
 
-  // Restore saved positions
+  // Restore saved positions (only in wide mode — narrow mode uses height not width)
   const saved = _loadSplitterState();
-  if (saved.leftWidth && replayCol) replayCol.style.width = saved.leftWidth + 'px';
-  if (saved.rightWidth && rightCol) rightCol.style.width = saved.rightWidth + 'px';
-  if (saved.ssHeight && ssPanel) { ssPanel.style.flex = 'none'; ssPanel.style.height = saved.ssHeight + 'px'; }
+  const isNarrow = window.innerWidth <= 900;
+  if (!isNarrow) {
+    if (saved.leftWidth && replayCol) replayCol.style.width = saved.leftWidth + 'px';
+    if (saved.rightWidth && rightCol) rightCol.style.width = saved.rightWidth + 'px';
+    if (saved.ssHeight && ssPanel) { ssPanel.style.flex = 'none'; ssPanel.style.height = saved.ssHeight + 'px'; }
+  }
 
   for (const s of detail.querySelectorAll('.zd-splitter')) {
     s.addEventListener('mousedown', (e) => {
