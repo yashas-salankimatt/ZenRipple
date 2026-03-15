@@ -1504,28 +1504,35 @@ body { display: flex; }
     width: 100% !important;
     flex-shrink: 0 !important;
     flex-direction: row !important;
-    max-height: 280px;
+    flex-wrap: wrap;
+    max-height: 300px;
     border-right: none !important;
     border-bottom: 1px solid var(--zr-border-subtle);
   }
   .zd-replay-screenshot {
-    flex: 1 !important;
-    min-width: 0;
+    flex: 1 1 45% !important;
+    min-width: 200px;
+    max-height: 200px;
     border-bottom: none !important;
     border-right: 1px solid var(--zr-border-subtle);
   }
   .zd-replay-list {
-    flex: 1 !important;
-    min-width: 0;
+    flex: 1 1 45% !important;
+    min-width: 200px;
+    max-height: 200px;
   }
   .zd-replay-transport {
-    display: none !important;
+    flex: 0 0 100%;
+    border-top: 1px solid var(--zr-border-subtle);
+    border-bottom: none !important;
   }
   .zd-splitter-v {
-    display: none !important;
+    width: 0 !important;
+    min-width: 0 !important;
   }
   .zd-splitter-h[data-split="replay-inner"] {
-    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
   }
   .zd-conversation-col {
     flex: 1 !important;

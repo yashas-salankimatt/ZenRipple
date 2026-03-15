@@ -784,29 +784,15 @@ async function initSessionDetail() {
     if (convoScroll) {
       convoScroll.outerHTML = '<pre class="zd-terminal-output" id="zd-term-output" tabindex="0"></pre>';
     }
-    // Hide convo tabs + tool detail (not applicable for terminal view)
-    const convoTabs = document.querySelector('.zd-convo-tabs');
-    if (convoTabs) convoTabs.style.display = 'none';
-    const toolDetail = document.getElementById('zd-tool-detail');
-    if (toolDetail) toolDetail.style.display = 'none';
+    // Rename "Conversation" tab to "Terminal", keep "Tool Details" tab
+    const convoTab = document.querySelector('.zd-convo-tab[data-tab="conversation"]');
+    if (convoTab) convoTab.textContent = 'Terminal';
 
-    // Wire terminal input — input field sends keys to tmux
-    const claudeInput = document.getElementById('zd-claude-input');
-    const claudeSend = document.getElementById('zd-claude-send');
-    if (claudeInput) claudeInput.placeholder = 'Type to send to agent...';
-    const doTmuxSend = async () => {
-      if (!claudeInput) return;
-      const text = claudeInput.value.trim();
-      if (!text) return;
-      claudeInput.value = '';
-      try {
-        await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: text, literal: true });
-        await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'Enter' });
-        setTimeout(_pollTmuxPane, 100);
-      } catch (e) { console.error('[ZenRipple] tmux send error:', e); }
-    };
-    if (claudeSend) claudeSend.addEventListener('click', doTmuxSend);
-    if (claudeInput) claudeInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doTmuxSend(); });
+    // Hide the bottom input bar (interaction goes through the terminal directly)
+    const claudeInputWrapper = document.querySelector('.zd-claude-input-wrapper');
+    if (claudeInputWrapper) claudeInputWrapper.style.display = 'none';
+    const claudeStatus = document.getElementById('zd-claude-status');
+    if (claudeStatus) claudeStatus.style.display = 'none';
 
     // Wire terminal keyboard interactivity (when <pre> is focused)
     const termEl = document.getElementById('zd-term-output');
@@ -820,20 +806,16 @@ async function initSessionDetail() {
       setTimeout(() => _syncTerminalSize(termEl), 500);
     }
 
-    // Wire stop — kill tmux session
-    const stopBtn = document.getElementById('zd-claude-stop');
-    if (stopBtn) {
-      stopBtn.style.display = '';
-      stopBtn.addEventListener('click', async () => {
-        try {
-          // Send Ctrl+C then Escape x3
-          await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'C-c' });
-          for (let i = 0; i < 3; i++) {
-            await bridgeCall('sendKeysToTmux', { tmuxSession: _tmuxSession, keys: 'Escape' });
-          }
-          const statusEl = document.getElementById('zd-claude-status');
-          if (statusEl) statusEl.textContent = 'Interrupted';
-        } catch (e) { console.error('[ZenRipple] tmux stop error:', e); }
+    // Tab switching — handle terminal vs tool-detail
+    for (const tab of document.querySelectorAll('.zd-convo-tab')) {
+      tab.addEventListener('click', () => {
+        for (const t of document.querySelectorAll('.zd-convo-tab')) t.classList.remove('active');
+        tab.classList.add('active');
+        const which = tab.dataset.tab;
+        const termOutput = document.getElementById('zd-term-output');
+        const td = document.getElementById('zd-tool-detail');
+        if (termOutput) termOutput.style.display = which === 'conversation' ? '' : 'none';
+        if (td) { td.style.display = which === 'tool-detail' ? 'block' : 'none'; if (which === 'tool-detail') _updateToolDetailView(); }
       });
     }
 
