@@ -1425,9 +1425,8 @@ function _setupSplitters() {
     const narrow = document.getElementById('zenripple-dashboard-container')?.classList.contains('zd-narrow');
     if (dragTarget === 'left' && replayCol) {
       if (narrow) {
-        const h = Math.max(40, Math.min(rect.height * 0.7, e.clientY - rect.top));
-        replayCol.style.height = h + 'px';
-        replayCol.style.flex = '0 0 ' + h + 'px';
+        const h = Math.max(40, Math.min(rect.height * 0.8, e.clientY - rect.top));
+        replayCol.style.setProperty('height', h + 'px', 'important');
       } else {
         replayCol.style.width = Math.max(100, Math.min(rect.width*0.6, e.clientX - rect.left)) + 'px';
       }
@@ -1441,9 +1440,10 @@ function _setupSplitters() {
       }
     } else if (dragTarget === 'replay-inner' && ssPanel && replayCol) {
       if (narrow) {
-        // In narrow mode, screenshot and tool list are side by side — resize width
+        // In narrow mode, screenshot and tool list are stacked vertically — resize height
         const cr = replayCol.getBoundingClientRect();
-        ssPanel.style.flex = '0 0 ' + Math.max(80, Math.min(cr.width - 80, e.clientX - cr.left)) + 'px';
+        ssPanel.style.flex = 'none';
+        ssPanel.style.setProperty('height', Math.max(40, Math.min(cr.height - 60, e.clientY - cr.top)) + 'px', 'important');
       } else {
         const cr = replayCol.getBoundingClientRect();
         ssPanel.style.flex = 'none';
