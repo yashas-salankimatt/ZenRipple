@@ -784,9 +784,19 @@ async function initSessionDetail() {
     const replayListForToggle = document.getElementById('zd-replay-entries');
     const replaySplitterForToggle = document.querySelector('.zd-splitter-h[data-split="replay-inner"]');
 
+    const ssPanel = document.getElementById('zd-replay-ss');
     const setCollapsed = (collapsed) => {
       if (replayListForToggle) replayListForToggle.style.display = collapsed ? 'none' : '';
       if (replaySplitterForToggle) replaySplitterForToggle.style.display = collapsed ? 'none' : '';
+      // When collapsed, screenshot expands to fill; when expanded, restore saved size
+      if (ssPanel) {
+        if (collapsed) {
+          ssPanel.style.setProperty('flex', '1', 'important');
+          ssPanel.style.removeProperty('height');
+        } else {
+          ssPanel.style.removeProperty('flex');
+        }
+      }
       replayToggle.textContent = collapsed ? '\u25B6' : '\u25BC';
       replayToggle.title = collapsed ? 'Expand tool list' : 'Collapse tool list';
       const state = _loadSplitterState();
