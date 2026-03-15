@@ -1502,19 +1502,16 @@ body { display: flex; }
   }
   .zd-replay-col {
     width: auto !important;
-    height: auto !important;
     flex: 0 0 auto !important;
     flex-direction: row !important;
     flex-wrap: wrap !important;
-    max-height: 320px !important;
     border-right: none !important;
     border-bottom: 1px solid var(--zr-border-subtle);
     overflow: hidden !important;
   }
   .zd-replay-screenshot {
     flex: 1 1 45% !important;
-    height: 180px !important;
-    min-height: 0 !important;
+    min-height: 80px !important;
     min-width: 0 !important;
     border-bottom: none !important;
     border-right: 1px solid var(--zr-border-subtle);
@@ -1524,7 +1521,7 @@ body { display: flex; }
   }
   .zd-replay-list {
     flex: 1 1 45% !important;
-    height: 180px !important;
+    min-height: 80px !important;
     min-width: 0 !important;
     overflow-y: auto !important;
   }
@@ -1536,14 +1533,21 @@ body { display: flex; }
   }
   .zd-splitter-v {
     width: 100% !important;
-    height: 1px !important;
+    height: 3px !important;
     cursor: row-resize !important;
   }
   .zd-splitter-v::after {
     inset: -3px 0 !important;
   }
   .zd-splitter-h[data-split="replay-inner"] {
-    display: none !important;
+    width: 3px !important;
+    height: auto !important;
+    flex: 0 0 3px !important;
+    cursor: col-resize !important;
+    order: 1;
+  }
+  .zd-splitter-h[data-split="replay-inner"]::after {
+    inset: 0 -3px !important;
   }
   .zd-conversation-col {
     flex: 1 !important;

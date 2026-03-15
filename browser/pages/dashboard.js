@@ -1422,21 +1422,30 @@ function _setupSplitters() {
     const narrow = window.innerWidth <= 900;
     if (dragTarget === 'left' && replayCol) {
       if (narrow) {
-        // Vertical mode: drag adjusts height
-        replayCol.style.maxHeight = Math.max(80, Math.min(rect.height*0.6, e.clientY - rect.top)) + 'px';
+        const h = Math.max(80, Math.min(rect.height * 0.7, e.clientY - rect.top));
+        replayCol.style.height = h + 'px';
+        replayCol.style.flex = '0 0 ' + h + 'px';
       } else {
         replayCol.style.width = Math.max(100, Math.min(rect.width*0.6, e.clientX - rect.left)) + 'px';
       }
     } else if (dragTarget === 'right' && rightCol) {
       if (narrow) {
-        rightCol.style.maxHeight = Math.max(80, Math.min(rect.height*0.5, rect.bottom - e.clientY)) + 'px';
+        const h = Math.max(80, Math.min(rect.height * 0.5, rect.bottom - e.clientY));
+        rightCol.style.height = h + 'px';
+        rightCol.style.flex = '0 0 ' + h + 'px';
       } else {
         rightCol.style.width = Math.max(150, Math.min(rect.width*0.5, rect.right - e.clientX)) + 'px';
       }
     } else if (dragTarget === 'replay-inner' && ssPanel && replayCol) {
-      const cr = replayCol.getBoundingClientRect();
-      ssPanel.style.flex = 'none';
-      ssPanel.style.height = Math.max(60, Math.min(cr.height-80, e.clientY - cr.top)) + 'px';
+      if (narrow) {
+        // In narrow mode, screenshot and tool list are side by side — resize width
+        const cr = replayCol.getBoundingClientRect();
+        ssPanel.style.flex = '0 0 ' + Math.max(80, Math.min(cr.width - 80, e.clientX - cr.left)) + 'px';
+      } else {
+        const cr = replayCol.getBoundingClientRect();
+        ssPanel.style.flex = 'none';
+        ssPanel.style.height = Math.max(60, Math.min(cr.height-80, e.clientY - cr.top)) + 'px';
+      }
     }
   });
 
