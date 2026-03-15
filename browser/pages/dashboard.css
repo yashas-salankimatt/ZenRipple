@@ -1508,28 +1508,32 @@ body { display: flex; }
     border-right: none !important;
     border-bottom: 1px solid var(--zr-border-subtle);
     overflow: hidden !important;
+    min-height: 0 !important;
   }
   .zd-replay-screenshot {
     flex: 1 1 45% !important;
-    min-height: 80px !important;
+    min-height: 0 !important;
     min-width: 0 !important;
     border-bottom: none !important;
     border-right: 1px solid var(--zr-border-subtle);
+    overflow: hidden !important;
   }
   .zd-replay-screenshot img {
     object-fit: contain !important;
   }
   .zd-replay-list {
     flex: 1 1 45% !important;
-    min-height: 80px !important;
+    min-height: 0 !important;
     min-width: 0 !important;
     overflow-y: auto !important;
   }
   .zd-replay-transport {
-    flex: 0 0 100% !important;
+    flex: 0 0 auto !important;
+    width: 100% !important;
     border-top: 1px solid var(--zr-border-subtle);
     border-bottom: none !important;
     order: 10;
+    overflow: hidden !important;
   }
   .zd-splitter-v {
     width: 100% !important;

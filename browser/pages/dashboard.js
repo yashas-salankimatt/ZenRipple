@@ -1422,7 +1422,7 @@ function _setupSplitters() {
     const narrow = window.innerWidth <= 900;
     if (dragTarget === 'left' && replayCol) {
       if (narrow) {
-        const h = Math.max(80, Math.min(rect.height * 0.7, e.clientY - rect.top));
+        const h = Math.max(40, Math.min(rect.height * 0.7, e.clientY - rect.top));
         replayCol.style.height = h + 'px';
         replayCol.style.flex = '0 0 ' + h + 'px';
       } else {
