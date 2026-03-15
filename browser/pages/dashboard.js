@@ -1410,7 +1410,8 @@ function _setupSplitters() {
       e.preventDefault();
       dragTarget = e.currentTarget.dataset.split;
       e.currentTarget.classList.add('dragging');
-      document.body.style.cursor = dragTarget === 'replay-inner' ? 'row-resize' : 'col-resize';
+      const narrow = window.innerWidth <= 900;
+      document.body.style.cursor = (dragTarget === 'replay-inner' || narrow) ? 'row-resize' : 'col-resize';
       document.body.style.userSelect = 'none';
     });
   }
@@ -1418,10 +1419,20 @@ function _setupSplitters() {
   document.addEventListener('mousemove', (e) => {
     if (!dragTarget) return;
     const rect = detail.getBoundingClientRect();
+    const narrow = window.innerWidth <= 900;
     if (dragTarget === 'left' && replayCol) {
-      replayCol.style.width = Math.max(100, Math.min(rect.width*0.6, e.clientX - rect.left)) + 'px';
+      if (narrow) {
+        // Vertical mode: drag adjusts height
+        replayCol.style.maxHeight = Math.max(80, Math.min(rect.height*0.6, e.clientY - rect.top)) + 'px';
+      } else {
+        replayCol.style.width = Math.max(100, Math.min(rect.width*0.6, e.clientX - rect.left)) + 'px';
+      }
     } else if (dragTarget === 'right' && rightCol) {
-      rightCol.style.width = Math.max(150, Math.min(rect.width*0.5, rect.right - e.clientX)) + 'px';
+      if (narrow) {
+        rightCol.style.maxHeight = Math.max(80, Math.min(rect.height*0.5, rect.bottom - e.clientY)) + 'px';
+      } else {
+        rightCol.style.width = Math.max(150, Math.min(rect.width*0.5, rect.right - e.clientX)) + 'px';
+      }
     } else if (dragTarget === 'replay-inner' && ssPanel && replayCol) {
       const cr = replayCol.getBoundingClientRect();
       ssPanel.style.flex = 'none';
