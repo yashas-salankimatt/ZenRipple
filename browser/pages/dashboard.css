@@ -1502,17 +1502,18 @@ body { display: flex; }
   }
   .zd-replay-col {
     width: auto !important;
-    flex: 0 0 auto !important;
     flex-direction: row !important;
     flex-wrap: wrap !important;
     border-right: none !important;
     border-bottom: 1px solid var(--zr-border-subtle);
     overflow: hidden !important;
     min-height: 0 !important;
+    /* No flex !important here — JS splitter sets it inline */
   }
   .zd-replay-screenshot {
     flex: 1 1 45% !important;
     min-height: 0 !important;
+    height: auto !important;
     min-width: 0 !important;
     border-bottom: none !important;
     border-right: 1px solid var(--zr-border-subtle);
@@ -1520,10 +1521,12 @@ body { display: flex; }
   }
   .zd-replay-screenshot img {
     object-fit: contain !important;
+    max-height: 100% !important;
   }
   .zd-replay-list {
     flex: 1 1 45% !important;
     min-height: 0 !important;
+    height: auto !important;
     min-width: 0 !important;
     overflow-y: auto !important;
   }
@@ -1554,13 +1557,12 @@ body { display: flex; }
     inset: 0 -3px !important;
   }
   .zd-conversation-col {
-    flex: 1 !important;
-    min-height: 200px;
+    flex: 1;
+    min-height: 60px;
     width: auto !important;
   }
   .zd-right-col {
     width: auto !important;
-    flex: 0 0 auto !important;
     max-height: 200px;
     border-left: none !important;
     border-top: 1px solid var(--zr-border-subtle);
