@@ -117,7 +117,7 @@ function _highlightBashCmd(cmd) {
 
 const _params = new URLSearchParams(window.location.search);
 const _pageType = _params.has('id') ? 'session' : _params.has('merged') ? 'merged' : 'overview';
-const _sessionId = _params.get('id') || '';
+let _sessionId = _params.get('id') || '';
 const _mergedConvoPath = _params.get('merged') || '';
 
 // ── State ──────────────────────────────────────────────────
@@ -658,6 +658,15 @@ async function initSessionDetail() {
     const params = _pageType === 'merged' ? { convoPath: _mergedConvoPath } : { sessionId: _sessionId };
     info = await bridgeCall(method, params);
   } catch (_) {}
+
+  // For merged views, resolve _sessionId from the first session that links to this conversation
+  if (_pageType === 'merged' && !_sessionId && _mergedConvoPath) {
+    try {
+      const cards = await bridgeCall('getSessionCards');
+      const match = cards.find(c => c.conversationPath === _mergedConvoPath);
+      if (match) _sessionId = match.sessionId;
+    } catch (_) {}
+  }
 
   // Check if this is a spawned tmux session
   let manifest = null;
