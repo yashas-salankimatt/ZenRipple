@@ -895,16 +895,25 @@
           const replayDir = _replayDirForSession(existingId);
           let restoredFromDisk = false;
           try {
-            const manifestRaw = await IOUtils.readUTF8(PathUtils.join(replayDir, 'manifest.json'));
-            const manifest = JSON.parse(manifestRaw);
-            // Restore session from disk
-            session = new Session(existingId);
-            session.colorIndex = _nextColorIndex;
-            _nextColorIndex = (_nextColorIndex + 1) % SESSION_COLOR_PALETTE.length;
-            session.name = manifest.name || null;
-            sessions.set(existingId, session);
-            restoredFromDisk = true;
-            log('Session restored from disk: ' + existingId + ' [' + (session.name || '') + ']');
+            const manifestPath = PathUtils.join(replayDir, 'manifest.json');
+            const file = Cc['@mozilla.org/file/local;1'].createInstance(Ci.nsIFile);
+            file.initWithPath(manifestPath);
+            if (file.exists()) {
+              const fis = Cc['@mozilla.org/network/file-input-stream;1'].createInstance(Ci.nsIFileInputStream);
+              fis.init(file, 1, 0, 0);
+              const sis = Cc['@mozilla.org/scriptableinputstream;1'].createInstance(Ci.nsIScriptableInputStream);
+              sis.init(fis);
+              const raw = sis.read(sis.available());
+              sis.close(); fis.close();
+              const manifest = JSON.parse(raw);
+              session = new Session(existingId);
+              session.colorIndex = _nextColorIndex;
+              _nextColorIndex = (_nextColorIndex + 1) % SESSION_COLOR_PALETTE.length;
+              session.name = manifest.name || null;
+              sessions.set(existingId, session);
+              restoredFromDisk = true;
+              log('Session restored from disk: ' + existingId + ' [' + (session.name || '') + ']');
+            }
           } catch (_) {}
           if (!restoredFromDisk) {
             log('Session not found: ' + existingId + ' — returning 404');
