@@ -527,6 +527,23 @@
 #zr-spot-stop.visible {
   display: flex;
 }
+#zr-spot-expand {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #6b6b80;
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+#zr-spot-expand:hover {
+  background: rgba(255,255,255,0.08);
+  color: #e0e0e6;
+}
 `;
 
   function staleSweep() {
@@ -10115,10 +10132,11 @@
         }
         const claudeBin = (await _runShellCommand('command -v claude')).trim() || 'claude';
         const cdPrefix = resumeCwd ? 'cd ' + _shellQuote(resumeCwd) + ' && ' : '';
-        // Run resume in background — don't block the bridge response
+        // Write PID to fork file so getClaudeStatus can track it
+        const forkPidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + _sanitizeSessionId(convoSessionId) + '.pid');
         const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
           ' | ' + _shellQuote(claudeBin) + ' -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
-          ' --output-format text > /dev/null 2>&1 &';
+          ' --output-format text > /dev/null 2>&1 & echo $! > ' + _shellQuote(forkPidFile);
         await _runShellCommand(resumeCmd);
         return { method: 'resume', sent: true };
       }
@@ -10432,14 +10450,15 @@
         }, 10000);
 
         // SKILL.md is auto-loaded by Claude Code from ~/.claude/skills/zenripple/
-        // so no need to pass --system-prompt or --append-system-prompt
+        // Prepend instruction to skip preflight (already installed by us)
+        const fullPrompt = 'Skip the ZenRipple preflight — everything is already installed and up to date. ' + prompt;
 
         if (mode === 'headless') {
           const outputFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.jsonl');
           const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.pid');
           // Write prompt to a file to avoid shell arg length limits
           const promptFile = PathUtils.join(PathUtils.tempDir, 'zenripple_prompt_' + agentName + '.txt');
-          await IOUtils.writeUTF8(promptFile, prompt);
+          await IOUtils.writeUTF8(promptFile, fullPrompt);
           // nohup so the process survives _runShellCommand's shell exit
           // Run zenripple ping first to establish the session, then claude -p
           const cmd = 'cd ' + _shellQuote(wd) +
@@ -10472,7 +10491,7 @@
           await _runShellCommand('tmux new-session -d -s ' + _shellQuote(tmuxSession) + ' -c ' + _shellQuote(wd));
           // Build command for the tmux pane — use the resolved binary path to avoid alias doubling
           const tmuxCmd = 'export ZENRIPPLE_SESSION_ID=' + _shellQuote(spawnedSessionId) +
-            ' && ' + _shellQuote(claudeBin) + ' --dangerously-skip-permissions ' + _shellQuote(prompt);
+            ' && ' + _shellQuote(claudeBin) + ' --dangerously-skip-permissions ' + _shellQuote(fullPrompt);
           await _runShellCommand('tmux send-keys -t ' + _shellQuote(tmuxSession) + ' ' + _shellQuote(tmuxCmd) + ' Enter');
           // Send Enter after a delay to auto-accept the workspace trust prompt
           await new Promise(r => setTimeout(r, 2000));
@@ -10558,6 +10577,7 @@
         '<span id="zr-spot-dot"></span>' +
         '<span id="zr-spot-name">Agent</span>' +
         '<span id="zr-spot-status">idle</span>' +
+        '<div id="zr-spot-expand" title="Open full view">&#x2197;</div>' +
       '</div>' +
       '<div id="zr-spot-preview">No recent activity</div>' +
       '<div id="zr-spot-input-row">' +
@@ -10599,6 +10619,11 @@
 
     // Stop handler
     _spotlightEl.querySelector('#zr-spot-stop').addEventListener('click', _spotlightStop);
+
+    // Expand handler — open the full session detail tab
+    _spotlightEl.querySelector('#zr-spot-expand').addEventListener('click', () => {
+      if (_spotlightSessionId) _openSessionDetailTab(_spotlightSessionId);
+    });
 
     // Listen for tab selection
     gBrowser.tabContainer.addEventListener('TabSelect', _updateSpotlightBar);

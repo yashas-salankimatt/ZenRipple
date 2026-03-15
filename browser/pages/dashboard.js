@@ -860,16 +860,19 @@ async function _loadSessionData() {
     // Only re-render replay if data changed
     if (data.replayEntries && data.replayEntries.length !== _lastReplayCount) {
       const isFirstLoad = _lastReplayCount < 0;
+      const wasEmpty = _lastReplayCount === 0;
       _replayEntries = data.replayEntries;
       _lastReplayCount = data.replayEntries.length;
       _renderReplayList();
-      // Auto-select latest ONLY on first load — never on subsequent polls
-      if (isFirstLoad && _replayEntries.length > 0) {
+      // Auto-select latest on first load or when replay first appears
+      if ((isFirstLoad || wasEmpty) && _replayEntries.length > 0) {
         _selectReplayEntry(_replayEntries.length - 1, false);
       }
     }
 
     // Load conversation with incremental reads
+    // Force re-check if we have no conversation yet (link may have appeared)
+    if (_lastConvoCount === 0) _lastConvoCount = -1;
     await _loadConversation();
 
     if (data.approvals) _renderApprovals(data.approvals);
