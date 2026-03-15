@@ -10428,7 +10428,8 @@
               await _runShellCommand('tmux send-keys -l -t ' + _shellQuote(tgt) + ' ' + _shellQuote(k));
             }
           } else {
-            await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' ' + _shellQuote(k));
+            // Don't shell-quote key names — tmux needs bare C-c, Enter, Escape etc.
+            await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' ' + k);
           }
           return { sent: true };
         })();
