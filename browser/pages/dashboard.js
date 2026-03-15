@@ -670,12 +670,9 @@ async function initSessionDetail() {
   if (title) title.textContent = manifest?.name || info?.name || _sessionId?.slice(0,12) || 'Session';
   if (badge) badge.textContent = manifest?.mode === 'tmux' ? 'tmux' : (info?.status || '');
 
-  // For spawned sessions, track mode for rendering
+  // For spawned tmux sessions, track tmux session name for terminal rendering
   if (manifest?.tmuxSession) {
     _tmuxSession = manifest.name;
-  }
-  if (manifest?.mode === 'headless') {
-    _headlessName = manifest.name;
   }
 
   body.innerHTML = `
@@ -799,38 +796,7 @@ async function initSessionDetail() {
     return;
   }
 
-  // For headless sessions: replace conversation content with headless output polling
-  if (_headlessName) {
-    // Hide convo tabs (no tool detail for headless)
-    const convoTabs = document.querySelector('.zd-convo-tabs');
-    if (convoTabs) convoTabs.style.display = 'none';
-    const toolDetail = document.getElementById('zd-tool-detail');
-    if (toolDetail) toolDetail.style.display = 'none';
-
-    // Wire input — sends via sendToClaudeCode which uses --resume for headless
-    _wireInput('zd-claude-input', 'zd-claude-send', (text) => bridgeCall('sendToClaudeCode', { sessionId: _sessionId, text }));
-    _wireInput('zd-msg-input', 'zd-msg-send', (text) => bridgeCall('sendHumanMessage', { sessionId: _sessionId, text }));
-
-    // Wire stop
-    const hStopBtn = document.getElementById('zd-claude-stop');
-    if (hStopBtn) hStopBtn.addEventListener('click', async () => {
-      try {
-        await bridgeCall('stopClaude', { sessionId: _sessionId });
-        const hStatus = document.getElementById('zd-claude-status');
-        if (hStatus) hStatus.textContent = 'Stopped';
-        hStopBtn.style.display = 'none';
-      } catch (_) {}
-    });
-
-    _setupTransportControls();
-    _setupSplitters();
-    _convoReadBytes = _CONVO_CHUNK_SIZE;
-    await _loadSessionData();
-    _startHeadlessPolling();
-    return;
-  }
-
-  // Wire inputs (standard conversation mode)
+  // Wire inputs (standard conversation mode — works for headless too via conversation.link)
   _wireInput('zd-claude-input', 'zd-claude-send', (text) => bridgeCall('sendToClaudeCode', { sessionId: _sessionId, text }));
   _wireInput('zd-msg-input', 'zd-msg-send', (text) => bridgeCall('sendHumanMessage', { sessionId: _sessionId, text }));
 
@@ -902,8 +868,8 @@ async function _loadSessionData() {
       }
     }
 
-    // Load conversation with incremental reads (skip for headless — has its own renderer)
-    if (!_headlessName) await _loadConversation();
+    // Load conversation with incremental reads
+    await _loadConversation();
 
     if (data.approvals) _renderApprovals(data.approvals);
     if (data.messages) _renderMessages(data.messages);
