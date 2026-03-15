@@ -364,22 +364,13 @@
   opacity: 0.35 !important;
 }
 
-/* --- Agent Halo (chrome-level, invisible to screenshots) --- */
-@keyframes zenripple-halo-pulse {
-  0%, 100% { opacity: 0.7; }
-  50% { opacity: 1; }
-}
-
 #zenripple-agent-halo {
-  position: absolute;
-  inset: 0;
+  position: fixed;
   pointer-events: none;
-  border-radius: 8px;
-  z-index: 1;
-  transition: box-shadow 0.4s;
-}
-#zenripple-agent-halo.active {
-  animation: zenripple-halo-pulse 3s ease-in-out infinite;
+  border-radius: 10px;
+  z-index: 2147483647;
+  transition: box-shadow 0.4s, opacity 0.3s;
+  display: none;
 }
 
 /* --- Spotlight Bar (chrome-level, invisible to screenshots) --- */
@@ -10648,15 +10639,30 @@
   }
 
   function setupAgentHalo() {
-    // Parent halo to tabbrowser-tabpanels so it wraps just the content area
     const tabpanels = document.getElementById('tabbrowser-tabpanels');
     if (!tabpanels) { log('Halo: tabbrowser-tabpanels not found'); return; }
 
     _haloEl = document.createElement('div');
     _haloEl.id = 'zenripple-agent-halo';
-    tabpanels.appendChild(_haloEl);
+    // Append to documentElement so it renders above browser content
+    document.documentElement.appendChild(_haloEl);
+
+    // Sync halo position to tabpanels rect
+    const syncPosition = () => {
+      if (!_haloEl) return;
+      const rect = tabpanels.getBoundingClientRect();
+      _haloEl.style.left = rect.left + 'px';
+      _haloEl.style.top = rect.top + 'px';
+      _haloEl.style.width = rect.width + 'px';
+      _haloEl.style.height = rect.height + 'px';
+    };
+    new ResizeObserver(syncPosition).observe(tabpanels);
+    new MutationObserver(syncPosition).observe(tabpanels.parentElement, { attributes: true, childList: true });
+    setInterval(syncPosition, 500);
+    syncPosition();
 
     gBrowser.tabContainer.addEventListener('TabSelect', _updateAgentHalo);
+    setInterval(_updateAgentHalo, 2000);
     log('Agent halo initialized');
   }
 
@@ -10666,15 +10672,15 @@
     const indicator = tab?.getAttribute('data-agent-indicator');
     if (indicator === 'active') {
       const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
-      // Thick glowing border effect via multiple box-shadows (inset)
+      _haloEl.style.display = '';
       _haloEl.style.boxShadow =
-        'inset 0 0 0 4px rgba(' + sh + ', 0.5), ' +
-        'inset 0 0 15px 2px rgba(' + sh + ', 0.15), ' +
-        'inset 0 0 40px 4px rgba(' + sh + ', 0.06)';
-      _haloEl.classList.add('active');
+        'inset 0 0 0 4px rgba(' + sh + ', 0.7), ' +
+        'inset 0 0 20px 10px rgba(' + sh + ', 0.45), ' +
+        'inset 0 0 60px 25px rgba(' + sh + ', 0.2), ' +
+        'inset 0 0 120px 50px rgba(' + sh + ', 0.07)';
     } else {
+      _haloEl.style.display = 'none';
       _haloEl.style.boxShadow = 'none';
-      _haloEl.classList.remove('active');
     }
   }
 
