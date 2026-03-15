@@ -10754,6 +10754,8 @@
     const sessionId = tab?.getAttribute('data-agent-session-id');
 
     if (indicator && sessionId) {
+      // Stop old preview timer BEFORE changing session ID (prevents stale writes)
+      if (_spotlightSessionId !== sessionId) _stopSpotlightPreview();
       _spotlightSessionId = sessionId;
       const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
       _spotlightEl.querySelector('#zr-spot-dot').style.background = 'rgb(' + sh + ')';

@@ -419,8 +419,10 @@ function _stopTmuxPolling() {
   if (_tmuxPollTimer) { clearInterval(_tmuxPollTimer); _tmuxPollTimer = null; }
 }
 
+let _tmuxPolling = false;
 async function _pollTmuxPane() {
-  if (!_tmuxSession) return;
+  if (!_tmuxSession || _tmuxPolling) return;
+  _tmuxPolling = true;
   try {
     const result = await bridgeCall('captureTmuxPane', { tmuxSession: _tmuxSession });
     if (!result?.content && result?.content !== '') return;
@@ -432,7 +434,9 @@ async function _pollTmuxPane() {
     termEl.innerHTML = _ansiToHtml(result.content);
     // Auto-scroll to bottom
     termEl.scrollTop = termEl.scrollHeight;
-  } catch (_) {}
+  } catch (_) {} finally {
+    _tmuxPolling = false;
+  }
 }
 
 // Map KeyboardEvent to tmux key name
