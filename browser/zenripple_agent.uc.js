@@ -369,8 +369,7 @@
   pointer-events: none;
   border-radius: 10px;
   z-index: 2147483647;
-  transition: box-shadow 0.4s, opacity 0.3s;
-  display: none;
+  transition: box-shadow 0.4s;
 }
 
 /* --- Spotlight Bar (chrome-level, invisible to screenshots) --- */
@@ -10672,7 +10671,7 @@
     const indicator = tab?.getAttribute('data-agent-indicator');
     if (indicator === 'active') {
       const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
-      _haloEl.style.display = '';
+      _haloEl.style.display = 'block';
       _haloEl.style.boxShadow =
         'inset 0 0 0 4px rgba(' + sh + ', 0.7), ' +
         'inset 0 0 20px 10px rgba(' + sh + ', 0.45), ' +
