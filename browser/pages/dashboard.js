@@ -740,6 +740,7 @@ async function initSessionDetail() {
             <div class="zd-transport-progress-fill" id="zd-progress-fill"></div>
           </div>
           <span class="zd-transport-count" id="zd-count">0</span>
+          <div class="zd-transport-btn" id="zd-replay-toggle" title="Toggle tool list">&#x25BC;</div>
         </div>
         <div class="zd-splitter zd-splitter-h" data-split="replay-inner"></div>
         <div class="zd-replay-list" id="zd-replay-entries"></div>
@@ -858,6 +859,20 @@ async function initSessionDetail() {
 
   // Transport controls
   _setupTransportControls();
+
+  // Tool list collapse/expand toggle
+  const replayToggle = document.getElementById('zd-replay-toggle');
+  if (replayToggle) {
+    const replayList = document.getElementById('zd-replay-entries');
+    const replaySplitter = document.querySelector('.zd-splitter-h[data-split="replay-inner"]');
+    replayToggle.addEventListener('click', () => {
+      const collapsed = replayList?.style.display === 'none';
+      if (replayList) replayList.style.display = collapsed ? '' : 'none';
+      if (replaySplitter) replaySplitter.style.display = collapsed ? '' : 'none';
+      replayToggle.textContent = collapsed ? '\u25BC' : '\u25B6';
+      replayToggle.title = collapsed ? 'Collapse tool list' : 'Expand tool list';
+    });
+  }
 
   // Splitters
   _setupSplitters();
@@ -1399,10 +1414,23 @@ function _setupSplitters() {
   const ssPanel = document.getElementById('zd-replay-ss');
   let dragTarget = null;
 
-  // Restore saved positions (only in wide mode — narrow mode uses height not width)
+  // Restore saved positions
   const saved = _loadSplitterState();
-  const isNarrow = window.innerWidth <= 900;
-  if (!isNarrow) {
+  const isNarrow = document.getElementById('zenripple-dashboard-container')?.classList.contains('zd-narrow');
+  if (isNarrow) {
+    if (saved.narrowReplayHeight && replayCol) {
+      replayCol.style.setProperty('height', saved.narrowReplayHeight + 'px', 'important');
+      replayCol.style.setProperty('flex', '0 0 ' + saved.narrowReplayHeight + 'px', 'important');
+    }
+    if (saved.narrowRightHeight && rightCol) {
+      rightCol.style.height = saved.narrowRightHeight + 'px';
+      rightCol.style.flex = '0 0 ' + saved.narrowRightHeight + 'px';
+    }
+    if (saved.narrowSsHeight && ssPanel) {
+      ssPanel.style.flex = 'none';
+      ssPanel.style.setProperty('height', saved.narrowSsHeight + 'px', 'important');
+    }
+  } else {
     if (saved.leftWidth && replayCol) replayCol.style.width = saved.leftWidth + 'px';
     if (saved.rightWidth && rightCol) rightCol.style.width = saved.rightWidth + 'px';
     if (saved.ssHeight && ssPanel) { ssPanel.style.flex = 'none'; ssPanel.style.height = saved.ssHeight + 'px'; }
@@ -1455,11 +1483,18 @@ function _setupSplitters() {
 
   document.addEventListener('mouseup', () => {
     if (!dragTarget) return;
-    // Save positions on release
-    const state = {};
-    if (replayCol) state.leftWidth = Math.round(replayCol.getBoundingClientRect().width);
-    if (rightCol) state.rightWidth = Math.round(rightCol.getBoundingClientRect().width);
-    if (ssPanel && ssPanel.style.height) state.ssHeight = parseInt(ssPanel.style.height, 10);
+    // Save positions on release — merge with existing state
+    const state = _loadSplitterState();
+    const narrowNow = document.getElementById('zenripple-dashboard-container')?.classList.contains('zd-narrow');
+    if (narrowNow) {
+      if (replayCol) state.narrowReplayHeight = Math.round(replayCol.getBoundingClientRect().height);
+      if (rightCol) state.narrowRightHeight = Math.round(rightCol.getBoundingClientRect().height);
+      if (ssPanel && ssPanel.style.height) state.narrowSsHeight = parseInt(ssPanel.style.height, 10);
+    } else {
+      if (replayCol) state.leftWidth = Math.round(replayCol.getBoundingClientRect().width);
+      if (rightCol) state.rightWidth = Math.round(rightCol.getBoundingClientRect().width);
+      if (ssPanel && ssPanel.style.height) state.ssHeight = parseInt(ssPanel.style.height, 10);
+    }
     _saveSplitterState(state);
 
     for (const s of detail.querySelectorAll('.zd-splitter')) s.classList.remove('dragging');
