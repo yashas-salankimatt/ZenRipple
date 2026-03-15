@@ -10103,13 +10103,24 @@
           await _runShellCommand('tmux send-keys -t ' + info.tmuxPane + ' Enter');
           return { method: 'tmux', pane: info.tmuxPane };
         }
-        // Fallback: resume fork
-        const cdPrefix = info.cwd ? 'cd ' + _shellQuote(info.cwd) + ' && ' : '';
+        // Fallback: resume fork — need CWD for claude to find the conversation
+        let resumeCwd = info.cwd || '';
+        if (!resumeCwd) {
+          // Try manifest workdir for spawned agents
+          const rd = _replayDirForSession(sessionId);
+          try {
+            const mf = JSON.parse(await IOUtils.readUTF8(PathUtils.join(rd, 'manifest.json')));
+            if (mf.workdir) resumeCwd = mf.workdir;
+          } catch (_) {}
+        }
+        const claudeBin = (await _runShellCommand('command -v claude')).trim() || 'claude';
+        const cdPrefix = resumeCwd ? 'cd ' + _shellQuote(resumeCwd) + ' && ' : '';
+        // Run resume in background — don't block the bridge response
         const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
-          ' | claude -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
-          ' --output-format text 2>&1';
-        const response = await _runShellCommand(resumeCmd);
-        return { method: 'resume', response: response.slice(0, 500) };
+          ' | ' + _shellQuote(claudeBin) + ' -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
+          ' --output-format text > /dev/null 2>&1 &';
+        await _runShellCommand(resumeCmd);
+        return { method: 'resume', sent: true };
       }
 
       case 'stopClaude': {
