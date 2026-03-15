@@ -10937,9 +10937,7 @@
       setupDialogObserver();
       setupTabEventTracking();
       setupPopupBlockedTracking();
-      setupReplayShortcut();
-      setupReplayContextMenu();
-      setupDashboardShortcut();
+      // Old modal shortcuts removed — using page-based dashboard now
       _registerPagesResource();
       _setupDashboardBridge();
       setupAgentHalo();
