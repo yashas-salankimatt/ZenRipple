@@ -1505,7 +1505,7 @@ body { display: flex; }
   overflow: hidden !important; min-height: 0 !important;
 }
 .zd-narrow .zd-replay-screenshot {
-  flex: 1 !important; min-height: 0 !important; height: auto !important;
+  flex: 1; min-height: 0 !important;
   min-width: 0 !important;
   border-bottom: 1px solid var(--zr-border-subtle) !important;
   border-right: none !important; overflow: hidden !important;
@@ -1523,10 +1523,10 @@ body { display: flex; }
 .zd-narrow .zd-splitter-v { width: 100% !important; height: 3px !important; cursor: row-resize !important; }
 .zd-narrow .zd-splitter-v::after { inset: -3px 0 !important; }
 .zd-narrow .zd-splitter-h[data-split="replay-inner"] {
-  width: auto !important; height: 1px !important; flex: 0 0 1px !important;
+  width: auto !important; height: 4px !important; flex: 0 0 4px !important;
   cursor: row-resize !important;
 }
-.zd-narrow .zd-splitter-h[data-split="replay-inner"]::after { inset: -3px 0 !important; }
+.zd-narrow .zd-splitter-h[data-split="replay-inner"]::after { inset: -4px 0 !important; }
 .zd-narrow .zd-conversation-col { flex: 1; min-height: 60px; width: auto !important; }
 .zd-narrow .zd-right-col {
   width: auto !important; max-height: 200px; border-left: none !important;

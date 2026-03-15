@@ -865,12 +865,24 @@ async function initSessionDetail() {
   if (replayToggle) {
     const replayList = document.getElementById('zd-replay-entries');
     const replaySplitter = document.querySelector('.zd-splitter-h[data-split="replay-inner"]');
+
+    const setCollapsed = (collapsed) => {
+      if (replayList) replayList.style.display = collapsed ? 'none' : '';
+      if (replaySplitter) replaySplitter.style.display = collapsed ? 'none' : '';
+      replayToggle.textContent = collapsed ? '\u25B6' : '\u25BC';
+      replayToggle.title = collapsed ? 'Expand tool list' : 'Collapse tool list';
+      // Save preference
+      const state = _loadSplitterState();
+      state.toolListCollapsed = collapsed;
+      _saveSplitterState(state);
+    };
+
+    // Restore saved state
+    const savedState = _loadSplitterState();
+    if (savedState.toolListCollapsed) setCollapsed(true);
+
     replayToggle.addEventListener('click', () => {
-      const collapsed = replayList?.style.display === 'none';
-      if (replayList) replayList.style.display = collapsed ? '' : 'none';
-      if (replaySplitter) replaySplitter.style.display = collapsed ? '' : 'none';
-      replayToggle.textContent = collapsed ? '\u25BC' : '\u25B6';
-      replayToggle.title = collapsed ? 'Collapse tool list' : 'Expand tool list';
+      setCollapsed(replayList?.style.display !== 'none');
     });
   }
 
@@ -1468,16 +1480,10 @@ function _setupSplitters() {
         rightCol.style.width = Math.max(150, Math.min(rect.width*0.5, rect.right - e.clientX)) + 'px';
       }
     } else if (dragTarget === 'replay-inner' && ssPanel && replayCol) {
-      if (narrow) {
-        // In narrow mode, screenshot and tool list are stacked vertically — resize height
-        const cr = replayCol.getBoundingClientRect();
-        ssPanel.style.flex = 'none';
-        ssPanel.style.setProperty('height', Math.max(40, Math.min(cr.height - 60, e.clientY - cr.top)) + 'px', 'important');
-      } else {
-        const cr = replayCol.getBoundingClientRect();
-        ssPanel.style.flex = 'none';
-        ssPanel.style.height = Math.max(60, Math.min(cr.height-80, e.clientY - cr.top)) + 'px';
-      }
+      const cr = replayCol.getBoundingClientRect();
+      const h = Math.max(40, Math.min(cr.height - 60, e.clientY - cr.top));
+      ssPanel.style.setProperty('flex', '0 0 ' + h + 'px', 'important');
+      ssPanel.style.setProperty('height', h + 'px', 'important');
     }
   });
 
