@@ -1413,7 +1413,7 @@ function _setupSplitters() {
       e.preventDefault();
       dragTarget = e.currentTarget.dataset.split;
       e.currentTarget.classList.add('dragging');
-      const narrow = window.innerWidth <= 900;
+      const narrow = document.getElementById('zenripple-dashboard-container')?.classList.contains('zd-narrow');
       document.body.style.cursor = (dragTarget === 'replay-inner' || narrow) ? 'row-resize' : 'col-resize';
       document.body.style.userSelect = 'none';
     });
@@ -1422,7 +1422,7 @@ function _setupSplitters() {
   document.addEventListener('mousemove', (e) => {
     if (!dragTarget) return;
     const rect = detail.getBoundingClientRect();
-    const narrow = window.innerWidth <= 900;
+    const narrow = document.getElementById('zenripple-dashboard-container')?.classList.contains('zd-narrow');
     if (dragTarget === 'left' && replayCol) {
       if (narrow) {
         const h = Math.max(40, Math.min(rect.height * 0.7, e.clientY - rect.top));
@@ -1597,3 +1597,15 @@ async function _init() {
 }
 
 _connectWebSocket();
+
+// ── Responsive: toggle .zd-narrow class based on container width ──
+(() => {
+  const container = document.getElementById('zenripple-dashboard-container');
+  if (!container) return;
+  const obs = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      entry.target.classList.toggle('zd-narrow', entry.contentRect.width < 900);
+    }
+  });
+  obs.observe(container);
+})();

@@ -1495,87 +1495,44 @@ body { display: flex; }
   background: var(--zr-accent-20);
 }
 
-/* ── Responsive: narrow window ── */
-@media (max-width: 900px) {
-  .zd-detail {
-    flex-direction: column !important;
-  }
-  .zd-replay-col {
-    width: auto !important;
-    flex-direction: row !important;
-    flex-wrap: wrap !important;
-    border-right: none !important;
-    border-bottom: 1px solid var(--zr-border-subtle);
-    overflow: hidden !important;
-    min-height: 0 !important;
-    /* No flex !important here — JS splitter sets it inline */
-  }
-  .zd-replay-screenshot {
-    flex: 1 1 45% !important;
-    min-height: 0 !important;
-    height: auto !important;
-    min-width: 0 !important;
-    border-bottom: none !important;
-    border-right: 1px solid var(--zr-border-subtle);
-    overflow: hidden !important;
-  }
-  .zd-replay-screenshot img {
-    object-fit: contain !important;
-    max-height: 100% !important;
-  }
-  .zd-replay-list {
-    flex: 1 1 45% !important;
-    min-height: 0 !important;
-    height: auto !important;
-    min-width: 0 !important;
-    overflow-y: auto !important;
-  }
-  .zd-replay-transport {
-    flex: 0 0 auto !important;
-    width: 100% !important;
-    border-top: 1px solid var(--zr-border-subtle);
-    border-bottom: none !important;
-    order: 10;
-    overflow: hidden !important;
-  }
-  .zd-splitter-v {
-    width: 100% !important;
-    height: 3px !important;
-    cursor: row-resize !important;
-  }
-  .zd-splitter-v::after {
-    inset: -3px 0 !important;
-  }
-  .zd-splitter-h[data-split="replay-inner"] {
-    width: 3px !important;
-    height: auto !important;
-    flex: 0 0 3px !important;
-    cursor: col-resize !important;
-    order: 1;
-  }
-  .zd-splitter-h[data-split="replay-inner"]::after {
-    inset: 0 -3px !important;
-  }
-  .zd-conversation-col {
-    flex: 1;
-    min-height: 60px;
-    width: auto !important;
-  }
-  .zd-right-col {
-    width: auto !important;
-    max-height: 200px;
-    border-left: none !important;
-    border-top: 1px solid var(--zr-border-subtle);
-    flex-direction: row !important;
-  }
-  .zd-right-section {
-    flex: 1 !important;
-    max-height: none !important;
-  }
-  .zd-right-section.zd-approvals-section {
-    border-bottom: none !important;
-    border-right: 1px solid var(--zr-border-subtle);
-  }
+/* ── Responsive: narrow container (applied via JS ResizeObserver) ── */
+.zd-narrow .zd-detail { flex-direction: column !important; }
+.zd-narrow .zd-replay-col {
+  width: auto !important; height: 250px; flex: 0 0 250px;
+  flex-direction: row !important; flex-wrap: wrap !important;
+  border-right: none !important; border-bottom: 1px solid var(--zr-border-subtle);
+  overflow: hidden !important; min-height: 0 !important;
+}
+.zd-narrow .zd-replay-screenshot {
+  flex: 1 1 45% !important; min-height: 0 !important; height: auto !important;
+  min-width: 0 !important; border-bottom: none !important;
+  border-right: 1px solid var(--zr-border-subtle); overflow: hidden !important;
+}
+.zd-narrow .zd-replay-screenshot img { object-fit: contain !important; max-height: 100% !important; }
+.zd-narrow .zd-replay-list {
+  flex: 1 1 45% !important; min-height: 0 !important; height: auto !important;
+  min-width: 0 !important; overflow-y: auto !important;
+}
+.zd-narrow .zd-replay-transport {
+  flex: 0 0 auto !important; width: 100% !important;
+  border-top: 1px solid var(--zr-border-subtle); border-bottom: none !important;
+  order: 10; overflow: hidden !important;
+}
+.zd-narrow .zd-splitter-v { width: 100% !important; height: 3px !important; cursor: row-resize !important; }
+.zd-narrow .zd-splitter-v::after { inset: -3px 0 !important; }
+.zd-narrow .zd-splitter-h[data-split="replay-inner"] {
+  width: 3px !important; height: auto !important; flex: 0 0 3px !important;
+  cursor: col-resize !important; order: 1;
+}
+.zd-narrow .zd-splitter-h[data-split="replay-inner"]::after { inset: 0 -3px !important; }
+.zd-narrow .zd-conversation-col { flex: 1; min-height: 60px; width: auto !important; }
+.zd-narrow .zd-right-col {
+  width: auto !important; max-height: 200px; border-left: none !important;
+  border-top: 1px solid var(--zr-border-subtle); flex-direction: row !important;
+}
+.zd-narrow .zd-right-section { flex: 1 !important; max-height: none !important; }
+.zd-narrow .zd-right-section.zd-approvals-section {
+  border-bottom: none !important; border-right: 1px solid var(--zr-border-subtle);
 }
 
 /* Scrollbars */
