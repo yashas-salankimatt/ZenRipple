@@ -667,8 +667,15 @@ async function initSessionDetail() {
 
   const title = document.getElementById('zd-title');
   const badge = document.getElementById('zd-badge');
-  if (title) title.textContent = manifest?.name || info?.name || _sessionId?.slice(0,12) || 'Session';
+  const displayName = manifest?.name || info?.name || _sessionId?.slice(0,12) || 'Session';
+  if (title) title.textContent = displayName;
   if (badge) badge.textContent = manifest?.mode === 'tmux' ? 'tmux' : (info?.status || '');
+  // Set tab title for easy identification
+  if (_pageType === 'merged') {
+    document.title = 'ZR- ' + (_mergedConvoPath.split('/').pop()?.replace('.jsonl','').slice(0,8) || 'merged');
+  } else {
+    document.title = 'ZR- ' + (displayName || _sessionId?.slice(0,8) || 'session');
+  }
 
   // For spawned tmux sessions, track the FULL tmux session name for terminal rendering
   // Use tmuxSession from manifest directly (not manifest.name which can be renamed)
@@ -870,10 +877,20 @@ async function _loadSessionData() {
       }
     }
 
-    // Load conversation with incremental reads
-    // Force re-check if we have no conversation yet (link may have appeared)
-    if (_lastConvoCount === 0) _lastConvoCount = -1;
-    await _loadConversation();
+    // Load conversation
+    if (_pageType === 'merged' && data.conversationEntries) {
+      // Merged view: use conversation entries from getMergedSessionData
+      if (data.conversationEntries.length !== _lastConvoCount) {
+        _conversationEntries = data.conversationEntries;
+        _lastConvoCount = data.conversationEntries.length;
+        _convoHasMore = false;
+        _renderConversation();
+      }
+    } else {
+      // Standard: incremental conversation reads
+      if (_lastConvoCount === 0) _lastConvoCount = -1;
+      await _loadConversation();
+    }
 
     if (data.approvals) _renderApprovals(data.approvals);
     if (data.messages) _renderMessages(data.messages);

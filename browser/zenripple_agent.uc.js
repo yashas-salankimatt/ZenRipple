@@ -10132,9 +10132,11 @@
         }
         const claudeBin = (await _runShellCommand('command -v claude')).trim() || 'claude';
         const cdPrefix = resumeCwd ? 'cd ' + _shellQuote(resumeCwd) + ' && ' : '';
+        // Set ZENRIPPLE_SESSION_ID so resumed agent uses the same ZenRipple session
+        const envPrefix = 'export ZENRIPPLE_SESSION_ID=' + _shellQuote(sessionId) + ' && ';
         // Write PID to fork file so getClaudeStatus can track it
         const forkPidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_fork_' + _sanitizeSessionId(convoSessionId) + '.pid');
-        const resumeCmd = cdPrefix + 'echo ' + _shellQuote(text) +
+        const resumeCmd = cdPrefix + envPrefix + 'echo ' + _shellQuote(text) +
           ' | ' + _shellQuote(claudeBin) + ' -p --dangerously-skip-permissions --resume ' + _shellQuote(convoSessionId) +
           ' --output-format text > /dev/null 2>&1 & echo $! > ' + _shellQuote(forkPidFile);
         await _runShellCommand(resumeCmd);
@@ -10450,8 +10452,10 @@
         }, 10000);
 
         // SKILL.md is auto-loaded by Claude Code from ~/.claude/skills/zenripple/
-        // Prepend instruction to skip preflight (already installed by us)
-        const fullPrompt = 'Skip the ZenRipple preflight — everything is already installed and up to date. ' + prompt;
+        // Prepend instruction to skip preflight and use our session ID
+        const fullPrompt = 'Skip the ZenRipple preflight — everything is already installed and up to date. ' +
+          'Your ZenRipple session ID is ' + spawnedSessionId + ' (already set via ZENRIPPLE_SESSION_ID env var). ' +
+          prompt;
 
         if (mode === 'headless') {
           const outputFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + agentName + '.jsonl');
@@ -10667,18 +10671,12 @@
     const rawText = (inputEl.textContent || '').trim();
     if (!rawText) return;
     inputEl.textContent = '';
-    // Sanitize: strip newlines (prevent multi-command injection) and limit length
     const text = rawText.replace(/[\n\r]/g, ' ').slice(0, 10000);
 
+    // Delegate to the same logic as sendToClaudeCode bridge method
     try {
-      const { convoSessionId } = await _getConvoInfo(_spotlightSessionId);
-      if (!convoSessionId) return;
-      const info = await _detectClaudeProcess(convoSessionId);
-      if (info.tmuxPane) {
-        await _runShellCommand('tmux send-keys -l -t ' + info.tmuxPane + ' ' + _shellQuote(text));
-        await _runShellCommand('tmux send-keys -t ' + info.tmuxPane + ' Enter');
-        log('Spotlight: sent to tmux ' + info.tmuxPane);
-      }
+      await _handleBridgeMethod('sendToClaudeCode', { sessionId: _spotlightSessionId, text });
+      log('Spotlight: sent message to ' + _spotlightSessionId);
     } catch (e) { log('Spotlight send error: ' + e); }
   }
 
