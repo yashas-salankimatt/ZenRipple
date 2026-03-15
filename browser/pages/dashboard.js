@@ -223,7 +223,36 @@ async function refreshOverview() {
       const active = cards.filter(c=>c.status!=='ended').length;
       footer.innerHTML = `<span class="zd-footer-item">${active} active</span>`;
     }
+
+    // Auto-name unnamed sessions (fire-and-forget, one at a time to avoid API spam)
+    _autoNameUnnamed(cards);
   } catch (e) { console.error('[ZenRipple] Overview error:', e); }
+}
+
+let _autoNamingInProgress = false;
+async function _autoNameUnnamed(cards) {
+  if (_autoNamingInProgress) return;
+  // Find sessions with UUID-like or agent-hash names
+  const unnamed = cards.filter(c =>
+    /^[0-9a-f]{8}-/.test(c.name) || c.name.startsWith('agent-')
+  );
+  if (!unnamed.length) return;
+  _autoNamingInProgress = true;
+  try {
+    // Name one at a time (each uses claude -p which costs tokens)
+    for (const card of unnamed.slice(0, 3)) {
+      try {
+        const result = await bridgeCall('autoNameSession', { sessionId: card.sessionId });
+        if (result?.name && !result.cached) {
+          // Update the card in the DOM
+          const cardEl = document.querySelector(`[data-session-id="${card.sessionId}"] .zd-card-name`);
+          if (cardEl) cardEl.textContent = result.name;
+        }
+      } catch (_) {}
+    }
+  } finally {
+    _autoNamingInProgress = false;
+  }
 }
 
 // ── Spawn Dialog ──────────────────────────────────────────

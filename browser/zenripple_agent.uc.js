@@ -371,13 +371,12 @@
 }
 
 #zenripple-agent-halo {
-  position: fixed;
+  position: absolute;
   inset: 0;
   pointer-events: none;
-  border: 3px solid transparent;
-  border-radius: 4px;
+  border-radius: 8px;
   z-index: 1;
-  transition: border-color 0.3s, box-shadow 0.3s;
+  transition: box-shadow 0.4s;
 }
 #zenripple-agent-halo.active {
   animation: zenripple-halo-pulse 3s ease-in-out infinite;
@@ -10316,6 +10315,86 @@
           return { entries, alive, lineCount: content.split('\n').filter(Boolean).length };
         })();
 
+      case 'autoNameSession':
+        return await (async () => {
+          const sid = params.sessionId;
+          if (!sid) throw new Error('sessionId required');
+          const rd = _replayDirForSession(sid);
+
+          // Check if already named (not just a UUID/hash prefix)
+          try {
+            const mf = JSON.parse(await IOUtils.readUTF8(PathUtils.join(rd, 'manifest.json')));
+            if (mf.name && !/^[0-9a-f]{8}-/.test(mf.name) && !mf.name.startsWith('agent-')) {
+              return { name: mf.name, cached: true };
+            }
+          } catch (_) {}
+
+          // Read first 2KB of conversation to get context
+          let context = '';
+          try {
+            const convoPath = (await IOUtils.readUTF8(PathUtils.join(rd, 'conversation.link'))).trim();
+            if (convoPath) {
+              const raw = await IOUtils.readUTF8(convoPath);
+              // Extract first user message and first assistant response
+              for (const line of raw.slice(0, 50000).split('\n')) {
+                if (!line.trim()) continue;
+                try {
+                  const e = JSON.parse(line);
+                  const msg = e.message;
+                  if (!msg) continue;
+                  if (msg.role === 'user' && typeof msg.content === 'string' && !msg.content.includes('<system-reminder>')) {
+                    context += 'User: ' + msg.content.slice(0, 200) + '\n';
+                  } else if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+                    for (const b of msg.content) {
+                      if (b.type === 'text' && b.text) { context += 'Agent: ' + b.text.slice(0, 200) + '\n'; break; }
+                    }
+                  }
+                  if (context.length > 500) break;
+                } catch (_) {}
+              }
+            }
+          } catch (_) {}
+
+          // Also check tool_log for hints
+          if (!context) {
+            try {
+              const toolLog = await IOUtils.readUTF8(PathUtils.join(rd, 'tool_log.jsonl'));
+              const lines = toolLog.trim().split('\n').filter(Boolean).slice(0, 5);
+              for (const line of lines) {
+                try {
+                  const e = JSON.parse(line);
+                  if (e.tool) context += 'Tool: ' + e.tool + (e.args?.url ? ' ' + e.args.url : '') + '\n';
+                } catch (_) {}
+              }
+            } catch (_) {}
+          }
+
+          if (!context) return { name: null, reason: 'no context' };
+
+          // Use claude -p to generate a short name
+          const claudeBin = (await _runShellCommand('command -v claude')).trim() || 'claude';
+          const prompt = 'Give a 2-4 word name for this agent session. Reply with ONLY the name, nothing else. No quotes.\n\n' + context.slice(0, 800);
+          const nameResult = await _runShellCommand(
+            'echo ' + _shellQuote(prompt) + ' | ' + _shellQuote(claudeBin) + ' -p --dangerously-skip-permissions --output-format text 2>/dev/null | head -1'
+          );
+          const name = nameResult.trim().replace(/['"]/g, '').slice(0, 40);
+          if (!name || name.length < 2) return { name: null, reason: 'empty response' };
+
+          // Save the name to the manifest
+          try {
+            const mfPath = PathUtils.join(rd, 'manifest.json');
+            const mf = JSON.parse(await IOUtils.readUTF8(mfPath));
+            mf.name = name;
+            await IOUtils.writeUTF8(mfPath, JSON.stringify(mf));
+          } catch (_) {}
+
+          // Also update the live session if it exists
+          const s = sessions.get(sid);
+          if (s) s.name = name;
+
+          return { name, cached: false };
+        })();
+
       case 'getSessionManifest':
         return await (async () => {
           const sid = params.sessionId;
@@ -10569,12 +10648,13 @@
   }
 
   function setupAgentHalo() {
-    const appcontent = _findAppContainer();
-    if (!appcontent) { log('Halo: no app container found'); return; }
+    // Parent halo to tabbrowser-tabpanels so it wraps just the content area
+    const tabpanels = document.getElementById('tabbrowser-tabpanels');
+    if (!tabpanels) { log('Halo: tabbrowser-tabpanels not found'); return; }
 
     _haloEl = document.createElement('div');
     _haloEl.id = 'zenripple-agent-halo';
-    appcontent.appendChild(_haloEl);
+    tabpanels.appendChild(_haloEl);
 
     gBrowser.tabContainer.addEventListener('TabSelect', _updateAgentHalo);
     log('Agent halo initialized');
@@ -10586,11 +10666,13 @@
     const indicator = tab?.getAttribute('data-agent-indicator');
     if (indicator === 'active') {
       const sh = tab.style.getPropertyValue('--sh') || '122,162,247';
-      _haloEl.style.borderColor = 'rgba(' + sh + ', 0.4)';
-      _haloEl.style.boxShadow = 'inset 0 0 20px rgba(' + sh + ', 0.08)';
+      // Thick glowing border effect via multiple box-shadows (inset)
+      _haloEl.style.boxShadow =
+        'inset 0 0 0 4px rgba(' + sh + ', 0.5), ' +
+        'inset 0 0 15px 2px rgba(' + sh + ', 0.15), ' +
+        'inset 0 0 40px 4px rgba(' + sh + ', 0.06)';
       _haloEl.classList.add('active');
     } else {
-      _haloEl.style.borderColor = 'transparent';
       _haloEl.style.boxShadow = 'none';
       _haloEl.classList.remove('active');
     }
