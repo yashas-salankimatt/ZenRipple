@@ -670,9 +670,10 @@ async function initSessionDetail() {
   if (title) title.textContent = manifest?.name || info?.name || _sessionId?.slice(0,12) || 'Session';
   if (badge) badge.textContent = manifest?.mode === 'tmux' ? 'tmux' : (info?.status || '');
 
-  // For spawned tmux sessions, track tmux session name for terminal rendering
+  // For spawned tmux sessions, track the FULL tmux session name for terminal rendering
+  // Use tmuxSession from manifest directly (not manifest.name which can be renamed)
   if (manifest?.tmuxSession) {
-    _tmuxSession = manifest.name;
+    _tmuxSession = manifest.tmuxSession;
   }
 
   body.innerHTML = `

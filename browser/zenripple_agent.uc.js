@@ -10121,9 +10121,10 @@
         let stopManifest = null;
         try { stopManifest = JSON.parse(await IOUtils.readUTF8(PathUtils.join(stopReplayDir, 'manifest.json'))); } catch (_) {}
 
-        if (stopManifest?.mode === 'headless' && stopManifest?.name) {
-          const safeName = _sanitizeSessionId(stopManifest.name);
-          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + safeName + '.pid');
+        if (stopManifest?.mode === 'headless') {
+          const headlessId = _sanitizeSessionId(stopManifest.agentId || stopManifest.name || PathUtils.filename(stopManifest.workdir || ''));
+          if (!headlessId) throw new Error('Cannot identify headless agent');
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + headlessId + '.pid');
           try {
             const pidStr = (await IOUtils.readUTF8(pidFile)).trim();
             const pid = parseInt(pidStr, 10);
@@ -10140,8 +10141,7 @@
         }
 
         if (stopManifest?.tmuxSession) {
-          const safeName = _sanitizeSessionId(stopManifest.name || '');
-          const tgt = 'zenripple-' + safeName;
+          const tgt = stopManifest.tmuxSession;
           // Send Ctrl+C then Escape x3
           await _runShellCommand('tmux send-keys -t ' + _shellQuote(tgt) + ' C-c 2>/dev/null');
           for (let i = 0; i < 3; i++) {
@@ -10168,9 +10168,11 @@
         let manifest = null;
         try { manifest = JSON.parse(await IOUtils.readUTF8(PathUtils.join(replayDir, 'manifest.json'))); } catch (_) {}
 
-        if (manifest?.mode === 'headless' && manifest?.name) {
-          const safeName = _sanitizeSessionId(manifest.name);
-          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + safeName + '.pid');
+        if (manifest?.mode === 'headless') {
+          // Use agentId (immutable) or derive from workdir basename
+          const headlessId = _sanitizeSessionId(manifest.agentId || manifest.name || PathUtils.filename(manifest.workdir || ''));
+          if (!headlessId) return { status: 'idle' };
+          const pidFile = PathUtils.join(PathUtils.tempDir, 'zenripple_headless_' + headlessId + '.pid');
           try {
             const pidStr = (await IOUtils.readUTF8(pidFile)).trim();
             const pid = parseInt(pidStr, 10);
@@ -10183,8 +10185,7 @@
         }
 
         if (manifest?.tmuxSession) {
-          const safeName = _sanitizeSessionId(manifest.name || '');
-          const tgt = 'zenripple-' + safeName;
+          const tgt = manifest.tmuxSession;
           const check = await _runShellCommand('tmux has-session -t ' + _shellQuote(tgt) + ' 2>/dev/null && echo alive || echo dead');
           if (check.trim() === 'alive') return { status: 'tmux_running', tmuxSession: tgt };
           return { status: 'idle' };
@@ -10269,12 +10270,9 @@
 
       case 'captureTmuxPane':
         return await (async () => {
-          const ts = params.tmuxSession;
+          const tgt = params.tmuxSession;
           const captureLines = params.lines || 300;
-          if (!ts) throw new Error('tmuxSession required');
-          const sn = _sanitizeSessionId(ts);
-          if (!sn) throw new Error('invalid tmuxSession');
-          const tgt = 'zenripple-' + sn;
+          if (!tgt) throw new Error('tmuxSession required');
           const output = await _runShellCommand(
             'tmux capture-pane -p -e -S -' + Math.min(captureLines, 1000) + ' -t ' + _shellQuote(tgt) + ' 2>/dev/null'
           );
@@ -10292,13 +10290,10 @@
 
       case 'sendKeysToTmux':
         return await (async () => {
-          const ts = params.tmuxSession;
+          const tgt = params.tmuxSession;
           const k = params.keys;
           const lit = params.literal || false;
-          if (!ts || !k) throw new Error('tmuxSession and keys required');
-          const sn = _sanitizeSessionId(ts);
-          if (!sn) throw new Error('invalid tmuxSession');
-          const tgt = 'zenripple-' + sn;
+          if (!tgt || !k) throw new Error('tmuxSession and keys required');
           if (lit) {
             if (k.includes(';')) {
               const hx = Array.from(new TextEncoder().encode(k)).map(b => b.toString(16).padStart(2, '0')).join(' ');
@@ -10314,11 +10309,8 @@
 
       case 'resizeTmuxPane':
         return await (async () => {
-          const ts = params.tmuxSession;
-          if (!ts) throw new Error('tmuxSession required');
-          const sn = _sanitizeSessionId(ts);
-          if (!sn) throw new Error('invalid tmuxSession');
-          const tgt = 'zenripple-' + sn;
+          const tgt = params.tmuxSession;
+          if (!tgt) throw new Error('tmuxSession required');
           const w = Math.max(10, Math.min(400, params.width || 80));
           const h = Math.max(3, Math.min(200, params.height || 24));
           const res = await _runShellCommand(
@@ -10366,6 +10358,7 @@
             started_at: new Date().toISOString(),
             next_seq: 0,
             name: agentName,
+            agentId: agentName, // Immutable — never changes even if agent renames session
             mode,
             workdir: wd,
             prompt: prompt.slice(0, 500),
